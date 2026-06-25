@@ -1,0 +1,15 @@
+# إعداد Netlify لمشروع Central (واجهة React/Vite)
+# ضع هذا الملف داخل: D:\central\web\netlify.toml
+
+[build]
+  # أمر البناء (ينتج مجلد dist)
+  command = "npm run build"
+  # مجلد المخرجات الذي يُنشر
+  publish = "dist"
+
+# توجيه كل المسارات إلى index.html — ضروري لتطبيقات الصفحة الواحدة (SPA)
+# بدونه يظهر 404 عند تحديث الصفحة على أي مسار داخلي
+[[redirects]]
+  from = "/*"
+  to = "/index.html"
+  status = 200

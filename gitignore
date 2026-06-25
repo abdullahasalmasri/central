@@ -1,0 +1,43 @@
+# ===== Dependencies =====
+node_modules/
+**/node_modules/
+
+# ===== Build output =====
+dist/
+build/
+web/dist/
+
+# ===== Firebase =====
+.firebase/
+firebase-debug.log
+firebase-debug.*.log
+ui-debug.log
+firestore-debug.log
+database-debug.log
+pubsub-debug.log
+.runtimeconfig.json
+
+# ===== Environment & secrets — مهم: لا ترفع أي مفاتيح =====
+.env
+.env.*
+*.env
+# مفاتيح حساب الخدمة (Service Account) — خطيرة، لا تُرفع أبداً
+*serviceAccount*.json
+*service-account*.json
+*firebase-adminsdk*.json
+serviceAccountKey.json
+
+# ===== Logs =====
+logs/
+*.log
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+
+# ===== OS / Editor =====
+.DS_Store
+Thumbs.db
+.idea/
+
+# ملاحظة: ملف web/src/firebase.js يحتوي إعداد Firebase العام (apiKey وغيره)
+# وهذا آمن للرفع — فهو يظهر في المتصفح أصلاً وليس سرّيًا.

@@ -1,0 +1,1349 @@
+// ===== التعريف المركزي لبنية البيانات =====
+
+const COLLECTIONS = {
+  TENANTS: "tenants",
+  USERS: "users",
+  SHIFTS: "shifts",
+  SCHEDULES: "schedules",
+  RECORDS: "records",
+  EXCEPTIONS: "attendanceExceptions",
+  SUMMARIES: "summaries",
+  VENDORS: "vendors",
+  ITEMS: "items",
+  ACCOUNTS: "accounts",
+  JOURNAL_ENTRIES: "journalEntries",
+  CUSTOMERS: "customers",
+  INVOICES: "invoices",
+  PROJECT_TYPES: "projectTypes",
+  PROJECTS: "projects",
+  JOB_TITLES: "jobTitles",
+  RESOURCE_REQUESTS: "resourceRequests",
+  WORKER_ASSIGNMENTS: "workerAssignments",
+  ASSETS: "assets",
+  ASSET_EXPENSES: "assetExpenses",
+};
+
+const ROLES = {
+  OWNER: "owner",
+  STAFF: "staff",
+  WORKER: "worker",
+};
+
+const MODULES = {
+  HR: "hr",
+  FINANCE: "finance",
+  ATTENDANCE: "attendance",
+  REVIEWS: "reviews",
+  PROCUREMENT: "procurement",
+  PROJECTS: "projects",
+  OPERATIONS: "operations",
+  ASSETS: "assets",
+};
+
+const ALL_MODULES = Object.values(MODULES);
+
+const SUBSCRIPTION_STATUS = {
+  PENDING: "pending",
+  ACTIVE: "active",
+  SUSPENDED: "suspended",
+};
+
+const DEFAULTS = {
+  PLAN: "free",
+  MAX_USERS: 5,
+};
+
+const WEEKDAYS = ["sunday", "monday", "tuesday", "wednesday", "thursday", "friday", "saturday"];
+
+const RECORD_STATUS = {
+  OPEN: "open",
+  FINALIZED: "finalized",
+};
+
+const ENTRY_STATUS = {
+  PRESENT: "present",
+  ABSENT: "absent",
+  LATE: "late",
+};
+
+const EXCEPTION_STATUS = {
+  PENDING_WORKER: "pending_worker",
+  ACCEPTED: "accepted",
+  OBJECTED: "objected",
+};
+
+const ESCALATION_LEVEL = {
+  SUPERVISOR: "supervisor",
+  ESCALATED: "escalated",
+  HR: "hr",
+  RESOLVED: "resolved",
+};
+
+const DEAL_TYPES = {
+  SALE: "sale",
+  RENTAL: "rental",
+  CONSUMABLE: "consumable",
+};
+const ALL_DEAL_TYPES = Object.values(DEAL_TYPES);
+
+const COST_STATUS = {
+  DRAFT: "draft",
+  PENDING_FINANCE: "pending_finance",
+  APPROVED: "approved",
+  REJECTED: "rejected",
+};
+
+const ACCOUNT_TYPES = {
+  ASSET: "asset",
+  LIABILITY: "liability",
+  EQUITY: "equity",
+  REVENUE: "revenue",
+  EXPENSE: "expense",
+};
+const ALL_ACCOUNT_TYPES = Object.values(ACCOUNT_TYPES);
+
+const ACCOUNT_NORMAL_SIDE = {
+  asset: "debit",
+  expense: "debit",
+  liability: "credit",
+  equity: "credit",
+  revenue: "credit",
+};
+
+const JOURNAL_STATUS = {
+  DRAFT: "draft",
+  POSTED: "posted",
+};
+
+const INVOICE_STATUS = {
+  ISSUED: "issued",
+  PAID: "paid",
+  CANCELLED: "cancelled",
+};
+
+const INVOICE_ACCOUNT_CODES = {
+  RECEIVABLE: "1200",
+  VAT_PAYABLE: "2200",
+  EXCISE_PAYABLE: "2210",
+};
+
+const COST_PERIODS = {
+  HOURLY: "hourly",
+  DAILY: "daily",
+  MONTHLY: "monthly",
+  YEARLY: "yearly",
+};
+const ALL_COST_PERIODS = Object.values(COST_PERIODS);
+
+const PROJECT_STATUS = {
+  PLANNED: "planned",
+  ACTIVE: "active",
+  ON_HOLD: "on_hold",
+  COMPLETED: "completed",
+  CANCELLED: "cancelled",
+};
+
+const DEFAULT_PROJECT_TYPES = [
+  { name: "تأجير عمالة", code: "labor_rental", description: "تأجير عمالة لمدة محددة، يعود العامل بعدها" },
+  { name: "نقل كفالة", code: "labor_transfer", description: "توريد عمالة مع نقل الكفالة للعميل" },
+  { name: "تأجير معدات", code: "equipment_rental", description: "تأجير معدات وآليات" },
+  { name: "بيع مواد ومعدات", code: "sales", description: "شراء وبيع المواد والمعدات للعميل" },
+  { name: "عقد صيانة", code: "maintenance", description: "صيانة دورية أو شاملة (ترميم/سباكة/كهرباء)" },
+];
+
+const REQUEST_STATUS = {
+  PENDING: "pending",
+  IN_PROGRESS: "in_progress",
+  FULFILLED: "fulfilled",
+  CANCELLED: "cancelled",
+};
+
+const RESOURCE_TYPES = {
+  LABOR: "labor",
+  EQUIPMENT: "equipment",
+};
+
+const REQUEST_PRIORITY = {
+  NORMAL: "normal",
+  URGENT: "urgent",
+};
+
+const ASSIGNMENT_STATUS = {
+  ACTIVE: "active",
+  ENDED: "ended",
+  REMOVED: "removed",
+};
+
+const DEFAULT_CHART_OF_ACCOUNTS = [
+  { code: "1100", name: "النقد وما في حكمه", type: "asset", subtype: "current_asset" },
+  { code: "1200", name: "الذمم المدينة (العملاء)", type: "asset", subtype: "current_asset" },
+  { code: "1300", name: "المخزون", type: "asset", subtype: "current_asset" },
+  { code: "1500", name: "الأصول الثابتة", type: "asset", subtype: "non_current_asset" },
+  { code: "1510", name: "المعدّات المؤجّرة", type: "asset", subtype: "non_current_asset" },
+  { code: "2100", name: "الذمم الدائنة (الموردون)", type: "liability", subtype: "current_liability" },
+  { code: "2200", name: "ضريبة القيمة المضافة المستحقة", type: "liability", subtype: "current_liability" },
+  { code: "2210", name: "الضريبة الانتقائية المستحقة", type: "liability", subtype: "current_liability" },
+  { code: "2300", name: "رواتب مستحقة الدفع", type: "liability", subtype: "current_liability" },
+  { code: "3100", name: "رأس المال", type: "equity", subtype: "equity" },
+  { code: "3200", name: "الأرباح المُبقاة", type: "equity", subtype: "equity" },
+  { code: "4100", name: "إيرادات خدمات العمالة", type: "revenue", subtype: "operating_revenue" },
+  { code: "4200", name: "إيرادات بيع المنتجات", type: "revenue", subtype: "operating_revenue" },
+  { code: "4300", name: "إيرادات تأجير المعدّات", type: "revenue", subtype: "operating_revenue" },
+  { code: "5100", name: "تكلفة المبيعات — رواتب العمالة", type: "expense", subtype: "cogs" },
+  { code: "5200", name: "تكلفة المبيعات — تكاليف حكومية", type: "expense", subtype: "cogs" },
+  { code: "5300", name: "المصروفات الإدارية", type: "expense", subtype: "operating_expense" },
+  { code: "5400", name: "مصروفات تشغيلية أخرى", type: "expense", subtype: "operating_expense" },
+];
+
+function buildTenantDoc({ name, ownerUid, createdAt }) {
+  return {
+    name,
+    ownerUid,
+    subscriptionStatus: SUBSCRIPTION_STATUS.PENDING,
+    plan: DEFAULTS.PLAN,
+    maxUsers: DEFAULTS.MAX_USERS,
+    workDaysPerMonth: 30,
+    workHoursPerDay: 8,
+    createdAt,
+  };
+}
+
+function buildUserDoc({ tenantId, role, name, email, createdAt, permissions = [] }) {
+  return { tenantId, role, name, email, permissions, createdAt };
+}
+
+function buildEmployeeDoc({ tenantId, name, email, permissions, managerUid, createdBy, createdAt }) {
+  return {
+    tenantId,
+    role: ROLES.STAFF,
+    name,
+    email,
+    permissions: permissions || [],
+    managerUid: managerUid || null,
+    status: "active",
+    mustChangePassword: true,
+    createdBy,
+    createdAt,
+  };
+}
+
+// بناء بدل (أساسي أو يدوي)
+function buildAllowance({ name, amount, deductOnAbsence }) {
+  return {
+    name: name,
+    amount: Number(amount) || 0,
+    deductOnAbsence: deductOnAbsence === true,  // افتراضيًا ثابت (false)
+  };
+}
+
+// بناء بنية تكلفة العامل الأساسية (الوحدة 1: راتب + بدلات + عقد)
+function buildWorkerCostBase({
+  basicSalary, workDaysPerMonth, workHoursPerDay,
+  allowances, contractStartDate, contractDurationYears,
+  iqamaNumber, passportNumber,
+}) {
+  return {
+    basicSalary: Number(basicSalary) || 0,             // الراتب الأساسي (متغيّر)
+    workDaysPerMonth: Number(workDaysPerMonth) || 26,  // أيام العمل الشهرية
+    workHoursPerDay: Number(workHoursPerDay) || 8,     // ساعات العمل اليومية
+    allowances: Array.isArray(allowances) ? allowances : [],  // البدلات (ثابتة عادةً)
+    contractStartDate: contractStartDate || null,      // تاريخ بدء العقد
+    contractDurationYears: Number(contractDurationYears) || 2, // مدة العقد (سنوات)
+    iqamaNumber: iqamaNumber || null,
+    passportNumber: passportNumber || null,
+    // أماكن محجوزة للوحدات القادمة:
+    governmentCosts: null,   // الوحدة 2
+    socialInsurance: null,   // الوحدة 2
+    // (الإدارية تُحسب على مستوى المنشأة، لا هنا)
+  };
+}
+
+function buildWorkerDoc({
+  tenantId, name, email, supervisorUid, employeeNumber,
+  jobTitleId, jobTitleName, costBase, createdBy, createdAt,
+}) {
+  return {
+    tenantId,
+    role: ROLES.WORKER,
+    name,
+    email,
+    permissions: [],
+    supervisorUid: supervisorUid || null,
+    employeeNumber: employeeNumber || null,
+    jobTitleId: jobTitleId || null,
+    jobTitleName: jobTitleName || null,
+    costBase: costBase || null,   // بنية التكلفة الأساسية (الوحدة 1)
+    status: "active",
+    mustChangePassword: true,
+    createdBy,
+    createdAt,
+  };
+}
+
+// ═══════════════════════════════════════════════════════
+// ===== التكاليف الحكومية (الوحدة 2) =====
+// ═══════════════════════════════════════════════════════
+
+// البنود الحكومية الثابتة (الأسماء)
+const GOV_COST_ITEMS_YEAR1 = [
+  { key: "recruitment", name: "تكلفة الاستقدام" },
+  { key: "visa", name: "تكلفة الفيزا" },
+  { key: "embassy_stamp", name: "ختم السفارة" },
+  { key: "medical_before", name: "الفحص الطبي" },
+  { key: "visa_issue", name: "التفييز" },
+  { key: "arrival_ticket", name: "تذكرة القدوم" },
+  { key: "medical_after", name: "الفحص الطبي عند الوصول" },
+  { key: "medical_insurance", name: "التأمين الطبي" },
+  { key: "work_permit", name: "كرت العمل" },
+  { key: "labor_fee", name: "المقابل المالي" },
+  { key: "iqama", name: "الإقامة" },
+];
+
+const GOV_COST_ITEMS_YEAR2 = [
+  { key: "medical_insurance", name: "التأمين الطبي" },
+  { key: "work_permit", name: "كرت العمل" },
+  { key: "labor_fee", name: "المقابل المالي" },
+  { key: "iqama", name: "الإقامة" },
+];
+
+// آليات الإطفاء
+const AMORTIZATION_METHODS = {
+  TOTAL: "total",         // إجمالي على عدد أشهر (1-24)
+  PER_YEAR: "per_year",   // كل سنة على حدة (÷12 لكل)
+  CUSTOM: "custom",       // مخصّص: سنة1 على N1، سنة2 على N2
+};
+
+// بناء بند حكومي
+function buildGovItem({ key, name, amount, year, isManual }) {
+  return {
+    key: key || null,
+    name: name,
+    amount: Number(amount) || 0,
+    year: Number(year) === 2 ? 2 : 1,   // 1 أو 2
+    isManual: isManual === true,
+  };
+}
+
+// بناء بنية التكاليف الحكومية
+function buildGovernmentCosts({
+  items, includeEndOfService, includeLeaveBalance,
+  annualLeaveDays, amortizationMethod, totalMonths,
+  year1Months, year2Months,
+}) {
+  return {
+    items: Array.isArray(items) ? items : [],   // البنود (سنة 1 و2 + يدوية)
+    includeEndOfService: includeEndOfService !== false,  // نهاية الخدمة (افتراضي نعم)
+    includeLeaveBalance: includeLeaveBalance !== false,  // رصيد الإجازات (افتراضي نعم)
+    annualLeaveDays: Number(annualLeaveDays) || 21,      // أيام الإجازة السنوية
+    amortizationMethod: Object.values(AMORTIZATION_METHODS).includes(amortizationMethod)
+      ? amortizationMethod : AMORTIZATION_METHODS.TOTAL,
+    totalMonths: Number(totalMonths) || 24,    // لطريقة total
+    year1Months: Number(year1Months) || 12,    // لطريقة custom
+    year2Months: Number(year2Months) || 12,    // لطريقة custom
+  };
+}
+
+// ===== التأمينات الاجتماعية (الوحدة 2-ب) =====
+
+const INSURANCE_BEARER = {
+  COMPANY: "company",   // الشركة بالكامل
+  WORKER: "worker",     // العامل بالكامل
+  SHARED: "shared",     // مشتركة
+};
+
+// بناء بنية التأمينات الاجتماعية
+function buildSocialInsurance({
+  enabled, totalRate, bearer, companyRate, workerRate,
+}) {
+  return {
+    enabled: enabled === true,
+    totalRate: Number(totalRate) || 0,        // النسبة الإجمالية (%)
+    bearer: Object.values(INSURANCE_BEARER).includes(bearer) ? bearer : INSURANCE_BEARER.COMPANY,
+    companyRate: Number(companyRate) || 0,    // نسبة الشركة (% للمشتركة)
+    workerRate: Number(workerRate) || 0,      // نسبة العامل (% للمشتركة)
+  };
+}
+
+// التحقّق من بنية التأمينات
+function validateSocialInsurance(ins) {
+  if (!ins || ins.enabled !== true) return { valid: true }; // غير مفعّلة = صحيحة
+
+  const total = Number(ins.totalRate);
+  if (!Number.isFinite(total) || total < 0 || total > 100) {
+    return { valid: false, error: "النسبة الإجمالية غير صحيحة (0-100)." };
+  }
+
+  if (ins.bearer === INSURANCE_BEARER.SHARED) {
+    const c = Number(ins.companyRate);
+    const w = Number(ins.workerRate);
+    if (!Number.isFinite(c) || c < 0 || !Number.isFinite(w) || w < 0) {
+      return { valid: false, error: "نسب التحمّل غير صحيحة." };
+    }
+    // يجب أن يساوي مجموعهما الإجمالي (بهامش تقريب)
+    if (Math.abs((c + w) - total) > 0.01) {
+      return { valid: false, error: `مجموع نسبتي الشركة والعامل (${c + w}%) يجب أن يساوي النسبة الإجمالية (${total}%).` };
+    }
+  }
+
+  return { valid: true };
+}
+
+// حساب التأمينات (الأثر المزدوج)
+function computeSocialInsurance(costBase) {
+  const empty = { totalAmount: 0, companyAmount: 0, workerAmount: 0, netSalary: 0 };
+  if (!costBase) return empty;
+
+  const basicSalary = Number(costBase.basicSalary) || 0;
+  const ins = costBase.socialInsurance;
+  if (!ins || ins.enabled !== true) {
+    return { totalAmount: 0, companyAmount: 0, workerAmount: 0, netSalary: basicSalary };
+  }
+
+  const totalRate = Number(ins.totalRate) || 0;
+  const totalAmount = basicSalary * (totalRate / 100);
+
+  let companyAmount = 0;
+  let workerAmount = 0;
+
+  if (ins.bearer === INSURANCE_BEARER.COMPANY) {
+    companyAmount = totalAmount;
+    workerAmount = 0;
+  } else if (ins.bearer === INSURANCE_BEARER.WORKER) {
+    companyAmount = 0;
+    workerAmount = totalAmount;
+  } else if (ins.bearer === INSURANCE_BEARER.SHARED) {
+    companyAmount = basicSalary * (Number(ins.companyRate) || 0) / 100;
+    workerAmount = basicSalary * (Number(ins.workerRate) || 0) / 100;
+  }
+
+  const netSalary = basicSalary - workerAmount;
+
+  const r = (n) => Math.round(n * 100) / 100;
+  return {
+    totalAmount: r(totalAmount),       // إجمالي التأمينات
+    companyAmount: r(companyAmount),   // تتحمّله الشركة (تكلفة)
+    workerAmount: r(workerAmount),     // يُخصم من العامل
+    netSalary: r(netSalary),           // صافي راتب العامل
+  };
+}
+
+// ===== حساب التكاليف الحكومية المُطفأة =====
+// costBase: بنية العامل (للراتب ومدة العقد)
+// govCosts: بنية التكاليف الحكومية
+function computeGovernmentCosts(costBase, govCosts) {
+  const empty = {
+    year1Total: 0, year2Total: 0, endOfService: 0, leaveBalance: 0,
+    grandTotal: 0, monthlyAmortized: 0, breakdown: [],
+    year1Monthly: 0, year2Monthly: 0,
+  };
+  if (!costBase || !govCosts) return empty;
+
+  const basicSalary = Number(costBase.basicSalary) || 0;
+  const durationYears = Number(costBase.contractDurationYears) || 2;
+
+  // مجاميع البنود حسب السنة
+  let year1Items = 0;
+  let year2Items = 0;
+  const breakdown = [];
+  for (const it of (govCosts.items || [])) {
+    const amt = Number(it.amount) || 0;
+    if (Number(it.year) === 2) {
+      year2Items += amt;
+    } else {
+      year1Items += amt;
+    }
+    breakdown.push({ name: it.name, amount: amt, year: Number(it.year) === 2 ? 2 : 1, isManual: it.isManual === true });
+  }
+
+  // نهاية الخدمة = (راتب ÷ 2) × عدد السنوات
+  let endOfService = 0;
+  if (govCosts.includeEndOfService !== false) {
+    endOfService = (basicSalary / 2) * durationYears;
+  }
+
+  // رصيد الإجازات = (راتب ÷ 30) × (أيام الإجازة × السنوات)
+  let leaveBalance = 0;
+  if (govCosts.includeLeaveBalance !== false) {
+    const annualLeaveDays = Number(govCosts.annualLeaveDays) || 21;
+    leaveBalance = (basicSalary / 30) * (annualLeaveDays * durationYears);
+  }
+
+  // نهاية الخدمة ورصيد الإجازات يُنسبان للإجمالي (يخصّان كامل المدة)
+  const year1Total = year1Items;
+  const year2Total = year2Items;
+  const grandTotal = year1Total + year2Total + endOfService + leaveBalance;
+
+  // الإطفاء
+  const method = govCosts.amortizationMethod || AMORTIZATION_METHODS.TOTAL;
+  let monthlyAmortized = 0;
+  let year1Monthly = 0;
+  let year2Monthly = 0;
+
+  const r = (n) => Math.round(n * 100) / 100;
+
+  if (method === AMORTIZATION_METHODS.TOTAL) {
+    const months = Number(govCosts.totalMonths) || 24;
+    monthlyAmortized = months > 0 ? grandTotal / months : 0;
+  } else if (method === AMORTIZATION_METHODS.PER_YEAR) {
+    // نهاية الخدمة ورصيد الإجازات تُوزّع على كامل المدة، نضيف حصّتها لكل سنة بالتساوي
+    const extraPerYear = durationYears > 0 ? (endOfService + leaveBalance) / durationYears : 0;
+    year1Monthly = (year1Total + extraPerYear) / 12;
+    year2Monthly = durationYears >= 2 ? (year2Total + extraPerYear) / 12 : 0;
+    monthlyAmortized = year1Monthly; // العرض الأساسي للسنة الأولى
+  } else if (method === AMORTIZATION_METHODS.CUSTOM) {
+    const y1m = Number(govCosts.year1Months) || 12;
+    const y2m = Number(govCosts.year2Months) || 12;
+    const extraPerYear = durationYears > 0 ? (endOfService + leaveBalance) / durationYears : 0;
+    year1Monthly = y1m > 0 ? (year1Total + extraPerYear) / y1m : 0;
+    year2Monthly = (durationYears >= 2 && y2m > 0) ? (year2Total + extraPerYear) / y2m : 0;
+    monthlyAmortized = year1Monthly;
+  }
+
+  return {
+    year1Total: r(year1Total),
+    year2Total: r(year2Total),
+    endOfService: r(endOfService),
+    leaveBalance: r(leaveBalance),
+    grandTotal: r(grandTotal),
+    monthlyAmortized: r(monthlyAmortized),
+    year1Monthly: r(year1Monthly),
+    year2Monthly: r(year2Monthly),
+    breakdown: breakdown,
+  };
+}
+
+// ===== حساب تكلفة العامل الأساسية (الوحدة 1) =====
+// يرجّع: الراتب اليومي/الساعي، إجمالي البدلات، التكلفة الشهرية الأساسية، تمييز ثابت/متغيّر
+function computeWorkerBaseCost(costBase) {
+  if (!costBase) {
+    return {
+      basicSalary: 0, dailySalary: 0, hourlySalary: 0,
+      totalAllowances: 0, fixedAllowances: 0, variableAllowances: 0,
+      monthlyVariable: 0, monthlyFixed: 0, monthlyTotal: 0,
+      overtimeHourlyRate: 0,
+    };
+  }
+
+  const basicSalary = Number(costBase.basicSalary) || 0;
+  const workDays = Number(costBase.workDaysPerMonth) || 26;
+  const workHours = Number(costBase.workHoursPerDay) || 8;
+
+  // الراتب اليومي والساعي
+  const dailySalary = workDays > 0 ? basicSalary / workDays : 0;
+  const hourlySalary = workHours > 0 ? dailySalary / workHours : 0;
+  const overtimeHourlyRate = hourlySalary * 1.5;  // الأوفر تايم × 1.5
+
+  // البدلات (مفصولة ثابت/متغيّر)
+  let fixedAllowances = 0;
+  let variableAllowances = 0;
+  for (const a of (costBase.allowances || [])) {
+    const amt = Number(a.amount) || 0;
+    if (a.deductOnAbsence === true) {
+      variableAllowances += amt;
+    } else {
+      fixedAllowances += amt;
+    }
+  }
+  const totalAllowances = fixedAllowances + variableAllowances;
+
+  // الراتب الأساسي متغيّر (يُخصم بالغياب)
+  const monthlyVariable = basicSalary + variableAllowances;
+  const monthlyFixed = fixedAllowances;
+  const monthlyTotal = monthlyVariable + monthlyFixed;
+
+  const r = (n) => Math.round(n * 100) / 100;
+  return {
+    basicSalary: r(basicSalary),
+    dailySalary: r(dailySalary),
+    hourlySalary: r(hourlySalary),
+    overtimeHourlyRate: r(overtimeHourlyRate),
+    totalAllowances: r(totalAllowances),
+    fixedAllowances: r(fixedAllowances),
+    variableAllowances: r(variableAllowances),
+    monthlyVariable: r(monthlyVariable),
+    monthlyFixed: r(monthlyFixed),
+    monthlyTotal: r(monthlyTotal),
+  };
+}
+
+// ===== التكلفة الشهرية الكاملة (تجمع الطبقات) =====
+// تُستخدم لحساب التكلفة الإدارية وفي الربحية لاحقًا
+// تشمل: الأساسية (راتب+بدلات) + الحكومية المُطفأة + نصيب الشركة من التأمينات
+function computeWorkerMonthlyCost(costBase) {
+  const base = computeWorkerBaseCost(costBase);
+  const gov = computeGovernmentCosts(costBase, costBase ? costBase.governmentCosts : null);
+  const ins = computeSocialInsurance(costBase);
+
+  // المكوّنات الشهرية
+  const monthlyBase = base.monthlyTotal;                    // راتب + بدلات
+  const monthlyGov = gov.monthlyAmortized || 0;            // الحكومية المُطفأة (السنة 1 كأساس)
+  const monthlyInsCompany = ins.companyAmount || 0;        // نصيب الشركة من التأمينات
+
+  const monthlyTotal = monthlyBase + monthlyGov + monthlyInsCompany;
+
+  const r = (n) => Math.round(n * 100) / 100;
+  return {
+    monthlyBase: r(monthlyBase),
+    monthlyGov: r(monthlyGov),
+    monthlyInsCompany: r(monthlyInsCompany),
+    monthlyTotal: r(monthlyTotal),
+    // تفاصيل إضافية للعرض
+    monthlyVariable: base.monthlyVariable,   // متغيّر (راتب + بدلات متغيّرة)
+    monthlyFixed: r(base.monthlyFixed + monthlyGov + monthlyInsCompany), // ثابت (بدلات ثابتة + حكومية + تأمينات)
+    netSalary: ins.netSalary,
+  };
+}
+
+function validatePermissions(permissions) {
+  if (!Array.isArray(permissions)) return false;
+  return permissions.every((p) => ALL_MODULES.includes(p));
+}
+
+function buildShiftDoc({
+  tenantId, name, startTime, durationHours, breaks,
+  recordLeadMinutes, approvalDeadlineHours, createdBy, createdAt,
+}) {
+  return {
+    tenantId, name, startTime,
+    durationHours: durationHours,
+    breaks: Array.isArray(breaks) ? breaks : [],
+    recordLeadMinutes: recordLeadMinutes || 60,
+    approvalDeadlineHours: approvalDeadlineHours || 24,
+    status: "active", createdBy, createdAt,
+  };
+}
+
+function isValidTime(t) {
+  if (typeof t !== "string") return false;
+  return /^([01]\d|2[0-3]):[0-5]\d$/.test(t);
+}
+
+function validateBreaks(breaks) {
+  if (breaks === undefined || breaks === null) return true;
+  if (!Array.isArray(breaks)) return false;
+  return breaks.every(
+    (b) => b && isValidTime(b.start) && typeof b.durationMinutes === "number" && b.durationMinutes > 0 && b.durationMinutes <= 480
+  );
+}
+
+function buildScheduleDoc({
+  tenantId, workerUid, supervisorUid, rotationShifts,
+  rotationStartDate, weeklyOffDays, createdBy, createdAt,
+}) {
+  return {
+    tenantId, workerUid,
+    supervisorUid: supervisorUid || null,
+    rotationShifts: Array.isArray(rotationShifts) ? rotationShifts : [],
+    rotationStartDate: rotationStartDate || null,
+    weeklyOffDays: Array.isArray(weeklyOffDays) ? weeklyOffDays : [],
+    status: "active", createdBy, createdAt,
+  };
+}
+
+function validateOffDays(days) {
+  if (days === undefined || days === null) return true;
+  if (!Array.isArray(days)) return false;
+  return days.every((d) => WEEKDAYS.includes(d));
+}
+
+function isValidDate(d) {
+  if (typeof d !== "string") return false;
+  return /^\d{4}-\d{2}-\d{2}$/.test(d);
+}
+
+function buildShiftRecordDoc({
+  tenantId, supervisorUid, shiftId, shiftName, date,
+  entries, deadline, createdBy, createdAt,
+}) {
+  return {
+    tenantId, type: "attendance", module: MODULES.ATTENDANCE,
+    supervisorUid, shiftId, shiftName: shiftName || null, date,
+    status: RECORD_STATUS.OPEN, deadline: deadline || null,
+    entries: Array.isArray(entries) ? entries : [],
+    createdBy, createdAt, finalizedAt: null,
+  };
+}
+
+function buildEntry({ workerUid, workerName }) {
+  return { workerUid, workerName: workerName || null, status: ENTRY_STATUS.PRESENT, note: null };
+}
+
+function buildExceptionDoc({
+  tenantId, subjectUid, subjectName, supervisorUid, recordId,
+  shiftId, date, exceptionType, supervisorNote, deadline, createdBy, createdAt,
+}) {
+  return {
+    tenantId, subjectUid, subjectName: subjectName || null, supervisorUid,
+    recordId: recordId || null, shiftId: shiftId || null, date,
+    exceptionType: exceptionType, supervisorNote: supervisorNote || null,
+    status: EXCEPTION_STATUS.PENDING_WORKER, deadline: deadline || null,
+    workerResponse: null,
+    escalationLevel: ESCALATION_LEVEL.SUPERVISOR,
+    currentHandlerUid: supervisorUid || null,
+    escalationHistory: [], resolution: null,
+    createdBy, createdAt, resolvedAt: null,
+  };
+}
+
+function buildEscalationEntry({ byUid, byName, action, note, toUid, at }) {
+  return { byUid, byName: byName || null, action, note: note || null, toUid: toUid || null, at };
+}
+
+function buildSummaryDoc({
+  tenantId, date, totalRecords, totalWorkers,
+  presentCount, absentCount, lateCount,
+  openRecords, finalizedRecords,
+  pendingExceptions, objectedExceptions, updatedAt,
+}) {
+  return {
+    tenantId, date,
+    totalRecords: totalRecords || 0, totalWorkers: totalWorkers || 0,
+    presentCount: presentCount || 0, absentCount: absentCount || 0, lateCount: lateCount || 0,
+    openRecords: openRecords || 0, finalizedRecords: finalizedRecords || 0,
+    pendingExceptions: pendingExceptions || 0, objectedExceptions: objectedExceptions || 0,
+    updatedAt: updatedAt || null,
+  };
+}
+
+function buildVendorDoc({
+  tenantId, name, vendorCode, contactPerson, phone, email,
+  taxNumber, address, paymentTerms, createdBy, createdAt,
+}) {
+  return {
+    tenantId, name,
+    vendorCode: vendorCode || null,
+    contactPerson: contactPerson || null,
+    phone: phone || null,
+    email: email || null,
+    taxNumber: taxNumber || null,
+    address: address || null,
+    paymentTerms: paymentTerms || null,
+    status: "active",
+    createdBy, createdAt,
+  };
+}
+
+function buildTaxConfig({ vatApplicable, vatRate, exciseApplicable, exciseRate }) {
+  return {
+    vatApplicable: vatApplicable === true,
+    vatRate: typeof vatRate === "number" && vatRate >= 0 ? vatRate : 15,
+    exciseApplicable: exciseApplicable === true,
+    exciseRate: typeof exciseRate === "number" && exciseRate >= 0 ? exciseRate : 0,
+  };
+}
+
+function validateTaxConfig(tax) {
+  if (!tax || typeof tax !== "object") return false;
+  if (typeof tax.vatApplicable !== "boolean") return false;
+  if (typeof tax.exciseApplicable !== "boolean") return false;
+  const vr = Number(tax.vatRate);
+  const er = Number(tax.exciseRate);
+  if (!Number.isFinite(vr) || vr < 0 || vr > 100) return false;
+  if (!Number.isFinite(er) || er < 0 || er > 1000) return false;
+  return true;
+}
+
+function buildItemDoc({
+  tenantId, name, itemCode, category, unit, dealTypes, description,
+  preferredVendorId, estimatedCost, createdBy, createdAt,
+}) {
+  return {
+    tenantId, name,
+    itemCode: itemCode || null,
+    category: category || null,
+    unit: unit || null,
+    dealTypes: Array.isArray(dealTypes) ? dealTypes : [],
+    description: description || null,
+    preferredVendorId: preferredVendorId || null,
+    estimatedCost: typeof estimatedCost === "number" ? estimatedCost : null,
+    approvedCost: null,
+    costStatus: COST_STATUS.DRAFT,
+    taxConfig: buildTaxConfig({ vatApplicable: false, vatRate: 15, exciseApplicable: false, exciseRate: 0 }),
+    sellingPrice: null,
+    rentalPrice: null,
+    status: "active",
+    createdBy,
+    approvedBy: null,
+    createdAt,
+  };
+}
+
+function validateDealTypes(types) {
+  if (!Array.isArray(types) || types.length === 0) return false;
+  return types.every((t) => ALL_DEAL_TYPES.includes(t));
+}
+
+function buildAccountDoc({
+  tenantId, code, name, type, subtype, parentId, isSystem, createdBy, createdAt,
+}) {
+  return {
+    tenantId,
+    code: code,
+    name: name,
+    type: type,
+    subtype: subtype || null,
+    normalSide: ACCOUNT_NORMAL_SIDE[type] || "debit",
+    parentId: parentId || null,
+    isSystem: isSystem === true,
+    isActive: true,
+    balance: 0,
+    createdBy: createdBy || null,
+    createdAt,
+  };
+}
+
+function validateAccountType(type) {
+  return ALL_ACCOUNT_TYPES.includes(type);
+}
+
+function buildJournalEntryDoc({
+  tenantId, entryNumber, date, description, lines,
+  totalDebit, totalCredit, source, sourceRef, status, createdBy, createdAt,
+}) {
+  return {
+    tenantId,
+    entryNumber: entryNumber || null,
+    date: date,
+    description: description || null,
+    lines: Array.isArray(lines) ? lines : [],
+    totalDebit: totalDebit || 0,
+    totalCredit: totalCredit || 0,
+    source: source || "manual",
+    sourceRef: sourceRef || null,
+    status: status || JOURNAL_STATUS.POSTED,
+    createdBy: createdBy || null,
+    createdAt,
+    postedAt: null,
+  };
+}
+
+function validateJournalLines(lines) {
+  if (!Array.isArray(lines) || lines.length < 2) {
+    return { valid: false, error: "القيد يحتاج طرفين على الأقل." };
+  }
+  let totalDebit = 0;
+  let totalCredit = 0;
+  const cleanLines = [];
+  for (const ln of lines) {
+    const debit = Number(ln.debit) || 0;
+    const credit = Number(ln.credit) || 0;
+    if (debit < 0 || credit < 0) {
+      return { valid: false, error: "لا يجوز قيم سالبة في القيد." };
+    }
+    if (debit > 0 && credit > 0) {
+      return { valid: false, error: "الطرف الواحد إمّا مدين أو دائن، لا الاثنين." };
+    }
+    if (debit === 0 && credit === 0) {
+      return { valid: false, error: "كل طرف يجب أن يحمل قيمة مدينة أو دائنة." };
+    }
+    if (!ln.accountId) {
+      return { valid: false, error: "كل طرف يجب أن يرتبط بحساب." };
+    }
+    totalDebit += debit;
+    totalCredit += credit;
+    cleanLines.push({
+      accountId: ln.accountId,
+      accountCode: ln.accountCode || null,
+      accountName: ln.accountName || null,
+      debit: debit,
+      credit: credit,
+      note: ln.note || null,
+    });
+  }
+  const dr = Math.round(totalDebit * 100) / 100;
+  const cr = Math.round(totalCredit * 100) / 100;
+  if (dr !== cr) {
+    return { valid: false, error: `القيد غير متوازن: المدين ${dr} ≠ الدائن ${cr}.` };
+  }
+  return { valid: true, totalDebit: dr, totalCredit: cr, cleanLines };
+}
+
+function buildCustomerDoc({
+  tenantId, name, customerCode, taxNumber, crNumber,
+  contactPerson, phone, email,
+  buildingNumber, street, district, city, postalCode, additionalNumber,
+  createdBy, createdAt,
+}) {
+  return {
+    tenantId,
+    name: name,
+    customerCode: customerCode || null,
+    taxNumber: taxNumber || null,
+    crNumber: crNumber || null,
+    contactPerson: contactPerson || null,
+    phone: phone || null,
+    email: email || null,
+    address: {
+      buildingNumber: buildingNumber || null,
+      street: street || null,
+      district: district || null,
+      city: city || null,
+      postalCode: postalCode || null,
+      additionalNumber: additionalNumber || null,
+    },
+    status: "active",
+    createdBy: createdBy || null,
+    createdAt,
+  };
+}
+
+function computeInvoiceTotals(rawLines) {
+  if (!Array.isArray(rawLines) || rawLines.length === 0) {
+    return { valid: false, error: "الفاتورة تحتاج بندًا واحدًا على الأقل." };
+  }
+
+  const lines = [];
+  let subtotal = 0;
+  let totalExcise = 0;
+  let totalVat = 0;
+
+  for (const ln of rawLines) {
+    const description = typeof ln.description === "string" ? ln.description.trim() : "";
+    const quantity = Number(ln.quantity);
+    const unitPrice = Number(ln.unitPrice);
+
+    if (description.length < 1) {
+      return { valid: false, error: "كل بند يجب أن يحمل وصفًا." };
+    }
+    if (!Number.isFinite(quantity) || quantity <= 0) {
+      return { valid: false, error: `كمية غير صحيحة في البند «${description}».` };
+    }
+    if (!Number.isFinite(unitPrice) || unitPrice < 0) {
+      return { valid: false, error: `سعر غير صحيح في البند «${description}».` };
+    }
+
+    const vatApplicable = ln.vatApplicable === true;
+    const exciseApplicable = ln.exciseApplicable === true;
+    const vatRate = vatApplicable ? Number(ln.vatRate) : 0;
+    const exciseRate = exciseApplicable ? Number(ln.exciseRate) : 0;
+
+    if (vatApplicable && (!Number.isFinite(vatRate) || vatRate < 0 || vatRate > 100)) {
+      return { valid: false, error: `نسبة قيمة مضافة غير صحيحة في البند «${description}».` };
+    }
+    if (exciseApplicable && (!Number.isFinite(exciseRate) || exciseRate < 0 || exciseRate > 1000)) {
+      return { valid: false, error: `نسبة انتقائية غير صحيحة في البند «${description}».` };
+    }
+
+    const base = quantity * unitPrice;
+    const exciseAmount = exciseApplicable ? base * (exciseRate / 100) : 0;
+    const vatBase = base + exciseAmount;
+    const vatAmount = vatApplicable ? vatBase * (vatRate / 100) : 0;
+    const lineTotal = base + exciseAmount + vatAmount;
+
+    const r = (n) => Math.round(n * 100) / 100;
+
+    lines.push({
+      description: description,
+      itemId: ln.itemId || null,
+      quantity: quantity,
+      unitPrice: r(unitPrice),
+      base: r(base),
+      vatApplicable: vatApplicable,
+      vatRate: vatRate,
+      vatAmount: r(vatAmount),
+      exciseApplicable: exciseApplicable,
+      exciseRate: exciseRate,
+      exciseAmount: r(exciseAmount),
+      lineTotal: r(lineTotal),
+    });
+
+    subtotal += base;
+    totalExcise += exciseAmount;
+    totalVat += vatAmount;
+  }
+
+  const r = (n) => Math.round(n * 100) / 100;
+  const total = subtotal + totalExcise + totalVat;
+
+  return {
+    valid: true,
+    lines: lines,
+    subtotal: r(subtotal),
+    totalExcise: r(totalExcise),
+    totalVat: r(totalVat),
+    total: r(total),
+  };
+}
+
+function buildInvoiceDoc({
+  tenantId, invoiceNumber, uuid, date, customerId, customerSnapshot,
+  revenueAccountId, lines, subtotal, totalExcise, totalVat, total,
+  journalEntryId, notes, createdBy, createdAt,
+}) {
+  return {
+    tenantId,
+    invoiceNumber: invoiceNumber || null,
+    uuid: uuid || null,
+    date: date,
+    invoiceType: "standard",
+    customerId: customerId || null,
+    customerSnapshot: customerSnapshot || null,
+    revenueAccountId: revenueAccountId || null,
+    lines: Array.isArray(lines) ? lines : [],
+    subtotal: subtotal || 0,
+    totalExcise: totalExcise || 0,
+    totalVat: totalVat || 0,
+    total: total || 0,
+    status: INVOICE_STATUS.ISSUED,
+    journalEntryId: journalEntryId || null,
+    notes: notes || null,
+    createdBy: createdBy || null,
+    createdAt,
+  };
+}
+
+function buildProjectTypeDoc({ tenantId, name, code, description, isSystem, createdBy, createdAt }) {
+  return {
+    tenantId,
+    name: name,
+    code: code || null,
+    description: description || null,
+    isSystem: isSystem === true,
+    isActive: true,
+    createdBy: createdBy || null,
+    createdAt,
+  };
+}
+
+function buildProjectDoc({
+  tenantId, projectNumber, name, customerId, customerName,
+  typeIds, typeNames, contractNumber, city, location,
+  startDate, endDate, status, description, createdBy, createdAt,
+}) {
+  return {
+    tenantId,
+    projectNumber: projectNumber || null,
+    name: name,
+    customerId: customerId || null,
+    customerName: customerName || null,
+    typeIds: Array.isArray(typeIds) ? typeIds : [],
+    typeNames: Array.isArray(typeNames) ? typeNames : [],
+    contractNumber: contractNumber || null,
+    city: city || null,
+    location: location || null,
+    startDate: startDate || null,
+    endDate: endDate || null,
+    status: status || PROJECT_STATUS.PLANNED,
+    description: description || null,
+    createdBy: createdBy || null,
+    createdAt,
+    updatedAt: createdAt,
+  };
+}
+
+function validateProjectStatus(status) {
+  return Object.values(PROJECT_STATUS).includes(status);
+}
+
+function buildJobTitleDoc({ tenantId, name, description, createdBy, createdAt }) {
+  return {
+    tenantId,
+    name: name,
+    description: description || null,
+    isActive: true,
+    createdBy: createdBy || null,
+    createdAt,
+  };
+}
+
+function buildResourceRequestDoc({
+  tenantId, requestNumber, projectId, projectName, projectNumber,
+  resourceType, jobTitleId, jobTitleName, quantity,
+  shiftId, shiftName, city, specifications,
+  startDate, endDate, priority, status, createdBy, createdAt,
+}) {
+  return {
+    tenantId,
+    requestNumber: requestNumber || null,
+    projectId: projectId || null,
+    projectName: projectName || null,
+    projectNumber: projectNumber || null,
+    resourceType: resourceType || RESOURCE_TYPES.LABOR,
+    jobTitleId: jobTitleId || null,
+    jobTitleName: jobTitleName || null,
+    quantity: Number(quantity) || 0,
+    shiftId: shiftId || null,
+    shiftName: shiftName || null,
+    city: city || null,
+    specifications: specifications || null,
+    startDate: startDate || null,
+    endDate: endDate || null,
+    priority: priority || REQUEST_PRIORITY.NORMAL,
+    status: status || REQUEST_STATUS.PENDING,
+    fulfilledQuantity: 0,
+    createdBy: createdBy || null,
+    createdAt,
+    updatedAt: createdAt,
+  };
+}
+
+function validateRequestStatus(status) {
+  return Object.values(REQUEST_STATUS).includes(status);
+}
+
+function buildWorkerAssignmentDoc({
+  tenantId, assignmentNumber, workerUid, workerName, workerJobTitle,
+  projectId, projectName, projectNumber, requestId, requestNumber,
+  rentalPrice, rentalPeriod, shiftId, shiftName, shiftStartTime, shiftDurationHours,
+  startDate, endDate, status, notes, createdBy, createdAt,
+}) {
+  return {
+    tenantId,
+    assignmentNumber: assignmentNumber || null,
+    workerUid: workerUid || null,
+    workerName: workerName || null,
+    workerJobTitle: workerJobTitle || null,
+    projectId: projectId || null,
+    projectName: projectName || null,
+    projectNumber: projectNumber || null,
+    requestId: requestId || null,
+    requestNumber: requestNumber || null,
+    rentalPrice: Number(rentalPrice) || 0,
+    rentalPeriod: ALL_COST_PERIODS.includes(rentalPeriod) ? rentalPeriod : COST_PERIODS.DAILY,
+    shiftId: shiftId || null,
+    shiftName: shiftName || null,
+    shiftStartTime: shiftStartTime || null,
+    shiftDurationHours: shiftDurationHours != null ? Number(shiftDurationHours) : null,
+    startDate: startDate || null,
+    endDate: endDate || null,
+    status: status || ASSIGNMENT_STATUS.ACTIVE,
+    notes: notes || null,
+    createdBy: createdBy || null,
+    createdAt,
+    updatedAt: createdAt,
+    endedAt: null,
+  };
+}
+
+function validateAssignmentStatus(status) {
+  return Object.values(ASSIGNMENT_STATUS).includes(status);
+}
+
+function timeToMinutes(t) {
+  if (!isValidTime(t)) return null;
+  const [h, m] = t.split(":").map(Number);
+  return h * 60 + m;
+}
+
+function shiftWindow(startTime, durationHours) {
+  const start = timeToMinutes(startTime);
+  if (start === null) return null;
+  const dur = Number(durationHours);
+  if (!Number.isFinite(dur) || dur <= 0) return null;
+  const end = start + dur * 60;
+  return { start, end };
+}
+
+function shiftsOverlap(startA, durA, startB, durB) {
+  const a = shiftWindow(startA, durA);
+  const b = shiftWindow(startB, durB);
+  if (!a || !b) return false;
+
+  const segs = (w) => {
+    if (w.end <= 1440) return [[w.start, w.end]];
+    return [[w.start, 1440], [0, w.end - 1440]];
+  };
+  const segsA = segs(a);
+  const segsB = segs(b);
+  for (const [s1, e1] of segsA) {
+    for (const [s2, e2] of segsB) {
+      if (s1 < e2 && s2 < e1) return true;
+    }
+  }
+  return false;
+}
+
+function dateRangesOverlap(startA, endA, startB, endB) {
+  const sA = startA || "0000-00-00";
+  const eA = endA || "9999-12-31";
+  const sB = startB || "0000-00-00";
+  const eB = endB || "9999-12-31";
+  return sA <= eB && sB <= eA;
+}
+
+// ═══════════════════════════════════════════════════════════════
+// ===== قسم الأصول (سكن/مركبات/معدات) + مصاريفها =====
+// ═══════════════════════════════════════════════════════════════
+// الأصل: مرفق مشترك (سكن، سيارة...) له سعة ومستفيدون.
+// تكلفته الشهرية = إيجار/قسط ثابت + فواتير متغيّرة (كهرباء/صيانة...) تُسجّل عليه.
+// تُوزّع على مستفيديه فقط (نصيب العامل = تكلفة الأصل ÷ عدد مستفيديه).
+
+const ASSET_TYPES = {
+  HOUSING: "housing",     // سكن
+  VEHICLE: "vehicle",     // مركبة
+  EQUIPMENT: "equipment", // معدة
+  OTHER: "other",         // أخرى (نوع مخصّص)
+};
+const ALL_ASSET_TYPES = Object.values(ASSET_TYPES);
+
+const ASSET_STATUS = {
+  ACTIVE: "active",       // فعّال (يُحتسب)
+  INACTIVE: "inactive",   // معطّل
+};
+const ALL_ASSET_STATUS = Object.values(ASSET_STATUS);
+
+// أنواع المصاريف الشائعة (مرنة — يمكن إضافة نوع مخصّص)
+const ASSET_EXPENSE_TYPES = {
+  ELECTRICITY: "electricity", // كهرباء
+  WATER: "water",             // ماء
+  MAINTENANCE: "maintenance", // صيانة
+  FUEL: "fuel",               // وقود
+  INSURANCE: "insurance",     // تأمين
+  CLEANING: "cleaning",       // نظافة
+  OTHER: "other",             // أخرى
+};
+const ALL_ASSET_EXPENSE_TYPES = Object.values(ASSET_EXPENSE_TYPES);
+
+// بناء وثيقة أصل
+function buildAssetDoc({
+  tenantId, assetNumber, type, typeName, name, location,
+  capacity, monthlyRent, status, notes, beneficiaries,
+  createdBy, createdAt,
+}) {
+  return {
+    tenantId: tenantId,
+    assetNumber: Number(assetNumber) || 0,
+    type: ALL_ASSET_TYPES.includes(type) ? type : ASSET_TYPES.OTHER,
+    typeName: typeName || null,             // اسم النوع المخصّص عند "أخرى"
+    name: (name || "").trim(),              // "سكن الدمام"، "هايلكس ٢٠٢٣"
+    location: location || null,             // المدينة/الموقع
+    capacity: Number(capacity) || 0,        // سعة الاستيعاب (كم مستفيد)
+    monthlyRent: Number(monthlyRent) || 0,  // الإيجار/القسط الثابت الشهري
+    status: ALL_ASSET_STATUS.includes(status) ? status : ASSET_STATUS.ACTIVE,
+    notes: notes || null,
+    beneficiaries: Array.isArray(beneficiaries) ? beneficiaries.filter((x) => typeof x === "string") : [],  // uids المستفيدين
+    createdBy: createdBy || null,
+    createdAt: createdAt,
+  };
+}
+
+// بناء وثيقة مصروف على أصل (فاتورة لشهر محدّد)
+function buildAssetExpenseDoc({
+  tenantId, assetId, assetName, month, expenseType, expenseTypeName,
+  amount, description, expenseDate, createdBy, createdAt,
+}) {
+  return {
+    tenantId: tenantId,
+    assetId: assetId,
+    assetName: assetName || null,
+    month: month,  // YYYY-MM — الشهر الذي تُحتسب فيه التكلفة
+    expenseType: ALL_ASSET_EXPENSE_TYPES.includes(expenseType) ? expenseType : ASSET_EXPENSE_TYPES.OTHER,
+    expenseTypeName: expenseTypeName || null,  // اسم النوع المخصّص عند "أخرى"
+    amount: Number(amount) || 0,
+    description: description || null,
+    expenseDate: expenseDate || null,  // تاريخ الفاتورة الفعلي (اختياري)
+    createdBy: createdBy || null,
+    createdAt: createdAt,
+  };
+}
+
+// تكلفة الأصل الشهرية = الإيجار الثابت + مجموع الفواتير المتغيّرة للشهر
+function computeAssetMonthlyCost(monthlyRent, expenses) {
+  const r = (n) => Math.round(n * 100) / 100;
+  const rent = Number(monthlyRent) || 0;
+  const variable = (Array.isArray(expenses) ? expenses : []).reduce((s, e) => s + (Number(e.amount) || 0), 0);
+  return { rent: r(rent), variable: r(variable), total: r(rent + variable) };
+}
+
+// نصيب المستفيد الواحد = تكلفة الأصل ÷ عدد المستفيدين
+function computeAssetSharePerBeneficiary(assetMonthlyTotal, beneficiaryCount) {
+  const n = Number(beneficiaryCount) || 0;
+  if (n <= 0) return 0;
+  return Math.round(((Number(assetMonthlyTotal) || 0) / n) * 100) / 100;
+}
+
+module.exports = {
+  COLLECTIONS,
+  ROLES,
+  SUBSCRIPTION_STATUS,
+  DEFAULTS,
+  MODULES,
+  ALL_MODULES,
+  WEEKDAYS,
+  RECORD_STATUS,
+  ENTRY_STATUS,
+  EXCEPTION_STATUS,
+  ESCALATION_LEVEL,
+  DEAL_TYPES,
+  ALL_DEAL_TYPES,
+  COST_STATUS,
+  ACCOUNT_TYPES,
+  ALL_ACCOUNT_TYPES,
+  ACCOUNT_NORMAL_SIDE,
+  JOURNAL_STATUS,
+  INVOICE_STATUS,
+  INVOICE_ACCOUNT_CODES,
+  COST_PERIODS,
+  ALL_COST_PERIODS,
+  PROJECT_STATUS,
+  DEFAULT_PROJECT_TYPES,
+  REQUEST_STATUS,
+  RESOURCE_TYPES,
+  REQUEST_PRIORITY,
+  ASSIGNMENT_STATUS,
+  ASSET_TYPES,
+  ALL_ASSET_TYPES,
+  ASSET_STATUS,
+  ALL_ASSET_STATUS,
+  ASSET_EXPENSE_TYPES,
+  ALL_ASSET_EXPENSE_TYPES,
+  DEFAULT_CHART_OF_ACCOUNTS,
+  buildTenantDoc,
+  buildUserDoc,
+  buildEmployeeDoc,
+  buildAllowance,
+  buildWorkerCostBase,
+  buildWorkerDoc,
+  computeWorkerBaseCost,
+  GOV_COST_ITEMS_YEAR1,
+  GOV_COST_ITEMS_YEAR2,
+  AMORTIZATION_METHODS,
+  buildGovItem,
+  buildGovernmentCosts,
+  computeGovernmentCosts,
+  INSURANCE_BEARER,
+  buildSocialInsurance,
+  validateSocialInsurance,
+  computeSocialInsurance,
+  computeWorkerMonthlyCost,
+  buildShiftDoc,
+  buildScheduleDoc,
+  buildShiftRecordDoc,
+  buildEntry,
+  buildExceptionDoc,
+  buildEscalationEntry,
+  buildSummaryDoc,
+  buildVendorDoc,
+  buildItemDoc,
+  buildAccountDoc,
+  buildJournalEntryDoc,
+  buildTaxConfig,
+  buildCustomerDoc,
+  buildInvoiceDoc,
+  computeInvoiceTotals,
+  buildProjectTypeDoc,
+  buildProjectDoc,
+  validateProjectStatus,
+  buildJobTitleDoc,
+  buildResourceRequestDoc,
+  validateRequestStatus,
+  buildWorkerAssignmentDoc,
+  validateAssignmentStatus,
+  buildAssetDoc,
+  buildAssetExpenseDoc,
+  computeAssetMonthlyCost,
+  computeAssetSharePerBeneficiary,
+  timeToMinutes,
+  shiftWindow,
+  shiftsOverlap,
+  dateRangesOverlap,
+  validatePermissions,
+  isValidTime,
+  validateBreaks,
+  validateOffDays,
+  isValidDate,
+  validateDealTypes,
+  validateAccountType,
+  validateJournalLines,
+  validateTaxConfig,
+};
