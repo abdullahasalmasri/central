@@ -4,8 +4,9 @@ import { httpsCallable } from "firebase/functions";
 import { db, functions } from "./firebase";
 import { exportToExcel, exportToPDF, printInvoicePDF, datedFileName } from "./exportUtils";
 import { generateZatcaQR } from "./zatcaQR";
+import ZatcaInvoiceModal from "./ZatcaInvoiceModal";
 
-// تبويب الفواتير: إنشاء فاتورة قياسية + عرض الفواتير.
+// تبويب الفواتير: إنشاء فاتورة قياسية + عرض الفواتير + توقيع ZATCA المرحلة الثانية.
 export default function InvoicesTab({ tenantId, companyName }) {
   const [invoices, setInvoices] = useState([]);
   const [customers, setCustomers] = useState([]);
@@ -16,6 +17,7 @@ export default function InvoicesTab({ tenantId, companyName }) {
   const [error, setError] = useState("");
   const [showForm, setShowForm] = useState(false);
   const [viewInvoice, setViewInvoice] = useState(null);
+  const [zatcaInvoice, setZatcaInvoice] = useState(null);
 
   async function loadData() {
     setLoading(true);
@@ -125,8 +127,15 @@ export default function InvoicesTab({ tenantId, companyName }) {
                 <td style={styles.td} dir="ltr">{inv.date}</td>
                 <td style={styles.td}>{inv.customerSnapshot ? inv.customerSnapshot.name : "—"}</td>
                 <td style={styles.tdAmount} dir="ltr">{(inv.total || 0).toLocaleString()} ﷼</td>
-                <td style={styles.td}>
+                <td style={styles.tdActions}>
                   <button style={styles.viewBtn} onClick={() => setViewInvoice(inv)}>عرض</button>
+                  <button
+                    style={inv.zatcaSigned ? styles.zatcaBtnSigned : styles.zatcaBtn}
+                    onClick={() => setZatcaInvoice(inv)}
+                    title={inv.zatcaSigned ? "فاتورة موقّعة إلكترونيًا (ZATCA المرحلة الثانية)" : "توقيع الفاتورة إلكترونيًا (ZATCA المرحلة الثانية)"}
+                  >
+                    {inv.zatcaSigned ? "✓ ZATCA" : "⚡ ZATCA"}
+                  </button>
                 </td>
               </tr>
             ))}
@@ -146,6 +155,14 @@ export default function InvoicesTab({ tenantId, companyName }) {
 
       {viewInvoice ? (
         <InvoiceDetail invoice={viewInvoice} company={company} sellerTaxNumber={sellerTaxNumber} onClose={() => setViewInvoice(null)} />
+      ) : null}
+
+      {zatcaInvoice ? (
+        <ZatcaInvoiceModal
+          invoice={zatcaInvoice}
+          onClose={() => setZatcaInvoice(null)}
+          onSigned={loadData}
+        />
       ) : null}
     </div>
   );
@@ -477,7 +494,10 @@ const styles = {
   td: { padding: "11px 12px", fontSize: 14, borderBottom: "1px solid #f1f5f9" },
   tdNum: { padding: "11px 12px", fontSize: 13, fontWeight: 700, color: "#16a34a", fontFamily: "monospace", borderBottom: "1px solid #f1f5f9" },
   tdAmount: { padding: "11px 12px", fontSize: 14, textAlign: "left", borderBottom: "1px solid #f1f5f9", fontWeight: 700 },
+  tdActions: { padding: "11px 12px", fontSize: 14, borderBottom: "1px solid #f1f5f9", display: "flex", gap: 6, alignItems: "center", justifyContent: "flex-start" },
   viewBtn: { padding: "5px 14px", fontSize: 12, fontWeight: 600, color: "#16a34a", background: "#dcfce7", border: "none", borderRadius: 6, cursor: "pointer" },
+  zatcaBtn: { padding: "5px 12px", fontSize: 12, fontWeight: 600, color: "#7c3aed", background: "#ede9fe", border: "none", borderRadius: 6, cursor: "pointer" },
+  zatcaBtnSigned: { padding: "5px 12px", fontSize: 12, fontWeight: 600, color: "#15803d", background: "#dcfce7", border: "1px solid #86efac", borderRadius: 6, cursor: "pointer" },
 
   overlay: { position: "fixed", inset: 0, background: "rgba(0,0,0,0.5)", display: "flex", alignItems: "center", justifyContent: "center", padding: 16, zIndex: 100 },
   modalLarge: { width: "100%", maxWidth: 760, background: "#fff", borderRadius: 12, padding: 28, direction: "rtl", textAlign: "right", maxHeight: "92vh", overflowY: "auto" },
