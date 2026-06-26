@@ -1,5 +1,6 @@
 import React from "react";
 import CentralShell from "./CentralShell";
+import StaffView from "./StaffView";
 
 /* ============================================================
    App.jsx — الملف الرئيسي الذي يوصّل الهيكل (Shell) بكل الواجهات.
@@ -38,6 +39,7 @@ const views = {
   fin_fpa:       FPAView,
   fin_proc:      ProcurementView,
   hr_pay:        PayrollView,
+  hr_emp: StaffView,
   hr_rec:        RecruitmentView,
   hr_train:      TrainingView,
   hr_rel:        EmployeeRelationsView,
