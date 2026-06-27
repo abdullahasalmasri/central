@@ -1,6 +1,7 @@
 import React from "react";
 import CentralShell from "./CentralShell";
 import StaffView from "./StaffView";
+import CustomersView from "./CustomersView";
 
 /* ============================================================
    App.jsx — الملف الرئيسي الذي يوصّل الهيكل (Shell) بكل الواجهات.
@@ -38,6 +39,7 @@ const views = {
   fin_treas:     TreasuryView,
   fin_fpa:       FPAView,
   fin_proc:      ProcurementView,
+  fin_cust: CustomersView,
   hr_pay:        PayrollView,
   hr_emp: StaffView,
   hr_rec:        RecruitmentView,
