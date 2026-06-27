@@ -859,20 +859,25 @@ function validateJournalLines(lines) {
 }
 
 function buildCustomerDoc({
-  tenantId, name, customerCode, taxNumber, crNumber,
-  contactPerson, phone, email,
+  tenantId, name, type, customerCode, taxNumber, crNumber, licenseNumber,
+  contactPerson, phone, email, website,
   buildingNumber, street, district, city, postalCode, additionalNumber,
+  locations, contacts,
   createdBy, createdAt,
 }) {
   return {
     tenantId,
     name: name,
+    type: type === "individual" ? "individual" : "company",
     customerCode: customerCode || null,
     taxNumber: taxNumber || null,
     crNumber: crNumber || null,
+    licenseNumber: licenseNumber || null,
     contactPerson: contactPerson || null,
     phone: phone || null,
     email: email || null,
+    website: website || null,
+    // العنوان المفصّل (ZATCA) — يبقى للتوافق مع الفواتير
     address: {
       buildingNumber: buildingNumber || null,
       street: street || null,
@@ -881,11 +886,16 @@ function buildCustomerDoc({
       postalCode: postalCode || null,
       additionalNumber: additionalNumber || null,
     },
+    // المواقع المتعددة: كل موقع { label, mapLink, address }
+    locations: Array.isArray(locations) ? locations : [],
+    // المخوّلون المتعددون: كل مخوّل { name, phone }
+    contacts: Array.isArray(contacts) ? contacts : [],
     status: "active",
     createdBy: createdBy || null,
     createdAt,
   };
 }
+
 
 function computeInvoiceTotals(rawLines) {
   if (!Array.isArray(rawLines) || rawLines.length === 0) {

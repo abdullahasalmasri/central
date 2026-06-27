@@ -1312,41 +1312,66 @@ exports.createJournalEntry = onCall(async (request) => {
 // ═══════════════════════════════════════════════════════
 
 // ===== إنشاء عميل =====
+// ===== إنشاء عميل (مع مواقع ومخوّلين متعددين) =====
 exports.createCustomer = onCall(async (request) => {
   try {
     const callerTenantId = await requireModule(request.auth, MODULES.FINANCE);
 
     const data = request.data || {};
     const name = typeof data.name === "string" ? data.name.trim() : "";
-    const customerCode = typeof data.customerCode === "string" ? data.customerCode.trim() : "";
+    const type = data.type === "individual" ? "individual" : "company";
+    const phone = typeof data.phone === "string" ? data.phone.trim() : "";
     const taxNumber = typeof data.taxNumber === "string" ? data.taxNumber.trim() : "";
     const crNumber = typeof data.crNumber === "string" ? data.crNumber.trim() : "";
-    const contactPerson = typeof data.contactPerson === "string" ? data.contactPerson.trim() : "";
-    const phone = typeof data.phone === "string" ? data.phone.trim() : "";
+    const licenseNumber = typeof data.licenseNumber === "string" ? data.licenseNumber.trim() : "";
     const email = typeof data.email === "string" ? data.email.trim() : "";
-    // العنوان الوطني
-    const buildingNumber = typeof data.buildingNumber === "string" ? data.buildingNumber.trim() : "";
-    const street = typeof data.street === "string" ? data.street.trim() : "";
-    const district = typeof data.district === "string" ? data.district.trim() : "";
-    const city = typeof data.city === "string" ? data.city.trim() : "";
-    const postalCode = typeof data.postalCode === "string" ? data.postalCode.trim() : "";
-    const additionalNumber = typeof data.additionalNumber === "string" ? data.additionalNumber.trim() : "";
+    const website = typeof data.website === "string" ? data.website.trim() : "";
 
     if (name.length < 2) {
       throw new HttpsError("invalid-argument", "اسم العميل مطلوب (حرفان على الأقل).");
+    }
+    if (!phone) {
+      throw new HttpsError("invalid-argument", "رقم التواصل الرسمي مطلوب.");
     }
     // الرقم الضريبي السعودي: 15 رقمًا يبدأ وينتهي بـ 3 (إن أُدخل)
     if (taxNumber && !/^3\d{13}3$/.test(taxNumber)) {
       throw new HttpsError("invalid-argument", "الرقم الضريبي يجب أن يكون 15 رقمًا يبدأ وينتهي بالرقم 3.");
     }
 
+    // تنظيف المواقع (نحذف الفارغة تمامًا)
+    const rawLocations = Array.isArray(data.locations) ? data.locations : [];
+    const locations = [];
+    for (const loc of rawLocations) {
+      const label = loc && typeof loc.label === "string" ? loc.label.trim() : "";
+      const mapLink = loc && typeof loc.mapLink === "string" ? loc.mapLink.trim() : "";
+      const address = loc && typeof loc.address === "string" ? loc.address.trim() : "";
+      if (!label && !mapLink && !address) continue;
+      locations.push({ label: label || null, mapLink: mapLink || null, address: address || null });
+    }
+    if (locations.length === 0) {
+      throw new HttpsError("invalid-argument", "العنوان الوطني مطلوب (موقع واحد على الأقل).");
+    }
+
+    // تنظيف المخوّلين (نحذف الفارغة تمامًا)
+    const rawContacts = Array.isArray(data.contacts) ? data.contacts : [];
+    const contacts = [];
+    for (const con of rawContacts) {
+      const cn = con && typeof con.name === "string" ? con.name.trim() : "";
+      const cp = con && typeof con.phone === "string" ? con.phone.trim() : "";
+      if (!cn && !cp) continue;
+      contacts.push({ name: cn || null, phone: cp || null });
+    }
+
+    // أول مخوّل يُستخدم كـ contactPerson للتوافق مع الفواتير
+    const contactPerson = contacts.length > 0 ? contacts[0].name : null;
+
     const customerRef = db.collection(COLLECTIONS.CUSTOMERS).doc();
     await customerRef.set(
       buildCustomerDoc({
         tenantId: callerTenantId,
-        name, customerCode, taxNumber, crNumber,
-        contactPerson, phone, email,
-        buildingNumber, street, district, city, postalCode, additionalNumber,
+        name, type, taxNumber, crNumber, licenseNumber,
+        contactPerson, phone, email, website,
+        locations, contacts,
         createdBy: request.auth.uid,
         createdAt: FieldValue.serverTimestamp(),
       })
@@ -1358,6 +1383,30 @@ exports.createCustomer = onCall(async (request) => {
     throw new HttpsError("internal", "تعذّر إنشاء العميل، حاول مرة أخرى.");
   }
 });
+
+// ===== حذف عميل =====
+exports.deleteCustomer = onCall(async (request) => {
+  try {
+    const callerTenantId = await requireModule(request.auth, MODULES.FINANCE);
+    const data = request.data || {};
+    const customerId = typeof data.customerId === "string" ? data.customerId.trim() : "";
+    if (!customerId) {
+      throw new HttpsError("invalid-argument", "يجب تحديد العميل.");
+    }
+    const ref = db.collection(COLLECTIONS.CUSTOMERS).doc(customerId);
+    const snap = await ref.get();
+    if (!snap.exists || snap.data().tenantId !== callerTenantId) {
+      throw new HttpsError("invalid-argument", "العميل غير صحيح.");
+    }
+    await ref.delete();
+    return { id: customerId, deleted: true };
+  } catch (err) {
+    if (err instanceof HttpsError) throw err;
+    console.error("deleteCustomer failed:", err);
+    throw new HttpsError("internal", "تعذّر حذف العميل، حاول مرة أخرى.");
+  }
+});
+
 
 // ===== تعديل عميل =====
 exports.updateCustomer = onCall(async (request) => {

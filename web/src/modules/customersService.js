@@ -1,11 +1,10 @@
 // ═══════════════════════════════════════════════════════════════
-// دوال العملاء — تتعامل مع Firestore (مجموعة customers)
-// تراعي multi-tenant: كل عميل مرتبط بـ tenantId للشركة الحالية
+// دوال العملاء — القراءة مباشرة من Firestore، والكتابة عبر Cloud Functions.
+// (قواعد الأمان تمنع الكتابة المباشرة؛ كل كتابة تمرّ عبر دوال السيرفر الآمنة)
 // ═══════════════════════════════════════════════════════════════
-import { db, auth } from "../firebase";
-import {
-  doc, getDoc, addDoc, deleteDoc, collection, query, where, getDocs, serverTimestamp,
-} from "firebase/firestore";
+import { db, auth, functions } from "../firebase";
+import { doc, getDoc, collection, query, where, getDocs } from "firebase/firestore";
+import { httpsCallable } from "firebase/functions";
 
 /** يجلب tenantId للمستخدم الحالي من وثيقته في users */
 async function getCurrentTenantId() {
@@ -16,8 +15,7 @@ async function getCurrentTenantId() {
 }
 
 /**
- * يجلب كل عملاء الشركة الحالية.
- * @returns {Promise<Array>} قائمة العملاء
+ * يجلب كل عملاء الشركة الحالية (قراءة مباشرة — مسموحة بقواعد الأمان).
  */
 export async function getCustomers() {
   const tenantId = await getCurrentTenantId();
@@ -31,27 +29,34 @@ export async function getCustomers() {
 }
 
 /**
- * يضيف عميلًا جديدًا للشركة الحالية.
- * @param {Object} customer بيانات العميل (name, phone, locations[], contacts[], ...)
+ * يضيف عميلًا جديدًا عبر Cloud Function createCustomer.
+ * @param {Object} form بيانات النموذج (من الواجهة)
  * @returns {Promise<string>} معرّف العميل الجديد
  */
-export async function addCustomer(customer) {
-  const tenantId = await getCurrentTenantId();
-  if (!tenantId) throw new Error("لا يمكن إضافة عميل بدون تسجيل دخول");
-
-  const ref = await addDoc(collection(db, "customers"), {
-    ...customer,
-    tenantId,
-    createdBy: auth.currentUser?.uid || null,
-    createdAt: serverTimestamp(),
-  });
-  return ref.id;
+export async function addCustomer(form) {
+  // ننسّق البيانات بالأسماء التي تتوقّعها الدالة (vatNumber → taxNumber)
+  const payload = {
+    name: form.name,
+    type: form.type,
+    phone: form.phone,
+    crNumber: form.crNumber,
+    taxNumber: form.vatNumber,
+    licenseNumber: form.licenseNumber,
+    email: form.email,
+    website: form.website,
+    locations: form.locations,
+    contacts: form.contacts,
+  };
+  const fn = httpsCallable(functions, "createCustomer");
+  const res = await fn(payload);
+  return res.data.id;
 }
 
 /**
- * يحذف عميلًا.
+ * يحذف عميلًا عبر Cloud Function deleteCustomer.
  * @param {string} customerId معرّف العميل
  */
 export async function deleteCustomer(customerId) {
-  await deleteDoc(doc(db, "customers", customerId));
+  const fn = httpsCallable(functions, "deleteCustomer");
+  await fn({ customerId });
 }
