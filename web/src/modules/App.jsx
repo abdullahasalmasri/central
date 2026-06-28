@@ -31,10 +31,16 @@ import NPSView                from "./NPSView";
 import ProcessImprovementView from "./ProcessImprovementView";
 import SubscriptionView       from "./SubscriptionView";
 import BuildSystemView        from "./BuildSystemView";
+import AccountingView from "./AccountingView";
+import InvoicesView from "./InvoicesView";
+import FinancialStatementsView from "./FinancialStatementsView";   // ← جديد
 
 // ── خريطة الربط: معرّف التفرّع (نفس الموجود في الـ Shell) → الواجهة ──
 const views = {
   exec_kpi:      ExecutiveDashboard,
+  fin_acc:       AccountingView,
+  fin_inv:       InvoicesView,
+  fin_fs:        FinancialStatementsView,        // ← جديد
   fin_coll:      CollectionsView,
   fin_treas:     TreasuryView,
   fin_fpa:       FPAView,
