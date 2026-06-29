@@ -1,246 +1,604 @@
-import React, { useState, useEffect } from "react";
-import {
-  Users, UserCheck, Shield, Mail, Briefcase, RefreshCw,
-  AlertCircle, UserX, Inbox
-} from "lucide-react";
-import { getEmployees } from "./employeesService";
+import { useState, useEffect } from "react";
+import { collection, query, where, getDocs, doc, getDoc } from "firebase/firestore";
+import { httpsCallable } from "firebase/functions";
+import { db, auth, functions } from "../firebase";
 
 /* ============================================================
-   شؤون الموظفين — قسم الموارد البشرية
-   مربوطة بـ Firebase: تعرض موظفي الشركة الحالية من مجموعة users.
+   الموظفون — قسم الموارد البشرية
+   تبويبان: ملفات الموظفين (HR كامل) · الحسابات والصلاحيات
+   ملف الموظف يتابع الوثائق وتواريخ انتهائها مع تنبيه قبل 60 يومًا.
    ============================================================ */
 
-const ROLE_LABEL = {
-  owner: "مالك", manager: "مدير", admin: "مسؤول", staff: "موظف",
+const MODULE_LABELS = {
+  hr: "الموارد البشرية", finance: "المالية", attendance: "الحضور", reviews: "التقييمات",
+  procurement: "المشتريات", projects: "المشاريع", operations: "العمليات", assets: "الأصول",
 };
-const STATUS = {
-  active:    { label: "نشط",      cls: "active" },
-  inactive:  { label: "غير نشط",  cls: "inactive" },
-  pending:   { label: "معلّق",    cls: "pending" },
-  suspended: { label: "موقوف",    cls: "suspended" },
+const ALL_MODULES = Object.keys(MODULE_LABELS);
+const DOC_TYPES = [
+  { key: "iqama", label: "الإقامة/الهوية" },
+  { key: "passport", label: "الجواز" },
+  { key: "workPermit", label: "رخصة العمل" },
+  { key: "healthCert", label: "الشهادة الصحية" },
+  { key: "insurance", label: "التأمين" },
+];
+const STATUS_CFG = {
+  active: { label: "نشط", bg: "#dcfce7", color: "#166534" },
+  on_leave: { label: "إجازة", bg: "#fef3c7", color: "#92400e" },
+  terminated: { label: "منتهي الخدمة", bg: "#f1f5f9", color: "#64748b" },
 };
-const PERM_LABEL = {
-  exec: "الإدارة العليا", finance: "المالية", hr: "الموارد البشرية",
-  operations: "العمليات", assets: "الأصول", costs: "التكاليف",
-  sales: "المبيعات", legal: "القانونية", quality: "الجودة",
-};
+const ROLE_LABELS = { owner: "المالك", staff: "موظف", worker: "عامل" };
+const ALERT_THRESHOLD = 60;
 
-const STYLES = `
-  *{margin:0;padding:0;box-sizing:border-box}
-  .stf-root{
-    --bg:#f4f6f9; --panel:#fff; --ink:#161b26; --ink2:#5a6580; --ink3:#94a0b8;
-    --line:#e7ebf1; --line2:#dde2ec; --c:#2563eb;
-    font-family:'IBM Plex Sans Arabic','Segoe UI',Tahoma,sans-serif;
-    direction:rtl; background:var(--bg); color:var(--ink); min-height:100vh;
-    padding:26px 30px; -webkit-font-smoothing:antialiased;
-  }
-  .stf-num{font-variant-numeric:tabular-nums; letter-spacing:-.3px}
-
-  .stf-head{display:flex; align-items:center; gap:14px; margin-bottom:24px; flex-wrap:wrap}
-  .stf-head-ic{width:50px; height:50px; border-radius:13px; display:grid; place-items:center;
-    background:#2563eb1a; color:#2563eb; flex-shrink:0}
-  .stf-title{font-size:23px; font-weight:700; letter-spacing:-.4px; line-height:1.1}
-  .stf-sub{font-size:13px; color:var(--ink2); margin-top:2px}
-  .stf-refresh{margin-right:auto; display:flex; align-items:center; gap:7px; height:42px; padding:0 15px;
-    background:var(--panel); border:1px solid var(--line2); border-radius:11px; cursor:pointer;
-    font-family:inherit; font-size:13.5px; font-weight:600; color:var(--ink)}
-  .stf-refresh:hover{background:var(--bg)}
-  .stf-refresh svg{color:#2563eb}
-  .stf-refresh.spin svg{animation:stf-rot 1s linear infinite}
-  @keyframes stf-rot{to{transform:rotate(360deg)}}
-
-  .stf-kpis{display:grid; grid-template-columns:repeat(4,1fr); gap:14px; margin-bottom:16px}
-  .stf-kpi{background:var(--panel); border:1px solid var(--line); border-radius:15px; padding:17px 18px;
-    position:relative; overflow:hidden}
-  .stf-kpi::after{content:""; position:absolute; top:0; right:0; width:3px; height:100%; background:var(--kc)}
-  .stf-kpi-ic{width:38px; height:38px; border-radius:10px; display:grid; place-items:center;
-    background:color-mix(in srgb,var(--kc) 14%,transparent); color:var(--kc); margin-bottom:12px}
-  .stf-kpi-label{font-size:12.5px; color:var(--ink2); font-weight:500; margin-bottom:5px}
-  .stf-kpi-val{font-size:26px; font-weight:700}
-  .stf-kpi-val .s{font-size:13px; color:var(--ink3); font-weight:500; margin-right:4px}
-
-  .stf-card{background:var(--panel); border:1px solid var(--line); border-radius:16px; padding:20px}
-  .stf-card-head{display:flex; align-items:center; justify-content:space-between; margin-bottom:18px}
-  .stf-card-title{font-size:15.5px; font-weight:700}
-  .stf-card-hint{font-size:12px; color:var(--ink3); font-weight:500}
-
-  .stf-tablewrap{overflow-x:auto}
-  table.stf-table{width:100%; border-collapse:collapse; min-width:620px}
-  .stf-table th{text-align:right; font-size:11.5px; color:var(--ink3); font-weight:700; padding:0 12px 11px;
-    border-bottom:1px solid var(--line); white-space:nowrap}
-  .stf-table td{padding:13px 12px; border-bottom:1px solid var(--line); font-size:13px; vertical-align:middle}
-  .stf-table tr:last-child td{border-bottom:none}
-  .stf-emp-name{display:flex; align-items:center; gap:10px; font-weight:600; color:var(--ink); white-space:nowrap}
-  .stf-emp-avatar{width:34px; height:34px; border-radius:50%; background:#2563eb1a; color:#2563eb;
-    display:grid; place-items:center; font-weight:700; font-size:14px; flex-shrink:0}
-  .stf-emp-email{display:flex; align-items:center; gap:6px; color:var(--ink2); white-space:nowrap}
-  .stf-emp-email svg{color:var(--ink3); flex-shrink:0}
-  .stf-role{display:inline-flex; align-items:center; gap:5px; font-size:11.5px; font-weight:700; padding:4px 11px; border-radius:999px; white-space:nowrap;
-    background:#eef2ff; color:#4338ca}
-  .stf-role.owner{background:#fef3c7; color:#92740a}
-  .stf-role.manager{background:#dbeafe; color:#1d4ed8}
-  .stf-spill{display:inline-block; font-size:11px; font-weight:700; padding:4px 10px; border-radius:999px; white-space:nowrap}
-  .stf-spill.active{background:#dcfce7; color:#15803d}
-  .stf-spill.inactive{background:#eef1f6; color:#64748b}
-  .stf-spill.pending{background:#ffedd5; color:#9a3412}
-  .stf-spill.suspended{background:#fee2e2; color:#b91c1c}
-  .stf-perms{display:flex; flex-wrap:wrap; gap:5px}
-  .stf-perm{font-size:10.5px; font-weight:600; padding:3px 9px; border-radius:7px; background:#f1f5f9; color:#475569; white-space:nowrap}
-  .stf-perm-none{font-size:11.5px; color:var(--ink3)}
-
-  /* STATES */
-  .stf-state{display:grid; place-items:center; padding:60px 20px; text-align:center}
-  .stf-state-ic{width:64px; height:64px; border-radius:17px; display:grid; place-items:center; margin-bottom:16px}
-  .stf-state-ic.load{background:#dbeafe; color:#2563eb}
-  .stf-state-ic.empty{background:#eef1f6; color:#94a0b8}
-  .stf-state-ic.err{background:#fee2e2; color:#dc2626}
-  .stf-state-ic.load svg{animation:stf-rot 1s linear infinite}
-  .stf-state-t{font-size:16px; font-weight:700; margin-bottom:6px}
-  .stf-state-d{font-size:13px; color:var(--ink2); line-height:1.6; max-width:360px}
-
-  @media(max-width:1000px){ .stf-kpis{grid-template-columns:repeat(2,1fr)} }
-  @media(max-width:560px){
-    .stf-root{padding:18px 14px}
-    .stf-kpis{grid-template-columns:1fr}
-    .stf-title{font-size:19px}
-  }
-`;
+const fmt = (n) => (Math.round((Number(n) || 0) * 100) / 100).toLocaleString("en-US", { minimumFractionDigits: 0, maximumFractionDigits: 0 });
+function daysUntil(dateStr) {
+  if (!dateStr) return null;
+  const today = new Date(); today.setHours(0, 0, 0, 0);
+  const d = new Date(dateStr + "T00:00:00");
+  if (isNaN(d.getTime())) return null;
+  return Math.floor((d - today) / 86400000);
+}
+function docAlerts(emp) {
+  const out = [];
+  const docs = emp.documents || {};
+  DOC_TYPES.forEach((dt) => {
+    const expiry = docs[dt.key] && docs[dt.key].expiry;
+    const days = daysUntil(expiry);
+    if (days !== null && days <= ALERT_THRESHOLD) out.push({ doc: dt.label, expiry, days });
+  });
+  const cExp = emp.job && emp.job.contractExpiry;
+  const cDays = daysUntil(cExp);
+  if (cDays !== null && cDays <= ALERT_THRESHOLD) out.push({ doc: "العقد", expiry: cExp, days: cDays });
+  out.sort((a, b) => a.days - b.days);
+  return out;
+}
+function alertColor(days) {
+  if (days < 0) return { bg: "#fee2e2", color: "#b91c1c", text: "منتهية" };
+  if (days <= 30) return { bg: "#ffedd5", color: "#c2410c", text: `${days} يوم` };
+  return { bg: "#fef9c3", color: "#a16207", text: `${days} يوم` };
+}
 
 export default function StaffView() {
+  const [tenantId, setTenantId] = useState("");
   const [employees, setEmployees] = useState([]);
+  const [users, setUsers] = useState([]);
   const [loading, setLoading] = useState(true);
-  const [error, setError] = useState(null);
+  const [error, setError] = useState("");
+  const [tab, setTab] = useState("profiles");
+  const [modal, setModal] = useState(null); // "newEmp" | {editEmp} | "newAccount"
 
-  const load = () => {
+  useEffect(() => {
+    (async () => {
+      try {
+        const uid = auth.currentUser && auth.currentUser.uid;
+        if (!uid) { setError("لم يتم تسجيل الدخول."); setLoading(false); return; }
+        const userSnap = await getDoc(doc(db, "users", uid));
+        const tid = userSnap.exists() ? userSnap.data().tenantId : null;
+        if (!tid) { setError("تعذّر تحديد المنشأة."); setLoading(false); return; }
+        setTenantId(tid);
+      } catch (e) {
+        setError("تعذّر تحميل بيانات المستخدم."); setLoading(false);
+      }
+    })();
+  }, []);
+
+  useEffect(() => {
+    if (tenantId) loadData();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [tenantId]);
+
+  async function loadData() {
     setLoading(true);
-    setError(null);
-    getEmployees()
-      .then((data) => { setEmployees(data); setLoading(false); })
-      .catch((err) => { setError(err.message || "تعذّر تحميل الموظفين"); setLoading(false); });
-  };
+    setError("");
+    try {
+      const [eSnap, uSnap] = await Promise.all([
+        getDocs(query(collection(db, "employees"), where("tenantId", "==", tenantId))),
+        getDocs(query(collection(db, "users"), where("tenantId", "==", tenantId))),
+      ]);
+      setEmployees(eSnap.docs.map((d) => ({ id: d.id, ...d.data() })));
+      setUsers(uSnap.docs.map((d) => ({ id: d.id, ...d.data() })));
+    } catch (err) {
+      setError("تعذّر تحميل البيانات.");
+    } finally {
+      setLoading(false);
+    }
+  }
 
-  useEffect(() => { load(); }, []);
-
-  // حساب البطاقات من البيانات الفعلية
-  const total = employees.length;
-  const active = employees.filter((e) => e.status === "active").length;
-  const managers = employees.filter((e) => e.role !== "staff").length;
-  const staff = employees.filter((e) => e.role === "staff").length;
-
-  const KPIS = [
-    { label: "إجمالي الموظفين", value: total,    sub: "موظف",  icon: Users,     color: "#2563eb" },
-    { label: "نشطون",          value: active,   sub: "نشط",   icon: UserCheck, color: "#16a34a" },
-    { label: "مدراء ومشرفون",  value: managers, sub: "مدير",  icon: Shield,    color: "#7c3aed" },
-    { label: "موظفون",         value: staff,    sub: "موظف",  icon: Briefcase, color: "#ea580c" },
-  ];
+  const linkedUserIds = new Set(employees.map((e) => e.linkedUserId).filter(Boolean));
 
   return (
-    <div className="stf-root">
-      <style>{STYLES}</style>
-
-      {/* HEAD */}
-      <div className="stf-head">
-        <div className="stf-head-ic"><Users size={24} /></div>
+    <div style={styles.page}>
+      <div style={styles.topRow}>
         <div>
-          <div className="stf-title">شؤون الموظفين</div>
-          <div className="stf-sub">قائمة موظفي الشركة وأدوارهم وصلاحياتهم · الموارد البشرية</div>
+          <h1 style={styles.pageTitle}>الموظفون</h1>
+          <p style={styles.pageSub}>ملفات الموظفين ووثائقهم وتنبيهات الانتهاء، وحسابات الدخول والصلاحيات.</p>
         </div>
-        <button className={`stf-refresh ${loading ? "spin" : ""}`} onClick={load}>
-          <RefreshCw size={16} /> تحديث
+        <div style={styles.topBtns}>
+          {tab === "profiles" ? <button style={styles.addBtn} onClick={() => setModal("newEmp")}>+ موظف</button> : null}
+          {tab === "accounts" ? <button style={styles.addBtn} onClick={() => setModal("newAccount")}>+ حساب دخول</button> : null}
+        </div>
+      </div>
+
+      {error ? <div style={styles.error}>{error}</div> : null}
+
+      <div style={styles.tabs}>
+        <button style={{ ...styles.tab, ...(tab === "profiles" ? styles.tabActive : {}) }} onClick={() => setTab("profiles")}>
+          👤 ملفات الموظفين
+        </button>
+        <button style={{ ...styles.tab, ...(tab === "accounts" ? styles.tabActive : {}) }} onClick={() => setTab("accounts")}>
+          🔑 الحسابات والصلاحيات
         </button>
       </div>
 
-      {/* KPIs */}
-      <div className="stf-kpis">
-        {KPIS.map((k, i) => {
-          const Icon = k.icon;
-          return (
-            <div className="stf-kpi" key={i} style={{ "--kc": k.color }}>
-              <div className="stf-kpi-ic"><Icon size={19} /></div>
-              <div className="stf-kpi-label">{k.label}</div>
-              <div className="stf-kpi-val stf-num">
-                {k.value}<span className="s">{k.sub}</span>
-              </div>
-            </div>
-          );
-        })}
-      </div>
+      {loading ? <p style={styles.muted}>جارٍ التحميل...</p> : (
+        tab === "profiles"
+          ? <ProfilesTab employees={employees} users={users} onEdit={(emp) => setModal({ editEmp: emp })} />
+          : <AccountsTab users={users} employees={employees} />
+      )}
 
-      {/* TABLE / STATES */}
-      <div className="stf-card">
-        <div className="stf-card-head">
-          <span className="stf-card-title">قائمة الموظفين</span>
-          {!loading && !error && <span className="stf-card-hint">{total} موظف</span>}
+      {modal === "newEmp" ? (
+        <EmployeeForm users={users} linkedUserIds={linkedUserIds} onClose={() => setModal(null)} onSaved={() => { setModal(null); loadData(); }} />
+      ) : null}
+      {modal && modal.editEmp ? (
+        <EmployeeForm employee={modal.editEmp} users={users} linkedUserIds={linkedUserIds} onClose={() => setModal(null)} onSaved={() => { setModal(null); loadData(); }} />
+      ) : null}
+      {modal === "newAccount" ? (
+        <AccountForm users={users} onClose={() => setModal(null)} onSaved={() => { setModal(null); loadData(); }} />
+      ) : null}
+    </div>
+  );
+}
+
+// ═══════════ تبويب ملفات الموظفين ═══════════
+function ProfilesTab({ employees, users, onEdit }) {
+  // تجميع كل التنبيهات
+  const allAlerts = [];
+  employees.forEach((emp) => {
+    docAlerts(emp).forEach((a) => allAlerts.push({ ...a, empName: emp.name, empId: emp.id }));
+  });
+  allAlerts.sort((a, b) => a.days - b.days);
+
+  const userName = (uid) => { const u = users.find((x) => x.id === uid); return u ? u.name : null; };
+
+  return (
+    <div>
+      {allAlerts.length > 0 ? (
+        <div style={styles.alertBanner}>
+          <div style={styles.alertHead}>
+            🔔 تنبيهات الوثائق ({allAlerts.length}) — وثائق منتهية أو تنتهي خلال {ALERT_THRESHOLD} يومًا
+          </div>
+          <div style={styles.alertList}>
+            {allAlerts.slice(0, 8).map((a, i) => {
+              const c = alertColor(a.days);
+              return (
+                <div key={i} style={styles.alertItem}>
+                  <span style={styles.alertEmp}>{a.empName}</span>
+                  <span style={styles.alertDoc}>{a.doc}</span>
+                  <span style={{ ...styles.alertDays, background: c.bg, color: c.color }}>{c.text}</span>
+                  <span style={styles.alertDate} dir="ltr">{a.expiry}</span>
+                </div>
+              );
+            })}
+            {allAlerts.length > 8 ? <div style={styles.alertMore}>+ {allAlerts.length - 8} تنبيهات أخرى</div> : null}
+          </div>
         </div>
+      ) : null}
 
-        {loading ? (
-          <div className="stf-state">
-            <div className="stf-state-ic load"><RefreshCw size={28} /></div>
-            <div className="stf-state-t">جاري تحميل الموظفين...</div>
-            <div className="stf-state-d">نجلب بيانات موظفي شركتك من قاعدة البيانات.</div>
-          </div>
-        ) : error ? (
-          <div className="stf-state">
-            <div className="stf-state-ic err"><AlertCircle size={28} /></div>
-            <div className="stf-state-t">تعذّر تحميل الموظفين</div>
-            <div className="stf-state-d">{error}<br />تأكد من تسجيل الدخول واتصالك بالإنترنت، ثم اضغط تحديث.</div>
-          </div>
-        ) : total === 0 ? (
-          <div className="stf-state">
-            <div className="stf-state-ic empty"><Inbox size={28} /></div>
-            <div className="stf-state-t">لا يوجد موظفون بعد</div>
-            <div className="stf-state-d">لم نجد موظفين في شركتك. عند إضافة موظفين سيظهرون هنا تلقائيًا.</div>
-          </div>
-        ) : (
-          <div className="stf-tablewrap">
-            <table className="stf-table">
-              <thead>
-                <tr>
-                  <th>الموظف</th>
-                  <th>البريد الإلكتروني</th>
-                  <th>الدور</th>
-                  <th>الحالة</th>
-                  <th>الصلاحيات</th>
-                </tr>
-              </thead>
-              <tbody>
-                {employees.map((e) => {
-                  const st = STATUS[e.status] || STATUS.active;
-                  const roleLabel = ROLE_LABEL[e.role] || e.role;
-                  const roleCls = e.role === "owner" ? "owner" : e.role === "manager" ? "manager" : "";
-                  const initial = (e.name || "؟").trim().charAt(0);
-                  return (
-                    <tr key={e.id}>
-                      <td>
-                        <span className="stf-emp-name">
-                          <span className="stf-emp-avatar">{initial}</span>
-                          {e.name}
-                        </span>
-                      </td>
-                      <td>
-                        <span className="stf-emp-email"><Mail size={13} />{e.email}</span>
-                      </td>
-                      <td><span className={`stf-role ${roleCls}`}>{roleLabel}</span></td>
-                      <td><span className={`stf-spill ${st.cls}`}>{st.label}</span></td>
-                      <td>
-                        {e.permissions && e.permissions.length > 0 ? (
-                          <span className="stf-perms">
-                            {e.permissions.map((p, idx) => (
-                              <span className="stf-perm" key={idx}>{PERM_LABEL[p] || p}</span>
-                            ))}
-                          </span>
-                        ) : (
-                          <span className="stf-perm-none">—</span>
-                        )}
-                      </td>
-                    </tr>
-                  );
-                })}
-              </tbody>
-            </table>
-          </div>
-        )}
+      {employees.length === 0 ? (
+        <div style={styles.empty}>
+          <div style={styles.emptyIcon}>👤</div>
+          <p style={styles.muted}>لا توجد ملفات موظفين بعد. اضغط «+ موظف» لإضافة أول موظف.</p>
+        </div>
+      ) : (
+        <div style={styles.panel}>
+          <table style={styles.table}>
+            <thead>
+              <tr>
+                <th style={styles.th}>الموظف</th>
+                <th style={styles.th}>المسمى / القسم</th>
+                <th style={styles.th}>الجنسية</th>
+                <th style={styles.thAmount}>الراتب</th>
+                <th style={styles.thCenter}>أقرب انتهاء</th>
+                <th style={styles.thCenter}>الحالة</th>
+                <th style={styles.thCenter}>الحساب</th>
+              </tr>
+            </thead>
+            <tbody>
+              {employees.map((emp) => {
+                const alerts = docAlerts(emp);
+                const nearest = alerts.length ? alerts[0] : null;
+                const cfg = STATUS_CFG[emp.status] || STATUS_CFG.active;
+                const linked = userName(emp.linkedUserId);
+                return (
+                  <tr key={emp.id} style={styles.rowClickable} onClick={() => onEdit(emp)}>
+                    <td style={styles.tdName}>
+                      {emp.employeeCode ? <span style={styles.codeTag}>{emp.employeeCode}</span> : null}
+                      <strong>{emp.name}</strong>
+                    </td>
+                    <td style={styles.tdName}>
+                      {emp.job && emp.job.title ? emp.job.title : "—"}
+                      {emp.job && emp.job.department ? <span style={styles.deptText}> · {emp.job.department}</span> : null}
+                    </td>
+                    <td style={styles.tdName}>{emp.nationality || "—"}</td>
+                    <td style={styles.tdAmount} dir="ltr">{emp.salary ? fmt(emp.salary.total) : "—"}</td>
+                    <td style={styles.tdCenter}>
+                      {nearest ? (() => { const c = alertColor(nearest.days); return <span style={{ ...styles.miniBadge, background: c.bg, color: c.color }}>{nearest.doc}: {c.text}</span>; })() : <span style={styles.okMark}>✓</span>}
+                    </td>
+                    <td style={styles.tdCenter}>
+                      <span style={{ ...styles.badge2, background: cfg.bg, color: cfg.color }}>{cfg.label}</span>
+                    </td>
+                    <td style={styles.tdCenter}>
+                      {linked ? <span style={styles.linkedYes}>🔑 {linked}</span> : <span style={styles.mutedSmall}>—</span>}
+                    </td>
+                  </tr>
+                );
+              })}
+            </tbody>
+          </table>
+        </div>
+      )}
+      <p style={styles.tableHint}>💡 اضغط على أي موظف لتعديل ملفه.</p>
+    </div>
+  );
+}
+
+// ═══════════ تبويب الحسابات والصلاحيات ═══════════
+function AccountsTab({ users, employees }) {
+  const empByUser = {};
+  employees.forEach((e) => { if (e.linkedUserId) empByUser[e.linkedUserId] = e.name; });
+
+  if (users.length === 0) {
+    return <div style={styles.empty}><p style={styles.muted}>لا توجد حسابات بعد.</p></div>;
+  }
+  return (
+    <div>
+      <div style={styles.accountsNote}>
+        🔑 هذه حسابات الدخول للنظام وصلاحياتها. أنشئ حسابًا لمن يحتاج الدخول (المدراء، المحاسبون...)، واربطه بملف الموظف.
+      </div>
+      <div style={styles.panel}>
+        <table style={styles.table}>
+          <thead>
+            <tr>
+              <th style={styles.th}>الاسم</th>
+              <th style={styles.th}>البريد الإلكتروني</th>
+              <th style={styles.thCenter}>الدور</th>
+              <th style={styles.th}>الصلاحيات</th>
+              <th style={styles.th}>ملف الموظف</th>
+            </tr>
+          </thead>
+          <tbody>
+            {users.map((u) => (
+              <tr key={u.id}>
+                <td style={styles.tdName}><strong>{u.name}</strong></td>
+                <td style={styles.tdName} dir="ltr">{u.email || "—"}</td>
+                <td style={styles.tdCenter}>
+                  <span style={{ ...styles.roleBadge, ...(u.role === "owner" ? styles.roleOwner : {}) }}>{ROLE_LABELS[u.role] || u.role}</span>
+                </td>
+                <td style={styles.tdName}>
+                  {u.role === "owner" ? (
+                    <span style={styles.allPerms}>كل الصلاحيات</span>
+                  ) : (u.permissions || []).length ? (
+                    <div style={styles.permTags}>
+                      {(u.permissions || []).map((p) => <span key={p} style={styles.permTag}>{MODULE_LABELS[p] || p}</span>)}
+                    </div>
+                  ) : <span style={styles.mutedSmall}>—</span>}
+                </td>
+                <td style={styles.tdName}>{empByUser[u.id] || <span style={styles.mutedSmall}>غير مرتبط</span>}</td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
       </div>
     </div>
   );
 }
+
+// ═══════════ نموذج ملف الموظف ═══════════
+function EmployeeForm({ employee, users, linkedUserIds, onClose, onSaved }) {
+  const isEdit = !!employee;
+  const e = employee || {};
+  const docs = e.documents || {};
+  const job = e.job || {};
+  const sal = e.salary || {};
+  const [f, setF] = useState({
+    employeeCode: e.employeeCode || "", name: e.name || "", nationality: e.nationality || "", phone: e.phone || "",
+    birthDate: e.birthDate || "", gender: e.gender || "",
+    iqamaNumber: docs.iqama?.number || "", iqamaExpiry: docs.iqama?.expiry || "",
+    passportNumber: docs.passport?.number || "", passportExpiry: docs.passport?.expiry || "",
+    workPermitNumber: docs.workPermit?.number || "", workPermitExpiry: docs.workPermit?.expiry || "",
+    healthCertNumber: docs.healthCert?.number || "", healthCertExpiry: docs.healthCert?.expiry || "",
+    insuranceNumber: docs.insurance?.number || "", insuranceExpiry: docs.insurance?.expiry || "",
+    jobTitle: job.title || "", department: job.department || "", hireDate: job.hireDate || "",
+    contractType: job.contractType || "", contractExpiry: job.contractExpiry || "",
+    basicSalary: sal.basic != null ? String(sal.basic) : "", housingAllowance: sal.housing != null ? String(sal.housing) : "",
+    transportAllowance: sal.transport != null ? String(sal.transport) : "", otherAllowance: sal.other != null ? String(sal.other) : "",
+    status: e.status || "active", notes: e.notes || "", linkedUserId: e.linkedUserId || "",
+  });
+  const [err, setErr] = useState("");
+  const [saving, setSaving] = useState(false);
+  const set = (k, v) => setF((p) => ({ ...p, [k]: v }));
+
+  const totalSalary = (Number(f.basicSalary) || 0) + (Number(f.housingAllowance) || 0) + (Number(f.transportAllowance) || 0) + (Number(f.otherAllowance) || 0);
+  const availableUsers = users.filter((u) => u.role !== "owner" && (!linkedUserIds.has(u.id) || u.id === f.linkedUserId));
+
+  async function save() {
+    setErr("");
+    if (f.name.trim().length < 2) { setErr("اسم الموظف مطلوب (حرفان على الأقل)."); return; }
+    setSaving(true);
+    try {
+      const payload = { ...f, basicSalary: Number(f.basicSalary) || 0, housingAllowance: Number(f.housingAllowance) || 0, transportAllowance: Number(f.transportAllowance) || 0, otherAllowance: Number(f.otherAllowance) || 0 };
+      if (isEdit) {
+        const fn = httpsCallable(functions, "updateEmployeeProfile");
+        await fn({ employeeId: employee.id, ...payload });
+      } else {
+        const fn = httpsCallable(functions, "createEmployeeProfile");
+        await fn(payload);
+      }
+      onSaved();
+    } catch (ex) {
+      setErr(ex.message || "تعذّر الحفظ.");
+    } finally {
+      setSaving(false);
+    }
+  }
+
+  const docFields = [
+    { numKey: "iqamaNumber", expKey: "iqamaExpiry", label: "الإقامة/الهوية" },
+    { numKey: "passportNumber", expKey: "passportExpiry", label: "الجواز" },
+    { numKey: "workPermitNumber", expKey: "workPermitExpiry", label: "رخصة العمل" },
+    { numKey: "healthCertNumber", expKey: "healthCertExpiry", label: "الشهادة الصحية" },
+    { numKey: "insuranceNumber", expKey: "insuranceExpiry", label: "التأمين" },
+  ];
+
+  return (
+    <Modal title={isEdit ? "تعديل ملف الموظف" : "موظف جديد"} onClose={onClose} wide>
+      {err ? <div style={styles.error}>{err}</div> : null}
+
+      <SectionTitle>معلومات شخصية</SectionTitle>
+      <div style={styles.grid2}>
+        <Field label="الاسم *"><input style={styles.input} value={f.name} onChange={(ev) => set("name", ev.target.value)} disabled={saving} /></Field>
+        <Field label="كود الموظف"><input style={styles.input} value={f.employeeCode} onChange={(ev) => set("employeeCode", ev.target.value)} disabled={saving} dir="ltr" /></Field>
+        <Field label="الجنسية"><input style={styles.input} value={f.nationality} onChange={(ev) => set("nationality", ev.target.value)} disabled={saving} /></Field>
+        <Field label="الجوال"><input style={styles.input} value={f.phone} onChange={(ev) => set("phone", ev.target.value)} disabled={saving} dir="ltr" /></Field>
+        <Field label="تاريخ الميلاد"><input style={styles.input} type="date" value={f.birthDate} onChange={(ev) => set("birthDate", ev.target.value)} disabled={saving} dir="ltr" /></Field>
+        <Field label="الجنس">
+          <select style={styles.input} value={f.gender} onChange={(ev) => set("gender", ev.target.value)} disabled={saving}>
+            <option value="">—</option><option value="male">ذكر</option><option value="female">أنثى</option>
+          </select>
+        </Field>
+      </div>
+
+      <SectionTitle>الوثائق وتواريخ الانتهاء</SectionTitle>
+      <p style={styles.docHint}>🔔 ينبّهك النظام قبل {ALERT_THRESHOLD} يومًا من انتهاء أي وثيقة.</p>
+      {docFields.map((d) => {
+        const days = daysUntil(f[d.expKey]);
+        const warn = days !== null && days <= ALERT_THRESHOLD;
+        const c = warn ? alertColor(days) : null;
+        return (
+          <div key={d.numKey} style={styles.docRow}>
+            <span style={styles.docLabel}>{d.label}</span>
+            <input style={styles.docNumInput} placeholder="الرقم" value={f[d.numKey]} onChange={(ev) => set(d.numKey, ev.target.value)} disabled={saving} dir="ltr" />
+            <input style={{ ...styles.docDateInput, ...(warn ? styles.inputWarn : {}) }} type="date" value={f[d.expKey]} onChange={(ev) => set(d.expKey, ev.target.value)} disabled={saving} dir="ltr" />
+            {warn ? <span style={{ ...styles.docWarnTag, background: c.bg, color: c.color }}>{c.text}</span> : <span style={styles.docWarnSpacer} />}
+          </div>
+        );
+      })}
+
+      <SectionTitle>معلومات وظيفية</SectionTitle>
+      <div style={styles.grid2}>
+        <Field label="المسمى الوظيفي"><input style={styles.input} value={f.jobTitle} onChange={(ev) => set("jobTitle", ev.target.value)} disabled={saving} /></Field>
+        <Field label="القسم"><input style={styles.input} value={f.department} onChange={(ev) => set("department", ev.target.value)} disabled={saving} /></Field>
+        <Field label="تاريخ التعيين"><input style={styles.input} type="date" value={f.hireDate} onChange={(ev) => set("hireDate", ev.target.value)} disabled={saving} dir="ltr" /></Field>
+        <Field label="نوع العقد">
+          <select style={styles.input} value={f.contractType} onChange={(ev) => set("contractType", ev.target.value)} disabled={saving}>
+            <option value="">—</option><option value="محدد المدة">محدد المدة</option><option value="غير محدد المدة">غير محدد المدة</option><option value="مؤقت">مؤقت</option>
+          </select>
+        </Field>
+        <Field label="انتهاء العقد">
+          <input style={{ ...styles.input, ...(daysUntil(f.contractExpiry) !== null && daysUntil(f.contractExpiry) <= ALERT_THRESHOLD ? styles.inputWarn : {}) }} type="date" value={f.contractExpiry} onChange={(ev) => set("contractExpiry", ev.target.value)} disabled={saving} dir="ltr" />
+        </Field>
+        <Field label="الحالة">
+          <select style={styles.input} value={f.status} onChange={(ev) => set("status", ev.target.value)} disabled={saving}>
+            <option value="active">نشط</option><option value="on_leave">إجازة</option><option value="terminated">منتهي الخدمة</option>
+          </select>
+        </Field>
+      </div>
+
+      <SectionTitle>الراتب والبدلات</SectionTitle>
+      <div style={styles.grid2}>
+        <Field label="الراتب الأساسي"><input style={styles.input} type="number" min="0" value={f.basicSalary} onChange={(ev) => set("basicSalary", ev.target.value)} disabled={saving} dir="ltr" /></Field>
+        <Field label="بدل السكن"><input style={styles.input} type="number" min="0" value={f.housingAllowance} onChange={(ev) => set("housingAllowance", ev.target.value)} disabled={saving} dir="ltr" /></Field>
+        <Field label="بدل المواصلات"><input style={styles.input} type="number" min="0" value={f.transportAllowance} onChange={(ev) => set("transportAllowance", ev.target.value)} disabled={saving} dir="ltr" /></Field>
+        <Field label="بدلات أخرى"><input style={styles.input} type="number" min="0" value={f.otherAllowance} onChange={(ev) => set("otherAllowance", ev.target.value)} disabled={saving} dir="ltr" /></Field>
+      </div>
+      <div style={styles.salaryTotal}>
+        <span>إجمالي الراتب الشهري</span>
+        <span dir="ltr">{fmt(totalSalary)} ﷼</span>
+      </div>
+
+      <SectionTitle>حساب الدخول (اختياري)</SectionTitle>
+      <Field label="ربط بحساب دخول">
+        <select style={styles.input} value={f.linkedUserId} onChange={(ev) => set("linkedUserId", ev.target.value)} disabled={saving}>
+          <option value="">— بدون حساب دخول —</option>
+          {availableUsers.map((u) => <option key={u.id} value={u.id}>{u.name} ({u.email})</option>)}
+        </select>
+      </Field>
+      <p style={styles.linkHint}>💡 لإنشاء حساب جديد بصلاحيات، استخدم تبويب «الحسابات والصلاحيات».</p>
+
+      <Field label="ملاحظات"><input style={styles.input} value={f.notes} onChange={(ev) => set("notes", ev.target.value)} disabled={saving} /></Field>
+
+      <div style={styles.modalActions}>
+        <button style={styles.cancelBtn} onClick={onClose} disabled={saving}>إلغاء</button>
+        <button style={styles.saveBtn} onClick={save} disabled={saving}>{saving ? "جارٍ الحفظ..." : isEdit ? "حفظ التعديلات" : "حفظ الموظف"}</button>
+      </div>
+    </Modal>
+  );
+}
+
+// ═══════════ نموذج حساب دخول جديد ═══════════
+function AccountForm({ users, onClose, onSaved }) {
+  const [name, setName] = useState("");
+  const [email, setEmail] = useState("");
+  const [password, setPassword] = useState("");
+  const [permissions, setPermissions] = useState([]);
+  const [managerUid, setManagerUid] = useState("");
+  const [err, setErr] = useState("");
+  const [saving, setSaving] = useState(false);
+  const togglePerm = (p) => setPermissions((prev) => prev.includes(p) ? prev.filter((x) => x !== p) : [...prev, p]);
+  const managers = users.filter((u) => u.role === "owner" || u.role === "staff");
+
+  async function save() {
+    setErr("");
+    if (name.trim().length < 2) { setErr("الاسم مطلوب (حرفان على الأقل)."); return; }
+    if (!email.includes("@")) { setErr("البريد الإلكتروني غير صحيح."); return; }
+    if (password.length < 6) { setErr("كلمة المرور 6 أحرف على الأقل."); return; }
+    if (permissions.length === 0) { setErr("اختر صلاحية واحدة على الأقل."); return; }
+    setSaving(true);
+    try {
+      const fn = httpsCallable(functions, "createEmployee");
+      await fn({ name, email, password, permissions, managerUid });
+      onSaved();
+    } catch (ex) {
+      setErr(ex.message || "تعذّر إنشاء الحساب.");
+    } finally {
+      setSaving(false);
+    }
+  }
+
+  return (
+    <Modal title="حساب دخول جديد" onClose={onClose}>
+      {err ? <div style={styles.error}>{err}</div> : null}
+      <Field label="الاسم *"><input style={styles.input} value={name} onChange={(e) => setName(e.target.value)} disabled={saving} /></Field>
+      <Field label="البريد الإلكتروني *"><input style={styles.input} type="email" value={email} onChange={(e) => setEmail(e.target.value)} disabled={saving} dir="ltr" /></Field>
+      <Field label="كلمة المرور المؤقتة *"><input style={styles.input} type="text" value={password} onChange={(e) => setPassword(e.target.value)} placeholder="6 أحرف على الأقل" disabled={saving} dir="ltr" /></Field>
+
+      <label style={styles.label}>الصلاحيات *</label>
+      <div style={styles.permGrid}>
+        {ALL_MODULES.map((p) => (
+          <button key={p} type="button" onClick={() => togglePerm(p)} disabled={saving}
+            style={{ ...styles.permBtn, ...(permissions.includes(p) ? styles.permBtnActive : {}) }}>
+            {permissions.includes(p) ? "✓ " : ""}{MODULE_LABELS[p]}
+          </button>
+        ))}
+      </div>
+
+      <Field label="المدير المباشر">
+        <select style={styles.input} value={managerUid} onChange={(e) => setManagerUid(e.target.value)} disabled={saving}>
+          <option value="">— تحت المالك مباشرة —</option>
+          {managers.map((u) => <option key={u.id} value={u.id}>{u.name}</option>)}
+        </select>
+      </Field>
+
+      <div style={styles.modalActions}>
+        <button style={styles.cancelBtn} onClick={onClose} disabled={saving}>إلغاء</button>
+        <button style={styles.saveBtn} onClick={save} disabled={saving}>{saving ? "جارٍ الإنشاء..." : "إنشاء الحساب"}</button>
+      </div>
+    </Modal>
+  );
+}
+
+// ═══════════ مكوّنات مشتركة ═══════════
+function Modal({ title, children, onClose, wide }) {
+  return (
+    <div style={styles.overlay} onClick={onClose}>
+      <div style={{ ...styles.modal, ...(wide ? styles.modalWide : {}) }} onClick={(e) => e.stopPropagation()}>
+        <div style={styles.modalHead}>
+          <h2 style={styles.modalTitle}>{title}</h2>
+          <button style={styles.close} onClick={onClose}>✕</button>
+        </div>
+        {children}
+      </div>
+    </div>
+  );
+}
+function SectionTitle({ children }) { return <div style={styles.sectionTitle}>{children}</div>; }
+function Field({ label, children }) {
+  return <div style={styles.field}><label style={styles.label}>{label}</label>{children}</div>;
+}
+
+const styles = {
+  page: { padding: "26px 30px 40px", minHeight: "100%", background: "#f4f6f9", fontFamily: "'IBM Plex Sans Arabic', system-ui, sans-serif", direction: "rtl" },
+  topRow: { display: "flex", justifyContent: "space-between", alignItems: "flex-start", marginBottom: 22, flexWrap: "wrap", gap: 12 },
+  pageTitle: { fontSize: 24, fontWeight: 800, color: "#059669", margin: "0 0 4px" },
+  pageSub: { fontSize: 14, color: "#64748b", margin: 0, maxWidth: 560 },
+  topBtns: { display: "flex", gap: 10 },
+  addBtn: { padding: "11px 20px", fontSize: 14, fontWeight: 700, color: "#fff", background: "#059669", border: "none", borderRadius: 8, cursor: "pointer", whiteSpace: "nowrap" },
+
+  error: { padding: "10px 12px", background: "#fee2e2", color: "#b91c1c", borderRadius: 8, fontSize: 14, marginBottom: 16 },
+  muted: { color: "#94a3b8", fontSize: 14, margin: 0 },
+  mutedSmall: { color: "#94a3b8", fontSize: 12 },
+
+  tabs: { display: "flex", gap: 8, marginBottom: 18, borderBottom: "2px solid #e2e8f0", flexWrap: "wrap" },
+  tab: { padding: "10px 18px", fontSize: 14, fontWeight: 600, color: "#64748b", background: "none", border: "none", borderBottom: "3px solid transparent", cursor: "pointer", marginBottom: -2 },
+  tabActive: { color: "#059669", borderBottomColor: "#059669" },
+
+  empty: { padding: 44, background: "#fff", border: "1px solid #e2e8f0", borderRadius: 12, textAlign: "center" },
+  emptyIcon: { fontSize: 40, marginBottom: 10 },
+
+  alertBanner: { background: "#fff", border: "1px solid #fed7aa", borderRadius: 12, padding: "16px 20px", marginBottom: 20 },
+  alertHead: { fontSize: 14, fontWeight: 700, color: "#9a3412", marginBottom: 12 },
+  alertList: { display: "flex", flexDirection: "column", gap: 8 },
+  alertItem: { display: "flex", alignItems: "center", gap: 12, fontSize: 13, flexWrap: "wrap" },
+  alertEmp: { fontWeight: 700, color: "#0f172a", minWidth: 120 },
+  alertDoc: { color: "#475569", flex: 1, minWidth: 100 },
+  alertDays: { padding: "2px 12px", borderRadius: 14, fontSize: 12, fontWeight: 700 },
+  alertDate: { color: "#94a3b8", fontFamily: "monospace", fontSize: 12 },
+  alertMore: { fontSize: 12, color: "#94a3b8", paddingTop: 4 },
+
+  panel: { background: "#fff", border: "1px solid #e2e8f0", borderRadius: 12, overflow: "hidden" },
+  table: { width: "100%", borderCollapse: "collapse" },
+  th: { textAlign: "right", padding: "12px 14px", fontSize: 13, color: "#64748b", borderBottom: "2px solid #e2e8f0", background: "#f8fafc" },
+  thAmount: { textAlign: "left", padding: "12px 14px", fontSize: 13, color: "#64748b", borderBottom: "2px solid #e2e8f0", background: "#f8fafc" },
+  thCenter: { textAlign: "center", padding: "12px 14px", fontSize: 13, color: "#64748b", borderBottom: "2px solid #e2e8f0", background: "#f8fafc" },
+  tdName: { padding: "11px 14px", fontSize: 14, borderBottom: "1px solid #f1f5f9", color: "#334155" },
+  tdAmount: { padding: "11px 14px", fontSize: 14, textAlign: "left", borderBottom: "1px solid #f1f5f9", fontFamily: "monospace" },
+  tdCenter: { padding: "11px 14px", fontSize: 14, textAlign: "center", borderBottom: "1px solid #f1f5f9" },
+  rowClickable: { cursor: "pointer" },
+  codeTag: { display: "inline-block", padding: "1px 8px", marginLeft: 8, background: "#eef2ff", color: "#4338ca", borderRadius: 6, fontSize: 12, fontWeight: 700, fontFamily: "monospace" },
+  deptText: { color: "#94a3b8", fontSize: 13 },
+  badge2: { display: "inline-block", padding: "3px 12px", borderRadius: 16, fontSize: 12, fontWeight: 700 },
+  miniBadge: { display: "inline-block", padding: "3px 10px", borderRadius: 12, fontSize: 11, fontWeight: 700 },
+  okMark: { color: "#16a34a", fontWeight: 700 },
+  linkedYes: { fontSize: 12, color: "#0369a1", fontWeight: 600 },
+  tableHint: { fontSize: 12, color: "#94a3b8", marginTop: 12 },
+
+  accountsNote: { padding: "12px 16px", background: "#eff6ff", border: "1px solid #bfdbfe", borderRadius: 10, fontSize: 13, color: "#1e40af", marginBottom: 16 },
+  roleBadge: { display: "inline-block", padding: "3px 12px", borderRadius: 16, fontSize: 12, fontWeight: 700, background: "#f1f5f9", color: "#475569" },
+  roleOwner: { background: "#fef3c7", color: "#92400e" },
+  allPerms: { fontSize: 13, color: "#92400e", fontWeight: 600 },
+  permTags: { display: "flex", flexWrap: "wrap", gap: 4 },
+  permTag: { display: "inline-block", padding: "2px 8px", background: "#ecfdf5", color: "#065f46", borderRadius: 6, fontSize: 11, fontWeight: 600 },
+
+  overlay: { position: "fixed", inset: 0, background: "rgba(15,23,42,.5)", display: "flex", alignItems: "center", justifyContent: "center", zIndex: 1000, padding: 16 },
+  modal: { background: "#fff", borderRadius: 16, width: "100%", maxWidth: 500, maxHeight: "92vh", overflowY: "auto", padding: 24, direction: "rtl", fontFamily: "'IBM Plex Sans Arabic', system-ui, sans-serif" },
+  modalWide: { maxWidth: 680 },
+  modalHead: { display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 16 },
+  modalTitle: { fontSize: 18, fontWeight: 800, color: "#0f172a", margin: 0 },
+  close: { fontSize: 20, color: "#94a3b8", background: "none", border: "none", cursor: "pointer" },
+
+  sectionTitle: { fontSize: 14, fontWeight: 700, color: "#059669", margin: "20px 0 10px", paddingBottom: 6, borderBottom: "2px solid #ecfdf5" },
+  grid2: { display: "grid", gridTemplateColumns: "1fr 1fr", gap: 12 },
+  field: { display: "flex", flexDirection: "column" },
+  label: { display: "block", fontSize: 13, fontWeight: 600, color: "#334155", margin: "0 0 6px" },
+  input: { width: "100%", padding: "10px 12px", fontSize: 14, border: "1px solid #cbd5e1", borderRadius: 8, boxSizing: "border-box", fontFamily: "inherit" },
+  inputWarn: { borderColor: "#f59e0b", background: "#fffbeb" },
+
+  docHint: { fontSize: 12, color: "#9a3412", background: "#fff7ed", padding: "8px 12px", borderRadius: 8, margin: "0 0 12px" },
+  docRow: { display: "flex", alignItems: "center", gap: 8, marginBottom: 8 },
+  docLabel: { fontSize: 13, color: "#475569", width: 110, flexShrink: 0 },
+  docNumInput: { flex: 1, padding: "8px 10px", fontSize: 13, border: "1px solid #cbd5e1", borderRadius: 8, fontFamily: "inherit" },
+  docDateInput: { width: 150, padding: "8px 10px", fontSize: 13, border: "1px solid #cbd5e1", borderRadius: 8, fontFamily: "inherit", flexShrink: 0 },
+  docWarnTag: { padding: "3px 10px", borderRadius: 12, fontSize: 11, fontWeight: 700, width: 64, textAlign: "center", flexShrink: 0 },
+  docWarnSpacer: { width: 64, flexShrink: 0 },
+
+  salaryTotal: { display: "flex", justifyContent: "space-between", alignItems: "center", padding: "12px 16px", background: "#ecfdf5", border: "1px solid #a7f3d0", borderRadius: 10, marginTop: 12, fontSize: 15, fontWeight: 800, color: "#065f46", fontFamily: "monospace" },
+
+  linkHint: { fontSize: 12, color: "#64748b", margin: "8px 0 0" },
+
+  permGrid: { display: "grid", gridTemplateColumns: "1fr 1fr", gap: 8, marginBottom: 4 },
+  permBtn: { padding: "9px 10px", fontSize: 13, fontWeight: 600, color: "#475569", background: "#fff", border: "2px solid #e2e8f0", borderRadius: 8, cursor: "pointer", textAlign: "right" },
+  permBtnActive: { borderColor: "#059669", background: "#ecfdf5", color: "#059669" },
+
+  modalActions: { display: "flex", gap: 10, marginTop: 22 },
+  cancelBtn: { flex: 1, padding: "11px", fontSize: 14, fontWeight: 600, color: "#475569", background: "#f1f5f9", border: "none", borderRadius: 8, cursor: "pointer" },
+  saveBtn: { flex: 2, padding: "11px", fontSize: 14, fontWeight: 700, color: "#fff", background: "#059669", border: "none", borderRadius: 8, cursor: "pointer" },
+};
