@@ -35,6 +35,7 @@ const COLLECTIONS = {
   PENALTIES: "penalties",
   EVALUATIONS: "evaluations",
   EMPLOYEE_ASSIGNMENTS: "employeeAssignments",
+  ASSET_ASSIGNMENTS: "assetAssignments",
 };
 
 const ROLES = {
@@ -1354,6 +1355,36 @@ function buildEmployeeAssignmentDoc({
   };
 }
 
+// إسناد أصل/مرفق لمشروع (تكامل مع قسم الأصول)
+function buildAssetAssignmentDoc({
+  tenantId, assignmentNumber, assetId, assetName, assetCode, assetType, assetTypeName,
+  projectId, projectName, projectNumber,
+  rentalPrice, rentalPeriod, monthlyCost,
+  startDate, endDate, status, notes, createdBy, createdAt,
+}) {
+  return {
+    tenantId,
+    assignmentNumber: assignmentNumber || null,
+    assetId: assetId,
+    assetName: assetName || null,
+    assetCode: assetCode || null,
+    assetType: assetType || null,
+    assetTypeName: assetTypeName || null,
+    projectId: projectId,
+    projectName: projectName || null,
+    projectNumber: projectNumber || null,
+    rentalPrice: Number(rentalPrice) || 0,    // الإيراد من العميل
+    rentalPeriod: rentalPeriod === "daily" ? "daily" : "monthly",
+    monthlyCost: Number(monthlyCost) || 0,    // تكلفة الأصل الشهرية (تتوزّع لو مشترك)
+    startDate: startDate || null,
+    endDate: endDate || null,
+    status: status || "active", // active | ended | removed
+    notes: notes || null,
+    createdBy: createdBy || null,
+    createdAt,
+  };
+}
+
 function buildProjectTypeDoc({ tenantId, name, code, description, isSystem, createdBy, createdAt }) {
   return {
     tenantId,
@@ -1732,6 +1763,7 @@ module.exports = {
   buildPenaltyDoc,
   buildEvaluationDoc,
   buildEmployeeAssignmentDoc,
+  buildAssetAssignmentDoc,
   computeInvoiceTotals,
   buildProjectTypeDoc,
   buildProjectDoc,

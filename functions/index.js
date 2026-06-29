@@ -51,6 +51,7 @@ const {
   buildPenaltyDoc,
   buildEvaluationDoc,
   buildEmployeeAssignmentDoc,
+  buildAssetAssignmentDoc,
   computeInvoiceTotals,
   validatePermissions,
   isValidTime,
@@ -4039,6 +4040,180 @@ exports.getOperationsCosting = onCall(async (request) => {
   } catch (err) {
     if (err instanceof HttpsError) throw err;
     console.error("getOperationsCosting failed:", err);
+    throw new HttpsError("internal", "تعذّر حساب التكاليف، حاول مرة أخرى.");
+  }
+});
+
+// ═══════════════════════════════════════════════════════
+// ===== العمليات: المرافق (إسناد الأصول للمشاريع) =====
+// ===== تكامل مع قسم الأصول — التكلفة تتوزّع عند المشاركة =====
+// ═══════════════════════════════════════════════════════
+
+// ===== إسناد أصل لمشروع =====
+exports.assignAssetToProject = onCall(async (request) => {
+  try {
+    const callerTenantId = await requireModule(request.auth, MODULES.PROJECTS);
+    const data = request.data || {};
+    const projectId = typeof data.projectId === "string" ? data.projectId.trim() : "";
+    const assetId = typeof data.assetId === "string" ? data.assetId.trim() : "";
+    const rentalPeriod = data.rentalPeriod === "daily" ? "daily" : "monthly";
+    const rentalPrice = Number(data.rentalPrice) || 0;
+    const monthlyCost = Number(data.monthlyCost) || 0;
+    const startDate = typeof data.startDate === "string" && isValidDate(data.startDate) ? data.startDate : null;
+    const endDate = typeof data.endDate === "string" && isValidDate(data.endDate) ? data.endDate : null;
+    const notes = typeof data.notes === "string" ? data.notes.trim() : "";
+
+    if (!projectId) throw new HttpsError("invalid-argument", "يجب تحديد المشروع.");
+    if (!assetId) throw new HttpsError("invalid-argument", "يجب تحديد الأصل.");
+    if (rentalPrice < 0) throw new HttpsError("invalid-argument", "سعر التأجير غير صحيح.");
+    if (startDate && endDate && endDate < startDate) throw new HttpsError("invalid-argument", "تاريخ النهاية قبل البداية.");
+
+    const projSnap = await db.collection(COLLECTIONS.PROJECTS).doc(projectId).get();
+    if (!projSnap.exists || projSnap.data().tenantId !== callerTenantId) {
+      throw new HttpsError("invalid-argument", "المشروع غير صحيح.");
+    }
+    const proj = projSnap.data();
+    const assetSnap = await db.collection(COLLECTIONS.ASSETS).doc(assetId).get();
+    if (!assetSnap.exists || assetSnap.data().tenantId !== callerTenantId) {
+      throw new HttpsError("invalid-argument", "الأصل غير صحيح.");
+    }
+    const asset = assetSnap.data();
+
+    // منع إسناد نفس الأصل لنفس المشروع مرتين (نشط)
+    const dup = await db.collection(COLLECTIONS.ASSET_ASSIGNMENTS)
+      .where("tenantId", "==", callerTenantId)
+      .where("assetId", "==", assetId)
+      .where("projectId", "==", projectId)
+      .where("status", "==", "active")
+      .limit(1).get();
+    if (!dup.empty) {
+      throw new HttpsError("already-exists", "هذا الأصل مُسند لهذا المشروع بالفعل.");
+    }
+
+    const tenantRef = db.collection(COLLECTIONS.TENANTS).doc(callerTenantId);
+    const assignRef = db.collection(COLLECTIONS.ASSET_ASSIGNMENTS).doc();
+    const nextNumber = await db.runTransaction(async (tx) => {
+      const tSnap = await tx.get(tenantRef);
+      const n = ((tSnap.data() || {}).lastAssetAssignmentNumber || 0) + 1;
+      tx.set(assignRef, buildAssetAssignmentDoc({
+        tenantId: callerTenantId, assignmentNumber: n,
+        assetId, assetName: asset.name || null, assetCode: asset.assetNumber || null,
+        assetType: asset.type || null, assetTypeName: asset.typeName || null,
+        projectId, projectName: proj.name || null, projectNumber: proj.projectNumber || null,
+        rentalPrice, rentalPeriod, monthlyCost,
+        startDate, endDate, status: "active", notes,
+        createdBy: request.auth.uid, createdAt: FieldValue.serverTimestamp(),
+      }));
+      tx.update(tenantRef, { lastAssetAssignmentNumber: n });
+      return n;
+    });
+
+    return { id: assignRef.id, assignmentNumber: nextNumber, assetName: asset.name };
+  } catch (err) {
+    if (err instanceof HttpsError) throw err;
+    console.error("assignAssetToProject failed:", err);
+    throw new HttpsError("internal", "تعذّر إسناد الأصل، حاول مرة أخرى.");
+  }
+});
+
+// ===== جلب إسنادات أصل معيّن =====
+exports.getAssetAssignments = onCall(async (request) => {
+  try {
+    const callerTenantId = await requireModule(request.auth, MODULES.PROJECTS);
+    const data = request.data || {};
+    const assetId = typeof data.assetId === "string" ? data.assetId.trim() : "";
+    if (!assetId) throw new HttpsError("invalid-argument", "يجب تحديد الأصل.");
+
+    const snap = await db.collection(COLLECTIONS.ASSET_ASSIGNMENTS)
+      .where("tenantId", "==", callerTenantId)
+      .where("assetId", "==", assetId)
+      .where("status", "==", "active").get();
+    const assignments = snap.docs.map((d) => {
+      const a = d.data();
+      return {
+        id: d.id, projectId: a.projectId, projectName: a.projectName, projectNumber: a.projectNumber,
+        rentalPrice: a.rentalPrice, monthlyCost: a.monthlyCost,
+      };
+    });
+    return { assetId, count: assignments.length, assignments };
+  } catch (err) {
+    if (err instanceof HttpsError) throw err;
+    console.error("getAssetAssignments failed:", err);
+    throw new HttpsError("internal", "تعذّر جلب الإسنادات، حاول مرة أخرى.");
+  }
+});
+
+// ===== إزالة إسناد أصل =====
+exports.removeAssetAssignment = onCall(async (request) => {
+  try {
+    const callerTenantId = await requireModule(request.auth, MODULES.PROJECTS);
+    const data = request.data || {};
+    const assignmentId = typeof data.assignmentId === "string" ? data.assignmentId.trim() : "";
+    if (!assignmentId) throw new HttpsError("invalid-argument", "يجب تحديد الإسناد.");
+
+    const ref = db.collection(COLLECTIONS.ASSET_ASSIGNMENTS).doc(assignmentId);
+    const snap = await ref.get();
+    if (!snap.exists || snap.data().tenantId !== callerTenantId) {
+      throw new HttpsError("invalid-argument", "الإسناد غير صحيح.");
+    }
+    await ref.update({ status: "removed", removedBy: request.auth.uid, removedAt: FieldValue.serverTimestamp() });
+    return { id: assignmentId, status: "removed" };
+  } catch (err) {
+    if (err instanceof HttpsError) throw err;
+    console.error("removeAssetAssignment failed:", err);
+    throw new HttpsError("internal", "تعذّر إزالة الإسناد، حاول مرة أخرى.");
+  }
+});
+
+// ===== حساب توزيع تكاليف الأصول (مشاركة المرافق بين المشاريع) =====
+exports.getAssetsCosting = onCall(async (request) => {
+  try {
+    const callerTenantId = await requireModule(request.auth, MODULES.PROJECTS);
+    const data = request.data || {};
+    const filterProjectId = typeof data.projectId === "string" ? data.projectId.trim() : "";
+    const round2 = (n) => Math.round((Number(n) || 0) * 100) / 100;
+
+    const assignSnap = await db.collection(COLLECTIONS.ASSET_ASSIGNMENTS)
+      .where("tenantId", "==", callerTenantId)
+      .where("status", "==", "active").get();
+    const allAssignments = assignSnap.docs.map((d) => ({ id: d.id, ...d.data() }));
+
+    // تجميع حسب الأصل (لحساب المشاركة عبر مشاريعه)
+    const byAsset = new Map();
+    for (const a of allAssignments) {
+      if (!byAsset.has(a.assetId)) byAsset.set(a.assetId, []);
+      byAsset.get(a.assetId).push(a);
+    }
+
+    const results = [];
+    for (const [, list] of byAsset.entries()) {
+      const N = list.length;
+      for (const a of list) {
+        const costShare = round2((Number(a.monthlyCost) || 0) / N);
+        const revenue = Number(a.rentalPrice) || 0;
+        const netProfit = round2(revenue - costShare);
+        results.push({
+          assignmentId: a.id, assetId: a.assetId, assetName: a.assetName || null,
+          assetCode: a.assetCode || null, assetType: a.assetType || null, assetTypeName: a.assetTypeName || null,
+          projectId: a.projectId, projectName: a.projectName || null, projectNumber: a.projectNumber || null,
+          projectsCount: N, isShared: N > 1,
+          fullCost: round2(Number(a.monthlyCost) || 0), costShare, revenue, netProfit,
+          rentalPeriod: a.rentalPeriod || "monthly",
+        });
+      }
+    }
+
+    const filtered = filterProjectId ? results.filter((r) => r.projectId === filterProjectId) : results;
+    const summary = {
+      totalRevenue: round2(filtered.reduce((s, r) => s + r.revenue, 0)),
+      totalCost: round2(filtered.reduce((s, r) => s + r.costShare, 0)),
+      totalNetProfit: round2(filtered.reduce((s, r) => s + r.netProfit, 0)),
+      count: filtered.length,
+    };
+    return { assignments: filtered, summary };
+  } catch (err) {
+    if (err instanceof HttpsError) throw err;
+    console.error("getAssetsCosting failed:", err);
     throw new HttpsError("internal", "تعذّر حساب التكاليف، حاول مرة أخرى.");
   }
 });

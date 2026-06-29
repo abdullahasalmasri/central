@@ -45,7 +45,7 @@ const NAV = [
   { type: "section", id: "ops", name: "العمليات", icon: Settings, color: "#ea580c", children: [
     { id: "ops_proj",       name: "المشاريع",            file: "ProjectsView.jsx" },
     { id: "ops_people",     name: "الأفراد",             file: "PeopleView.jsx" },
-    { id: "ops_facilities", name: "المرافق",             file: null },
+    { id: "ops_facilities", name: "المرافق",             file: "FacilitiesView.jsx" },
     { id: "ops_materials",  name: "المواد",              file: null },
     { id: "ops_process",    name: "العمليات التشغيلية",   file: null },
     { id: "ops_planning",   name: "التخطيط والرقابة",     file: null },
