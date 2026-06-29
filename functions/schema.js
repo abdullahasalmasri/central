@@ -29,6 +29,12 @@ const COLLECTIONS = {
   PAYROLL_RUNS: "payrollRuns",
   VACANCIES: "vacancies",
   APPLICANTS: "applicants",
+  TRAINING_PROGRAMS: "trainingPrograms",
+  TRAINING_ENROLLMENTS: "trainingEnrollments",
+  LEAVE_REQUESTS: "leaveRequests",
+  PENALTIES: "penalties",
+  EVALUATIONS: "evaluations",
+  EMPLOYEE_ASSIGNMENTS: "employeeAssignments",
 };
 
 const ROLES = {
@@ -1078,6 +1084,7 @@ function buildEmployeeProfileDoc({
   insuranceNumber, insuranceExpiry,
   jobTitle, department, hireDate, contractType, contractExpiry,
   basicSalary, housingAllowance, transportAllowance, otherAllowance,
+  governmentFees, otHourlyRate, defaultTargetProfit,
   linkedUserId, status, notes, createdBy, createdAt,
 }) {
   const basic = Number(basicSalary) || 0;
@@ -1112,6 +1119,12 @@ function buildEmployeeProfileDoc({
       transport: transport,
       other: other,
       total: basic + housing + transport + other,
+    },
+    // مكوّنات التكلفة التشغيلية (لتوزيع التكاليف و Overtime في العمليات)
+    costing: {
+      governmentFees: Number(governmentFees) || 0,   // رسوم حكومية + إدارية شهرية (تتشارك بين المشاريع)
+      otHourlyRate: Number(otHourlyRate) || 0,        // معدل ساعة الـ Overtime
+      defaultTargetProfit: Number(defaultTargetProfit) || 0, // ربح مستهدف افتراضي يُقترح عند الإسناد
     },
     linkedUserId: linkedUserId || null,
     status: status || "active",
@@ -1189,6 +1202,153 @@ function buildApplicantDoc({
     rating: typeof rating === "number" ? rating : null,
     notes: notes || null,
     linkedEmployeeId: linkedEmployeeId || null,
+    createdBy: createdBy || null,
+    createdAt,
+  };
+}
+
+// برنامج تدريبي
+function buildTrainingProgramDoc({
+  tenantId, programNumber, title, category, provider, description,
+  startDate, endDate, durationHours, mode, cost, status, createdBy, createdAt,
+}) {
+  return {
+    tenantId,
+    programNumber: programNumber || null,
+    title: title,
+    category: category || null,
+    provider: provider || null,
+    description: description || null,
+    startDate: startDate || null,
+    endDate: endDate || null,
+    durationHours: typeof durationHours === "number" ? durationHours : null,
+    mode: mode || null, // onsite | online
+    cost: typeof cost === "number" ? cost : null,
+    status: status || "planned", // planned | active | completed | cancelled
+    createdBy: createdBy || null,
+    createdAt,
+  };
+}
+
+// تسجيل موظف في برنامج تدريبي
+function buildEnrollmentDoc({
+  tenantId, programId, programTitle, employeeId, employeeName, employeeCode,
+  status, enrolledDate, completedDate, score,
+  certificateNumber, certificateIssueDate, createdBy, createdAt,
+}) {
+  return {
+    tenantId,
+    programId: programId,
+    programTitle: programTitle || null,
+    employeeId: employeeId,
+    employeeName: employeeName || null,
+    employeeCode: employeeCode || null,
+    status: status || "registered", // registered | attending | completed | dropped
+    enrolledDate: enrolledDate || null,
+    completedDate: completedDate || null,
+    score: typeof score === "number" ? score : null,
+    certificateNumber: certificateNumber || null,
+    certificateIssueDate: certificateIssueDate || null,
+    createdBy: createdBy || null,
+    createdAt,
+  };
+}
+
+// طلب إجازة
+function buildLeaveRequestDoc({
+  tenantId, employeeId, employeeName, employeeCode, type,
+  startDate, endDate, days, reason, status, createdBy, createdAt,
+}) {
+  return {
+    tenantId,
+    employeeId: employeeId,
+    employeeName: employeeName || null,
+    employeeCode: employeeCode || null,
+    type: type || "annual", // annual | sick | unpaid | emergency | other
+    startDate: startDate || null,
+    endDate: endDate || null,
+    days: typeof days === "number" ? days : 0,
+    reason: reason || null,
+    status: status || "pending", // pending | approved | rejected
+    reviewedBy: null,
+    reviewedAt: null,
+    createdBy: createdBy || null,
+    createdAt,
+  };
+}
+
+// جزاء/مخالفة
+function buildPenaltyDoc({
+  tenantId, penaltyNumber, employeeId, employeeName, employeeCode,
+  type, date, amount, reason, createdBy, createdAt,
+}) {
+  return {
+    tenantId,
+    penaltyNumber: penaltyNumber || null,
+    employeeId: employeeId,
+    employeeName: employeeName || null,
+    employeeCode: employeeCode || null,
+    type: type || "warning", // warning | deduction | suspension | other
+    date: date || null,
+    amount: typeof amount === "number" ? amount : null,
+    reason: reason || null,
+    createdBy: createdBy || null,
+    createdAt,
+  };
+}
+
+// تقييم أداء
+function buildEvaluationDoc({
+  tenantId, employeeId, employeeName, employeeCode, period, date,
+  criteria, overallScore, strengths, improvements, notes, createdBy, createdAt,
+}) {
+  return {
+    tenantId,
+    employeeId: employeeId,
+    employeeName: employeeName || null,
+    employeeCode: employeeCode || null,
+    period: period || null,
+    date: date || null,
+    criteria: criteria && typeof criteria === "object" ? criteria : {},
+    overallScore: typeof overallScore === "number" ? overallScore : 0,
+    strengths: strengths || null,
+    improvements: improvements || null,
+    notes: notes || null,
+    createdBy: createdBy || null,
+    createdAt,
+  };
+}
+
+// إسناد موظف لمشروع (موحّد — يربط ملف الموظف مباشرة بدل حساب user)
+function buildEmployeeAssignmentDoc({
+  tenantId, assignmentNumber, employeeId, employeeName, employeeCode, employeeJobTitle,
+  projectId, projectName, projectNumber,
+  rentalPrice, rentalPeriod, monthlyCost,
+  hoursPerDay, daysPerWeek, monthlyHours, targetProfit,
+  startDate, endDate, status, notes, createdBy, createdAt,
+}) {
+  return {
+    tenantId,
+    assignmentNumber: assignmentNumber || null,
+    employeeId: employeeId,
+    employeeName: employeeName || null,
+    employeeCode: employeeCode || null,
+    employeeJobTitle: employeeJobTitle || null,
+    projectId: projectId,
+    projectName: projectName || null,
+    projectNumber: projectNumber || null,
+    rentalPrice: Number(rentalPrice) || 0,
+    rentalPeriod: rentalPeriod === "daily" ? "daily" : "monthly",
+    monthlyCost: Number(monthlyCost) || 0,
+    // ساعات العمل (لحساب Overtime على أساس شهري)
+    hoursPerDay: Number(hoursPerDay) || 0,
+    daysPerWeek: Number(daysPerWeek) || 0,
+    monthlyHours: Number(monthlyHours) || 0,
+    targetProfit: Number(targetProfit) || 0, // الربح المستهدف لهذا المشروع (ثابت — لا يُقسّم)
+    startDate: startDate || null,
+    endDate: endDate || null,
+    status: status || "active", // active | ended | removed
+    notes: notes || null,
     createdBy: createdBy || null,
     createdAt,
   };
@@ -1566,6 +1726,12 @@ module.exports = {
   buildPayrollRunDoc,
   buildVacancyDoc,
   buildApplicantDoc,
+  buildTrainingProgramDoc,
+  buildEnrollmentDoc,
+  buildLeaveRequestDoc,
+  buildPenaltyDoc,
+  buildEvaluationDoc,
+  buildEmployeeAssignmentDoc,
   computeInvoiceTotals,
   buildProjectTypeDoc,
   buildProjectDoc,

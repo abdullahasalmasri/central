@@ -45,6 +45,12 @@ const {
   buildPayrollRunDoc,
   buildVacancyDoc,
   buildApplicantDoc,
+  buildTrainingProgramDoc,
+  buildEnrollmentDoc,
+  buildLeaveRequestDoc,
+  buildPenaltyDoc,
+  buildEvaluationDoc,
+  buildEmployeeAssignmentDoc,
   computeInvoiceTotals,
   validatePermissions,
   isValidTime,
@@ -2847,6 +2853,9 @@ function extractEmployeeFields(data) {
     housingAllowance: Number(data.housingAllowance) || 0,
     transportAllowance: Number(data.transportAllowance) || 0,
     otherAllowance: Number(data.otherAllowance) || 0,
+    governmentFees: Number(data.governmentFees) || 0,
+    otHourlyRate: Number(data.otHourlyRate) || 0,
+    defaultTargetProfit: Number(data.defaultTargetProfit) || 0,
     status: ["active", "on_leave", "terminated"].includes(data.status) ? data.status : "active",
     notes: str(data.notes),
   };
@@ -3468,6 +3477,569 @@ exports.hireApplicant = onCall(async (request) => {
     if (err instanceof HttpsError) throw err;
     console.error("hireApplicant failed:", err);
     throw new HttpsError("internal", "تعذّر تعيين المتقدم، حاول مرة أخرى.");
+  }
+});
+
+// ═══════════════════════════════════════════════════════
+// ===== الموارد البشرية: التدريب (برامج · تسجيلات · شهادات) =====
+// ═══════════════════════════════════════════════════════
+
+const ENROLLMENT_STATUSES = ["registered", "attending", "completed", "dropped"];
+
+// ===== إنشاء برنامج تدريبي =====
+exports.createTrainingProgram = onCall(async (request) => {
+  try {
+    const callerTenantId = await requireModule(request.auth, MODULES.HR);
+    const data = request.data || {};
+    const title = typeof data.title === "string" ? data.title.trim() : "";
+    const category = typeof data.category === "string" ? data.category.trim() : "";
+    const provider = typeof data.provider === "string" ? data.provider.trim() : "";
+    const description = typeof data.description === "string" ? data.description.trim() : "";
+    const mode = data.mode === "online" ? "online" : data.mode === "onsite" ? "onsite" : null;
+    const startDate = typeof data.startDate === "string" && isValidDate(data.startDate) ? data.startDate : null;
+    const endDate = typeof data.endDate === "string" && isValidDate(data.endDate) ? data.endDate : null;
+    const durationHours = data.durationHours !== undefined && data.durationHours !== null && data.durationHours !== "" ? Number(data.durationHours) : null;
+    const cost = data.cost !== undefined && data.cost !== null && data.cost !== "" ? Number(data.cost) : null;
+
+    if (title.length < 2) throw new HttpsError("invalid-argument", "اسم البرنامج مطلوب (حرفان على الأقل).");
+    if (durationHours !== null && (!Number.isFinite(durationHours) || durationHours < 0)) throw new HttpsError("invalid-argument", "عدد الساعات غير صحيح.");
+    if (cost !== null && (!Number.isFinite(cost) || cost < 0)) throw new HttpsError("invalid-argument", "التكلفة غير صحيحة.");
+
+    const tenantRef = db.collection(COLLECTIONS.TENANTS).doc(callerTenantId);
+    const programRef = db.collection(COLLECTIONS.TRAINING_PROGRAMS).doc();
+    const nextNumber = await db.runTransaction(async (tx) => {
+      const tSnap = await tx.get(tenantRef);
+      const n = ((tSnap.data() || {}).lastProgramNumber || 0) + 1;
+      tx.set(programRef, buildTrainingProgramDoc({
+        tenantId: callerTenantId, programNumber: n, title, category, provider, description,
+        startDate, endDate, durationHours, mode, cost, status: "planned",
+        createdBy: request.auth.uid, createdAt: FieldValue.serverTimestamp(),
+      }));
+      tx.update(tenantRef, { lastProgramNumber: n });
+      return n;
+    });
+    return { id: programRef.id, programNumber: nextNumber, title };
+  } catch (err) {
+    if (err instanceof HttpsError) throw err;
+    console.error("createTrainingProgram failed:", err);
+    throw new HttpsError("internal", "تعذّر إنشاء البرنامج، حاول مرة أخرى.");
+  }
+});
+
+// ===== تغيير حالة البرنامج =====
+exports.updateProgramStatus = onCall(async (request) => {
+  try {
+    const callerTenantId = await requireModule(request.auth, MODULES.HR);
+    const data = request.data || {};
+    const programId = typeof data.programId === "string" ? data.programId.trim() : "";
+    const status = ["planned", "active", "completed", "cancelled"].includes(data.status) ? data.status : null;
+    if (!programId) throw new HttpsError("invalid-argument", "يجب تحديد البرنامج.");
+    if (!status) throw new HttpsError("invalid-argument", "حالة غير صحيحة.");
+
+    const ref = db.collection(COLLECTIONS.TRAINING_PROGRAMS).doc(programId);
+    const snap = await ref.get();
+    if (!snap.exists || snap.data().tenantId !== callerTenantId) {
+      throw new HttpsError("invalid-argument", "البرنامج غير صحيح.");
+    }
+    await ref.update({ status, updatedAt: FieldValue.serverTimestamp() });
+    return { id: programId, status };
+  } catch (err) {
+    if (err instanceof HttpsError) throw err;
+    console.error("updateProgramStatus failed:", err);
+    throw new HttpsError("internal", "تعذّر تحديث البرنامج، حاول مرة أخرى.");
+  }
+});
+
+// ===== تسجيل موظف في برنامج =====
+exports.enrollEmployee = onCall(async (request) => {
+  try {
+    const callerTenantId = await requireModule(request.auth, MODULES.HR);
+    const data = request.data || {};
+    const programId = typeof data.programId === "string" ? data.programId.trim() : "";
+    const employeeId = typeof data.employeeId === "string" ? data.employeeId.trim() : "";
+    if (!programId) throw new HttpsError("invalid-argument", "يجب تحديد البرنامج.");
+    if (!employeeId) throw new HttpsError("invalid-argument", "يجب تحديد الموظف.");
+
+    const programSnap = await db.collection(COLLECTIONS.TRAINING_PROGRAMS).doc(programId).get();
+    if (!programSnap.exists || programSnap.data().tenantId !== callerTenantId) {
+      throw new HttpsError("invalid-argument", "البرنامج غير صحيح.");
+    }
+    const empSnap = await db.collection(COLLECTIONS.EMPLOYEES).doc(employeeId).get();
+    if (!empSnap.exists || empSnap.data().tenantId !== callerTenantId) {
+      throw new HttpsError("invalid-argument", "الموظف غير صحيح.");
+    }
+
+    // منع التسجيل المكرر
+    const dup = await db.collection(COLLECTIONS.TRAINING_ENROLLMENTS)
+      .where("tenantId", "==", callerTenantId)
+      .where("programId", "==", programId)
+      .where("employeeId", "==", employeeId)
+      .limit(1).get();
+    if (!dup.empty) {
+      throw new HttpsError("already-exists", "هذا الموظف مسجّل في البرنامج بالفعل.");
+    }
+
+    const emp = empSnap.data();
+    const enrollRef = db.collection(COLLECTIONS.TRAINING_ENROLLMENTS).doc();
+    await enrollRef.set(buildEnrollmentDoc({
+      tenantId: callerTenantId, programId, programTitle: programSnap.data().title || null,
+      employeeId, employeeName: emp.name || null, employeeCode: emp.employeeCode || null,
+      status: "registered", enrolledDate: new Date().toISOString().slice(0, 10),
+      createdBy: request.auth.uid, createdAt: FieldValue.serverTimestamp(),
+    }));
+    return { id: enrollRef.id, employeeName: emp.name };
+  } catch (err) {
+    if (err instanceof HttpsError) throw err;
+    console.error("enrollEmployee failed:", err);
+    throw new HttpsError("internal", "تعذّر تسجيل الموظف، حاول مرة أخرى.");
+  }
+});
+
+// ===== تحديث حالة المشارك =====
+exports.updateEnrollmentStatus = onCall(async (request) => {
+  try {
+    const callerTenantId = await requireModule(request.auth, MODULES.HR);
+    const data = request.data || {};
+    const enrollmentId = typeof data.enrollmentId === "string" ? data.enrollmentId.trim() : "";
+    const status = ENROLLMENT_STATUSES.includes(data.status) ? data.status : null;
+    const score = data.score !== undefined && data.score !== null && data.score !== "" ? Number(data.score) : null;
+    if (!enrollmentId) throw new HttpsError("invalid-argument", "يجب تحديد التسجيل.");
+    if (!status) throw new HttpsError("invalid-argument", "حالة غير صحيحة.");
+    if (score !== null && (!Number.isFinite(score) || score < 0 || score > 100)) {
+      throw new HttpsError("invalid-argument", "الدرجة يجب أن تكون بين 0 و100.");
+    }
+
+    const ref = db.collection(COLLECTIONS.TRAINING_ENROLLMENTS).doc(enrollmentId);
+    const snap = await ref.get();
+    if (!snap.exists || snap.data().tenantId !== callerTenantId) {
+      throw new HttpsError("invalid-argument", "التسجيل غير صحيح.");
+    }
+
+    const update = { status, updatedAt: FieldValue.serverTimestamp() };
+    if (score !== null) update.score = score;
+    if (status === "completed") {
+      update.completedDate = snap.data().completedDate || new Date().toISOString().slice(0, 10);
+    }
+    await ref.update(update);
+    return { id: enrollmentId, status };
+  } catch (err) {
+    if (err instanceof HttpsError) throw err;
+    console.error("updateEnrollmentStatus failed:", err);
+    throw new HttpsError("internal", "تعذّر تحديث الحالة، حاول مرة أخرى.");
+  }
+});
+
+// ===== إصدار شهادة (للمشارك المكتمل) =====
+exports.issueCertificate = onCall(async (request) => {
+  try {
+    const callerTenantId = await requireModule(request.auth, MODULES.HR);
+    const data = request.data || {};
+    const enrollmentId = typeof data.enrollmentId === "string" ? data.enrollmentId.trim() : "";
+    if (!enrollmentId) throw new HttpsError("invalid-argument", "يجب تحديد التسجيل.");
+
+    const ref = db.collection(COLLECTIONS.TRAINING_ENROLLMENTS).doc(enrollmentId);
+    const snap0 = await ref.get();
+    if (!snap0.exists || snap0.data().tenantId !== callerTenantId) {
+      throw new HttpsError("invalid-argument", "التسجيل غير صحيح.");
+    }
+    if (snap0.data().status !== "completed") {
+      throw new HttpsError("failed-precondition", "لا يمكن إصدار شهادة إلا بعد إكمال البرنامج.");
+    }
+    if (snap0.data().certificateNumber) {
+      throw new HttpsError("already-exists", "الشهادة صادرة بالفعل.");
+    }
+
+    const tenantRef = db.collection(COLLECTIONS.TENANTS).doc(callerTenantId);
+    const certNumber = await db.runTransaction(async (tx) => {
+      const snap = await tx.get(ref);
+      if (snap.data().certificateNumber) throw new HttpsError("already-exists", "الشهادة صادرة بالفعل.");
+      const tSnap = await tx.get(tenantRef);
+      const n = ((tSnap.data() || {}).lastCertificateNumber || 0) + 1;
+      tx.update(ref, {
+        certificateNumber: n,
+        certificateIssueDate: new Date().toISOString().slice(0, 10),
+      });
+      tx.update(tenantRef, { lastCertificateNumber: n });
+      return n;
+    });
+    return { id: enrollmentId, certificateNumber: certNumber };
+  } catch (err) {
+    if (err instanceof HttpsError) throw err;
+    console.error("issueCertificate failed:", err);
+    throw new HttpsError("internal", "تعذّر إصدار الشهادة، حاول مرة أخرى.");
+  }
+});
+
+// ═══════════════════════════════════════════════════════
+// ===== الموارد البشرية: علاقات الموظفين =====
+// ===== (إجازات · جزاءات · تقييم أداء) =====
+// ═══════════════════════════════════════════════════════
+
+const LEAVE_TYPES = ["annual", "sick", "unpaid", "emergency", "other"];
+const PENALTY_TYPES = ["warning", "deduction", "suspension", "other"];
+
+async function fetchEmployeeForHR(employeeId, tenantId) {
+  const snap = await db.collection(COLLECTIONS.EMPLOYEES).doc(employeeId).get();
+  if (!snap.exists || snap.data().tenantId !== tenantId) {
+    throw new HttpsError("invalid-argument", "الموظف غير صحيح.");
+  }
+  return snap.data();
+}
+
+// ===== طلب إجازة =====
+exports.createLeaveRequest = onCall(async (request) => {
+  try {
+    const callerTenantId = await requireModule(request.auth, MODULES.HR);
+    const data = request.data || {};
+    const employeeId = typeof data.employeeId === "string" ? data.employeeId.trim() : "";
+    const type = LEAVE_TYPES.includes(data.type) ? data.type : "annual";
+    const startDate = typeof data.startDate === "string" && isValidDate(data.startDate) ? data.startDate : null;
+    const endDate = typeof data.endDate === "string" && isValidDate(data.endDate) ? data.endDate : null;
+    const reason = typeof data.reason === "string" ? data.reason.trim() : "";
+
+    if (!employeeId) throw new HttpsError("invalid-argument", "يجب تحديد الموظف.");
+    if (!startDate || !endDate) throw new HttpsError("invalid-argument", "تواريخ الإجازة مطلوبة.");
+    if (endDate < startDate) throw new HttpsError("invalid-argument", "تاريخ النهاية قبل البداية.");
+
+    const days = Math.floor((new Date(endDate + "T00:00:00").getTime() - new Date(startDate + "T00:00:00").getTime()) / 86400000) + 1;
+
+    const emp = await fetchEmployeeForHR(employeeId, callerTenantId);
+    const ref = db.collection(COLLECTIONS.LEAVE_REQUESTS).doc();
+    await ref.set(buildLeaveRequestDoc({
+      tenantId: callerTenantId, employeeId, employeeName: emp.name || null, employeeCode: emp.employeeCode || null,
+      type, startDate, endDate, days, reason, status: "pending",
+      createdBy: request.auth.uid, createdAt: FieldValue.serverTimestamp(),
+    }));
+    return { id: ref.id, days };
+  } catch (err) {
+    if (err instanceof HttpsError) throw err;
+    console.error("createLeaveRequest failed:", err);
+    throw new HttpsError("internal", "تعذّر تسجيل الطلب، حاول مرة أخرى.");
+  }
+});
+
+// ===== اعتماد/رفض إجازة =====
+exports.updateLeaveStatus = onCall(async (request) => {
+  try {
+    const callerTenantId = await requireModule(request.auth, MODULES.HR);
+    const data = request.data || {};
+    const leaveId = typeof data.leaveId === "string" ? data.leaveId.trim() : "";
+    const action = data.action === "approve" ? "approved" : data.action === "reject" ? "rejected" : null;
+    if (!leaveId) throw new HttpsError("invalid-argument", "يجب تحديد الطلب.");
+    if (!action) throw new HttpsError("invalid-argument", "إجراء غير صحيح.");
+
+    const ref = db.collection(COLLECTIONS.LEAVE_REQUESTS).doc(leaveId);
+    const snap = await ref.get();
+    if (!snap.exists || snap.data().tenantId !== callerTenantId) {
+      throw new HttpsError("invalid-argument", "الطلب غير صحيح.");
+    }
+    if (snap.data().status !== "pending") {
+      throw new HttpsError("failed-precondition", "تمّت مراجعة هذا الطلب بالفعل.");
+    }
+    await ref.update({ status: action, reviewedBy: request.auth.uid, reviewedAt: FieldValue.serverTimestamp() });
+    return { id: leaveId, status: action };
+  } catch (err) {
+    if (err instanceof HttpsError) throw err;
+    console.error("updateLeaveStatus failed:", err);
+    throw new HttpsError("internal", "تعذّر تحديث الطلب، حاول مرة أخرى.");
+  }
+});
+
+// ===== تسجيل جزاء/مخالفة =====
+exports.createPenalty = onCall(async (request) => {
+  try {
+    const callerTenantId = await requireModule(request.auth, MODULES.HR);
+    const data = request.data || {};
+    const employeeId = typeof data.employeeId === "string" ? data.employeeId.trim() : "";
+    const type = PENALTY_TYPES.includes(data.type) ? data.type : "warning";
+    const date = typeof data.date === "string" && isValidDate(data.date) ? data.date : null;
+    const reason = typeof data.reason === "string" ? data.reason.trim() : "";
+    const amount = data.amount !== undefined && data.amount !== null && data.amount !== "" ? Number(data.amount) : null;
+
+    if (!employeeId) throw new HttpsError("invalid-argument", "يجب تحديد الموظف.");
+    if (!date) throw new HttpsError("invalid-argument", "تاريخ الجزاء مطلوب.");
+    if (reason.length < 2) throw new HttpsError("invalid-argument", "سبب الجزاء مطلوب.");
+    if (amount !== null && (!Number.isFinite(amount) || amount < 0)) throw new HttpsError("invalid-argument", "مبلغ الخصم غير صحيح.");
+
+    const emp = await fetchEmployeeForHR(employeeId, callerTenantId);
+    const tenantRef = db.collection(COLLECTIONS.TENANTS).doc(callerTenantId);
+    const ref = db.collection(COLLECTIONS.PENALTIES).doc();
+    const nextNumber = await db.runTransaction(async (tx) => {
+      const tSnap = await tx.get(tenantRef);
+      const n = ((tSnap.data() || {}).lastPenaltyNumber || 0) + 1;
+      tx.set(ref, buildPenaltyDoc({
+        tenantId: callerTenantId, penaltyNumber: n, employeeId,
+        employeeName: emp.name || null, employeeCode: emp.employeeCode || null,
+        type, date, amount, reason,
+        createdBy: request.auth.uid, createdAt: FieldValue.serverTimestamp(),
+      }));
+      tx.update(tenantRef, { lastPenaltyNumber: n });
+      return n;
+    });
+    return { id: ref.id, penaltyNumber: nextNumber };
+  } catch (err) {
+    if (err instanceof HttpsError) throw err;
+    console.error("createPenalty failed:", err);
+    throw new HttpsError("internal", "تعذّر تسجيل الجزاء، حاول مرة أخرى.");
+  }
+});
+
+// ===== تقييم أداء =====
+exports.createEvaluation = onCall(async (request) => {
+  try {
+    const callerTenantId = await requireModule(request.auth, MODULES.HR);
+    const data = request.data || {};
+    const employeeId = typeof data.employeeId === "string" ? data.employeeId.trim() : "";
+    const period = typeof data.period === "string" ? data.period.trim() : "";
+    const date = typeof data.date === "string" && isValidDate(data.date) ? data.date : new Date().toISOString().slice(0, 10);
+    const strengths = typeof data.strengths === "string" ? data.strengths.trim() : "";
+    const improvements = typeof data.improvements === "string" ? data.improvements.trim() : "";
+    const notes = typeof data.notes === "string" ? data.notes.trim() : "";
+    const rawCriteria = data.criteria && typeof data.criteria === "object" ? data.criteria : {};
+
+    if (!employeeId) throw new HttpsError("invalid-argument", "يجب تحديد الموظف.");
+    if (!period) throw new HttpsError("invalid-argument", "فترة التقييم مطلوبة.");
+
+    // تنظيف المعايير (كل درجة 1-5) وحساب المتوسط
+    const allowedKeys = ["quality", "commitment", "teamwork", "productivity", "initiative"];
+    const criteria = {};
+    let sum = 0, count = 0;
+    for (const k of allowedKeys) {
+      const v = Number(rawCriteria[k]);
+      if (Number.isFinite(v) && v >= 1 && v <= 5) {
+        criteria[k] = v;
+        sum += v; count += 1;
+      }
+    }
+    if (count === 0) throw new HttpsError("invalid-argument", "أدخل درجات التقييم.");
+    const overallScore = Math.round((sum / count) * 100) / 100;
+
+    const emp = await fetchEmployeeForHR(employeeId, callerTenantId);
+    const ref = db.collection(COLLECTIONS.EVALUATIONS).doc();
+    await ref.set(buildEvaluationDoc({
+      tenantId: callerTenantId, employeeId, employeeName: emp.name || null, employeeCode: emp.employeeCode || null,
+      period, date, criteria, overallScore, strengths, improvements, notes,
+      createdBy: request.auth.uid, createdAt: FieldValue.serverTimestamp(),
+    }));
+    return { id: ref.id, overallScore };
+  } catch (err) {
+    if (err instanceof HttpsError) throw err;
+    console.error("createEvaluation failed:", err);
+    throw new HttpsError("internal", "تعذّر حفظ التقييم، حاول مرة أخرى.");
+  }
+});
+
+// ═══════════════════════════════════════════════════════
+// ===== العمليات: الإسناد الموحّد (موظف ← مشروع) =====
+// ===== المرحلة 1: إسناد ملف الموظف مباشرة + عرض إسناداته =====
+// ═══════════════════════════════════════════════════════
+
+// ===== إسناد موظف لمشروع =====
+exports.assignEmployeeToProject = onCall(async (request) => {
+  try {
+    const callerTenantId = await requireModule(request.auth, MODULES.PROJECTS);
+    const data = request.data || {};
+    const projectId = typeof data.projectId === "string" ? data.projectId.trim() : "";
+    const employeeId = typeof data.employeeId === "string" ? data.employeeId.trim() : "";
+    const rentalPeriod = data.rentalPeriod === "daily" ? "daily" : "monthly";
+    const rentalPrice = Number(data.rentalPrice) || 0;
+    const monthlyCost = Number(data.monthlyCost) || 0;
+    const hoursPerDay = Number(data.hoursPerDay) || 0;
+    const daysPerWeek = Number(data.daysPerWeek) || 0;
+    const monthlyHours = Math.round(hoursPerDay * daysPerWeek * 4.33 * 100) / 100; // ساعات شهرية تقديرية
+    const targetProfit = Number(data.targetProfit) || 0;
+    const startDate = typeof data.startDate === "string" && isValidDate(data.startDate) ? data.startDate : null;
+    const endDate = typeof data.endDate === "string" && isValidDate(data.endDate) ? data.endDate : null;
+    const notes = typeof data.notes === "string" ? data.notes.trim() : "";
+
+    if (!projectId) throw new HttpsError("invalid-argument", "يجب تحديد المشروع.");
+    if (!employeeId) throw new HttpsError("invalid-argument", "يجب تحديد الموظف.");
+    if (rentalPrice < 0) throw new HttpsError("invalid-argument", "سعر التأجير غير صحيح.");
+    if (monthlyCost < 0) throw new HttpsError("invalid-argument", "التكلفة غير صحيحة.");
+    if (startDate && endDate && endDate < startDate) throw new HttpsError("invalid-argument", "تاريخ النهاية قبل البداية.");
+
+    // التحقق من المشروع
+    const projSnap = await db.collection(COLLECTIONS.PROJECTS).doc(projectId).get();
+    if (!projSnap.exists || projSnap.data().tenantId !== callerTenantId) {
+      throw new HttpsError("invalid-argument", "المشروع غير صحيح.");
+    }
+    const proj = projSnap.data();
+    // التحقق من الموظف
+    const empSnap = await db.collection(COLLECTIONS.EMPLOYEES).doc(employeeId).get();
+    if (!empSnap.exists || empSnap.data().tenantId !== callerTenantId) {
+      throw new HttpsError("invalid-argument", "الموظف غير صحيح.");
+    }
+    const emp = empSnap.data();
+
+    // منع إسناد نفس الموظف لنفس المشروع مرتين (نشط)
+    const dup = await db.collection(COLLECTIONS.EMPLOYEE_ASSIGNMENTS)
+      .where("tenantId", "==", callerTenantId)
+      .where("employeeId", "==", employeeId)
+      .where("projectId", "==", projectId)
+      .where("status", "==", "active")
+      .limit(1).get();
+    if (!dup.empty) {
+      throw new HttpsError("already-exists", "هذا الموظف مُسند لهذا المشروع بالفعل.");
+    }
+
+    const tenantRef = db.collection(COLLECTIONS.TENANTS).doc(callerTenantId);
+    const assignRef = db.collection(COLLECTIONS.EMPLOYEE_ASSIGNMENTS).doc();
+    const nextNumber = await db.runTransaction(async (tx) => {
+      const tSnap = await tx.get(tenantRef);
+      const n = ((tSnap.data() || {}).lastEmpAssignmentNumber || 0) + 1;
+      tx.set(assignRef, buildEmployeeAssignmentDoc({
+        tenantId: callerTenantId, assignmentNumber: n,
+        employeeId, employeeName: emp.name || null, employeeCode: emp.employeeCode || null,
+        employeeJobTitle: (emp.job && emp.job.title) || null,
+        projectId, projectName: proj.name || null, projectNumber: proj.projectNumber || null,
+        rentalPrice, rentalPeriod, monthlyCost,
+        hoursPerDay, daysPerWeek, monthlyHours, targetProfit,
+        startDate, endDate, status: "active", notes,
+        createdBy: request.auth.uid, createdAt: FieldValue.serverTimestamp(),
+      }));
+      tx.update(tenantRef, { lastEmpAssignmentNumber: n });
+      return n;
+    });
+
+    return { id: assignRef.id, assignmentNumber: nextNumber, employeeName: emp.name };
+  } catch (err) {
+    if (err instanceof HttpsError) throw err;
+    console.error("assignEmployeeToProject failed:", err);
+    throw new HttpsError("internal", "تعذّر إسناد الموظف، حاول مرة أخرى.");
+  }
+});
+
+// ===== جلب إسنادات موظف معيّن (لعرض «مسند في مشروع أ») =====
+exports.getEmployeeAssignments = onCall(async (request) => {
+  try {
+    const callerTenantId = await requireModule(request.auth, MODULES.PROJECTS);
+    const data = request.data || {};
+    const employeeId = typeof data.employeeId === "string" ? data.employeeId.trim() : "";
+    if (!employeeId) throw new HttpsError("invalid-argument", "يجب تحديد الموظف.");
+
+    const snap = await db.collection(COLLECTIONS.EMPLOYEE_ASSIGNMENTS)
+      .where("tenantId", "==", callerTenantId)
+      .where("employeeId", "==", employeeId)
+      .where("status", "==", "active").get();
+
+    const assignments = snap.docs.map((d) => {
+      const a = d.data();
+      return {
+        id: d.id, projectId: a.projectId, projectName: a.projectName, projectNumber: a.projectNumber,
+        rentalPrice: a.rentalPrice, rentalPeriod: a.rentalPeriod, monthlyCost: a.monthlyCost,
+        startDate: a.startDate, endDate: a.endDate,
+      };
+    });
+    const totalMonthlyCost = assignments.reduce((s, a) => s + (Number(a.monthlyCost) || 0), 0);
+    return { employeeId, count: assignments.length, assignments, totalMonthlyCost };
+  } catch (err) {
+    if (err instanceof HttpsError) throw err;
+    console.error("getEmployeeAssignments failed:", err);
+    throw new HttpsError("internal", "تعذّر جلب الإسنادات، حاول مرة أخرى.");
+  }
+});
+
+// ===== إزالة إسناد =====
+exports.removeAssignment = onCall(async (request) => {
+  try {
+    const callerTenantId = await requireModule(request.auth, MODULES.PROJECTS);
+    const data = request.data || {};
+    const assignmentId = typeof data.assignmentId === "string" ? data.assignmentId.trim() : "";
+    if (!assignmentId) throw new HttpsError("invalid-argument", "يجب تحديد الإسناد.");
+
+    const ref = db.collection(COLLECTIONS.EMPLOYEE_ASSIGNMENTS).doc(assignmentId);
+    const snap = await ref.get();
+    if (!snap.exists || snap.data().tenantId !== callerTenantId) {
+      throw new HttpsError("invalid-argument", "الإسناد غير صحيح.");
+    }
+    await ref.update({ status: "removed", removedBy: request.auth.uid, removedAt: FieldValue.serverTimestamp() });
+    return { id: assignmentId, status: "removed" };
+  } catch (err) {
+    if (err instanceof HttpsError) throw err;
+    console.error("removeAssignment failed:", err);
+    throw new HttpsError("internal", "تعذّر إزالة الإسناد، حاول مرة أخرى.");
+  }
+});
+
+// ===== حساب توزيع التكاليف و Overtime (مشاركة الموارد) =====
+// المنطق: موظف في عدة مشاريع → التكلفة الأساسية + الرسوم تتشارك بالتساوي،
+// الربح ثابت لكل مشروع، والـ OT (إجمالي ساعات شهرية > السقف) يتشارك بالتساوي.
+exports.getOperationsCosting = onCall(async (request) => {
+  try {
+    const callerTenantId = await requireModule(request.auth, MODULES.PROJECTS);
+    const data = request.data || {};
+    const filterProjectId = typeof data.projectId === "string" ? data.projectId.trim() : "";
+
+    const DAYS_PER_MONTH = 26;
+    const STANDARD_HOURS_PER_DAY = 8;
+    const monthlyCapHours = STANDARD_HOURS_PER_DAY * DAYS_PER_MONTH; // 208 ساعة شهريًا
+    const round2 = (n) => Math.round((Number(n) || 0) * 100) / 100;
+
+    // كل الإسنادات النشطة
+    const assignSnap = await db.collection(COLLECTIONS.EMPLOYEE_ASSIGNMENTS)
+      .where("tenantId", "==", callerTenantId)
+      .where("status", "==", "active").get();
+    const allAssignments = assignSnap.docs.map((d) => ({ id: d.id, ...d.data() }));
+
+    // تجميع حسب الموظف (لحساب المشاركة عبر كل مشاريعه)
+    const byEmployee = new Map();
+    for (const a of allAssignments) {
+      if (!byEmployee.has(a.employeeId)) byEmployee.set(a.employeeId, []);
+      byEmployee.get(a.employeeId).push(a);
+    }
+
+    // جلب ملفات الموظفين (للتكلفة من الراتب والرسوم ومعدل OT)
+    const empData = new Map();
+    for (const eid of byEmployee.keys()) {
+      const eSnap = await db.collection(COLLECTIONS.EMPLOYEES).doc(eid).get();
+      if (eSnap.exists && eSnap.data().tenantId === callerTenantId) empData.set(eid, eSnap.data());
+    }
+
+    // حساب التوزيع لكل إسناد
+    const results = [];
+    for (const [eid, list] of byEmployee.entries()) {
+      const emp = empData.get(eid) || {};
+      const baseCost = (emp.salary && emp.salary.total) || 0;        // الراتب الأساسي (يتشارك)
+      const govFees = (emp.costing && emp.costing.governmentFees) || 0; // رسوم حكومية/إدارية (تتشارك)
+      const otRate = (emp.costing && emp.costing.otHourlyRate) || 0;    // معدل ساعة OT
+      const N = list.length;                                         // عدد مشاريع الموظف
+      const totalMonthlyHours = list.reduce((s, a) => s + (Number(a.monthlyHours) || 0), 0);
+      const otHours = Math.max(0, totalMonthlyHours - monthlyCapHours); // الزيادة عن السقف الشهري
+      const otCost = round2(otHours * otRate);
+
+      for (const a of list) {
+        const baseShare = round2(baseCost / N);   // نصيب هذا المشروع من الراتب
+        const govShare = round2(govFees / N);     // نصيب هذا المشروع من الرسوم
+        const otShare = round2(otCost / N);       // نصيب هذا المشروع من OT
+        const profit = Number(a.targetProfit) || 0; // الربح المستهدف (ثابت — كامل لكل مشروع)
+        const totalCost = round2(baseShare + govShare + otShare + profit);
+        const revenue = Number(a.rentalPrice) || 0;
+        const netProfit = round2(revenue - totalCost);
+        results.push({
+          assignmentId: a.id, employeeId: eid, employeeName: a.employeeName || null,
+          employeeCode: a.employeeCode || null, employeeJobTitle: a.employeeJobTitle || null,
+          projectId: a.projectId, projectName: a.projectName || null, projectNumber: a.projectNumber || null,
+          projectsCount: N, isShared: N > 1,
+          totalMonthlyHours: round2(totalMonthlyHours), monthlyCapHours,
+          otHours: round2(otHours), hasOT: otHours > 0,
+          baseShare, govShare, otShare, profit, totalCost, revenue, netProfit,
+          rentalPeriod: a.rentalPeriod || "monthly",
+        });
+      }
+    }
+
+    const filtered = filterProjectId ? results.filter((r) => r.projectId === filterProjectId) : results;
+    const summary = {
+      totalRevenue: round2(filtered.reduce((s, r) => s + r.revenue, 0)),
+      totalCost: round2(filtered.reduce((s, r) => s + r.totalCost, 0)),
+      totalNetProfit: round2(filtered.reduce((s, r) => s + r.netProfit, 0)),
+      count: filtered.length,
+    };
+    return { assignments: filtered, summary, monthlyCapHours };
+  } catch (err) {
+    if (err instanceof HttpsError) throw err;
+    console.error("getOperationsCosting failed:", err);
+    throw new HttpsError("internal", "تعذّر حساب التكاليف، حاول مرة أخرى.");
   }
 });
 

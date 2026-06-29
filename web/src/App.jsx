@@ -1,85 +1,94 @@
-import { useState } from "react";
-import { useAuth } from "./useAuth";
-import LoginForm from "./LoginForm";
-import RegisterForm from "./RegisterForm";
-import PendingScreen from "./PendingScreen";
-import OwnerDashboard from "./OwnerDashboard";
-import StaffDashboard from "./StaffDashboard";
-import WorkerDashboard from "./WorkerDashboard";
+import React from "react";
+import CentralShell from "./CentralShell";
+
+/* ============================================================
+   App.jsx — الملف الرئيسي الذي يوصّل الهيكل (Shell) بكل الواجهات.
+   كل سطر import يجلب واجهة، وخريطة views تربط كل تفرّع بواجهته.
+   ============================================================ */
+
+// ── واجهات حقيقية مربوطة بقاعدة البيانات ──
+import StaffView                from "./StaffView";                // hr_emp
+import CustomersView            from "./CustomersView";            // fin_cust
+import AccountingView           from "./AccountingView";           // fin_acc (دليل الحسابات + القيود)
+import InvoicesView             from "./InvoicesView";             // fin_inv (الفوترة + ZATCA)
+import FinancialStatementsView  from "./FinancialStatementsView";  // fin_fs
+
+// ── واجهات العرض (تُربط بقاعدة البيانات لاحقًا) ──
+import ExecutiveDashboard       from "./ExecutiveDashboard";
+import CollectionsView          from "./CollectionsView";
+import TreasuryView             from "./TreasuryView";
+import FPAView                  from "./FPAView";
+import ProcurementView          from "./ProcurementView";
+import PayrollView              from "./PayrollView";
+import RecruitmentView          from "./RecruitmentView";
+import TrainingView             from "./TrainingView";
+import EmployeeRelationsView    from "./EmployeeRelationsView";
+import ProjectsView            from "./ProjectsView";
+import PeopleView              from "./PeopleView";
+import QualitySafetyView        from "./QualitySafetyView";
+import DepreciationView         from "./DepreciationView";
+import SalesView                from "./SalesView";
+import MarketingView            from "./MarketingView";
+import CustomerServiceView      from "./CustomerServiceView";
+import ContractsView            from "./ContractsView";
+import ComplianceView           from "./ComplianceView";
+import DisputesView             from "./DisputesView";
+import InternalAuditView        from "./InternalAuditView";
+import NPSView                  from "./NPSView";
+import ProcessImprovementView   from "./ProcessImprovementView";
+import SubscriptionView         from "./SubscriptionView";
+import BuildSystemView          from "./BuildSystemView";
+
+// ── خريطة الربط: معرّف التفرّع (نفس الموجود في الـ Shell) → الواجهة ──
+const views = {
+  // الإدارة العليا
+  exec_kpi:      ExecutiveDashboard,
+
+  // المالية
+  fin_acc:       AccountingView,
+  fin_inv:       InvoicesView,
+  fin_cust:      CustomersView,
+  fin_fs:        FinancialStatementsView,
+  fin_coll:      CollectionsView,
+  fin_treas:     TreasuryView,
+  fin_fpa:       FPAView,
+  fin_proc:      ProcurementView,
+
+  // الموارد البشرية
+  hr_emp:        StaffView,
+  hr_pay:        PayrollView,
+  hr_rec:        RecruitmentView,
+  hr_train:      TrainingView,
+  hr_rel:        EmployeeRelationsView,
+
+  // العمليات
+  ops_proj:      ProjectsView,
+  ops_people:    PeopleView,
+  ops_qs:        QualitySafetyView,
+
+  // الأصول والمرافق
+  as_dep:        DepreciationView,
+
+  // المبيعات والتسويق
+  sal_dir:       SalesView,
+  sal_mkt:       MarketingView,
+  sal_serv:      CustomerServiceView,
+
+  // القانونية والامتثال
+  leg_con:       ContractsView,
+  leg_com:       ComplianceView,
+  leg_dis:       DisputesView,
+
+  // التميز والجودة
+  qa_aud:        InternalAuditView,
+  qa_nps:        NPSView,
+  qa_imp:        ProcessImprovementView,
+
+  // إدارة المنصة
+  subscriptions: SubscriptionView,
+  build:         BuildSystemView,
+};
 
 export default function App() {
-  const { user, claims, loading } = useAuth();
-  // عند عدم وجود مستخدم: نتنقّل بين الدخول والتسجيل
-  const [showRegister, setShowRegister] = useState(false);
-  // بعد تسجيل شركة جديدة: نعرض صفحة الانتظار
-  const [justRegistered, setJustRegistered] = useState(null);
-
-  // (1) لحظة التحقّق الأولى من حالة المصادقة
-  if (loading) {
-    return <CenterMessage text="جارٍ التحميل..." />;
-  }
-
-  // (2) سجّل شركة للتو → صفحة الانتظار
-  if (justRegistered) {
-    return <PendingScreen tenantId={justRegistered.tenantId} />;
-  }
-
-  // (3) لا يوجد مستخدم مسجّل → دخول أو تسجيل
-  if (!user) {
-    if (showRegister) {
-      return (
-        <RegisterForm
-          onSuccess={(result) => setJustRegistered(result)}
-        />
-      );
-    }
-    return <LoginForm onSwitchToRegister={() => setShowRegister(true)} />;
-  }
-
-  // (4) يوجد مستخدم، لكن التوكن لم يحمل tenantId بعد
-  //     (يحدث لحظة قصيرة بعد التسجيل قبل تحديث التوكن)
-  if (!claims || !claims.tenantId) {
-    return <CenterMessage text="جارٍ تجهيز الحساب..." />;
-  }
-
-  // (5) مستخدم مسجّل بدور مالك → لوحة المالك
-  if (claims.role === "owner") {
-    return <OwnerDashboard user={user} claims={claims} />;
-  }
-
-  // (6) موظف إداري → لوحة الموظف
-  if (claims.role === "staff") {
-    return <StaffDashboard user={user} claims={claims} />;
-  }
-
-  // (7) عامل → لوحة العامل
-  if (claims.role === "worker") {
-    return <WorkerDashboard user={user} />;
-  }
-
-  // احتياط: دور غير معروف
-  return (
-    <CenterMessage text={`مرحبًا ${user.email} — لا توجد لوحة مخصّصة لحسابك.`} />
-  );
+  return <CentralShell views={views} />;
 }
-
-function CenterMessage({ text }) {
-  return (
-    <div style={styles.center}>
-      <p style={styles.text}>{text}</p>
-    </div>
-  );
-}
-
-const styles = {
-  center: {
-    minHeight: "100vh",
-    display: "flex",
-    alignItems: "center",
-    justifyContent: "center",
-    fontFamily: "system-ui, sans-serif",
-    direction: "rtl",
-    background: "#f8fafc",
-  },
-  text: { fontSize: 16, color: "#475569" },
-};

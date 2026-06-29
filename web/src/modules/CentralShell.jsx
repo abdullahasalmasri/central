@@ -43,10 +43,13 @@ const NAV = [
     { id: "hr_rel",   name: "علاقات الموظفين", file: "EmployeeRelationsView.jsx" },
   ]},
   { type: "section", id: "ops", name: "العمليات", icon: Settings, color: "#ea580c", children: [
-    { id: "ops_book", name: "الحجوزات والجدولة", file: null },
-    { id: "ops_req",  name: "طلبات الموارد",     file: null },
-    { id: "ops_proj", name: "المشاريع",          file: null },
-    { id: "ops_qs",   name: "الجودة والسلامة",   file: "QualitySafetyView.jsx" },
+    { id: "ops_proj",       name: "المشاريع",            file: "ProjectsView.jsx" },
+    { id: "ops_people",     name: "الأفراد",             file: "PeopleView.jsx" },
+    { id: "ops_facilities", name: "المرافق",             file: null },
+    { id: "ops_materials",  name: "المواد",              file: null },
+    { id: "ops_process",    name: "العمليات التشغيلية",   file: null },
+    { id: "ops_planning",   name: "التخطيط والرقابة",     file: null },
+    { id: "ops_qs",         name: "الجودة والسلامة",      file: "QualitySafetyView.jsx" },
   ]},
   { type: "section", id: "assets", name: "الأصول والمرافق", icon: Building2, color: "#0e7490", children: [
     { id: "as_veh",  name: "المركبات", file: null },

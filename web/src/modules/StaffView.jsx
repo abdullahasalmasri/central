@@ -299,6 +299,7 @@ function EmployeeForm({ employee, users, linkedUserIds, onClose, onSaved }) {
   const docs = e.documents || {};
   const job = e.job || {};
   const sal = e.salary || {};
+  const cost = e.costing || {};
   const [f, setF] = useState({
     employeeCode: e.employeeCode || "", name: e.name || "", nationality: e.nationality || "", phone: e.phone || "",
     birthDate: e.birthDate || "", gender: e.gender || "",
@@ -311,6 +312,8 @@ function EmployeeForm({ employee, users, linkedUserIds, onClose, onSaved }) {
     contractType: job.contractType || "", contractExpiry: job.contractExpiry || "",
     basicSalary: sal.basic != null ? String(sal.basic) : "", housingAllowance: sal.housing != null ? String(sal.housing) : "",
     transportAllowance: sal.transport != null ? String(sal.transport) : "", otherAllowance: sal.other != null ? String(sal.other) : "",
+    governmentFees: cost.governmentFees != null ? String(cost.governmentFees) : "", otHourlyRate: cost.otHourlyRate != null ? String(cost.otHourlyRate) : "",
+    defaultTargetProfit: cost.defaultTargetProfit != null ? String(cost.defaultTargetProfit) : "",
     status: e.status || "active", notes: e.notes || "", linkedUserId: e.linkedUserId || "",
   });
   const [err, setErr] = useState("");
@@ -325,7 +328,7 @@ function EmployeeForm({ employee, users, linkedUserIds, onClose, onSaved }) {
     if (f.name.trim().length < 2) { setErr("اسم الموظف مطلوب (حرفان على الأقل)."); return; }
     setSaving(true);
     try {
-      const payload = { ...f, basicSalary: Number(f.basicSalary) || 0, housingAllowance: Number(f.housingAllowance) || 0, transportAllowance: Number(f.transportAllowance) || 0, otherAllowance: Number(f.otherAllowance) || 0 };
+      const payload = { ...f, basicSalary: Number(f.basicSalary) || 0, housingAllowance: Number(f.housingAllowance) || 0, transportAllowance: Number(f.transportAllowance) || 0, otherAllowance: Number(f.otherAllowance) || 0, governmentFees: Number(f.governmentFees) || 0, otHourlyRate: Number(f.otHourlyRate) || 0, defaultTargetProfit: Number(f.defaultTargetProfit) || 0 };
       if (isEdit) {
         const fn = httpsCallable(functions, "updateEmployeeProfile");
         await fn({ employeeId: employee.id, ...payload });
@@ -413,6 +416,14 @@ function EmployeeForm({ employee, users, linkedUserIds, onClose, onSaved }) {
       <div style={styles.salaryTotal}>
         <span>إجمالي الراتب الشهري</span>
         <span dir="ltr">{fmt(totalSalary)} ﷼</span>
+      </div>
+
+      <SectionTitle>مكوّنات التكلفة التشغيلية (للعمليات)</SectionTitle>
+      <div style={styles.costNote}>تُستخدم لتوزيع التكاليف و Overtime عند إسناد الموظف للمشاريع.</div>
+      <div style={styles.grid2}>
+        <Field label="الرسوم الحكومية + الإدارية / شهر"><input style={styles.input} type="number" min="0" value={f.governmentFees} onChange={(ev) => set("governmentFees", ev.target.value)} disabled={saving} dir="ltr" /></Field>
+        <Field label="معدل ساعة Overtime"><input style={styles.input} type="number" min="0" value={f.otHourlyRate} onChange={(ev) => set("otHourlyRate", ev.target.value)} disabled={saving} dir="ltr" /></Field>
+        <Field label="الربح المستهدف الافتراضي / مشروع"><input style={styles.input} type="number" min="0" value={f.defaultTargetProfit} onChange={(ev) => set("defaultTargetProfit", ev.target.value)} disabled={saving} dir="ltr" /></Field>
       </div>
 
       <SectionTitle>حساب الدخول (اختياري)</SectionTitle>
@@ -591,6 +602,7 @@ const styles = {
   docWarnSpacer: { width: 64, flexShrink: 0 },
 
   salaryTotal: { display: "flex", justifyContent: "space-between", alignItems: "center", padding: "12px 16px", background: "#ecfdf5", border: "1px solid #a7f3d0", borderRadius: 10, marginTop: 12, fontSize: 15, fontWeight: 800, color: "#065f46", fontFamily: "monospace" },
+  costNote: { fontSize: 12, color: "#94a3b8", marginBottom: 12, marginTop: -4 },
 
   linkHint: { fontSize: 12, color: "#64748b", margin: "8px 0 0" },
 
