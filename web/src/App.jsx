@@ -26,6 +26,7 @@ import EmployeeRelationsView    from "./EmployeeRelationsView";
 import ProjectsView            from "./ProjectsView";
 import PeopleView              from "./PeopleView";
 import FacilitiesView          from "./FacilitiesView";
+import MaterialsView           from "./MaterialsView";
 import QualitySafetyView        from "./QualitySafetyView";
 import DepreciationView         from "./DepreciationView";
 import SalesView                from "./SalesView";
@@ -66,6 +67,7 @@ const views = {
   ops_proj:      ProjectsView,
   ops_people:    PeopleView,
   ops_facilities: FacilitiesView,
+  ops_materials: MaterialsView,
   ops_qs:        QualitySafetyView,
 
   // الأصول والمرافق

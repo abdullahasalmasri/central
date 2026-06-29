@@ -52,6 +52,7 @@ const {
   buildEvaluationDoc,
   buildEmployeeAssignmentDoc,
   buildAssetAssignmentDoc,
+  buildMaterialAllocationDoc,
   computeInvoiceTotals,
   validatePermissions,
   isValidTime,
@@ -4215,6 +4216,86 @@ exports.getAssetsCosting = onCall(async (request) => {
     if (err instanceof HttpsError) throw err;
     console.error("getAssetsCosting failed:", err);
     throw new HttpsError("internal", "تعذّر حساب التكاليف، حاول مرة أخرى.");
+  }
+});
+
+// ═══════════════════════════════════════════════════════
+// ===== العمليات: المواد (تخصيص الأصناف للمشاريع) =====
+// ===== تكامل مع المشتريات — استهلاك بكمية (لا توزيع) =====
+// ═══════════════════════════════════════════════════════
+
+// ===== تخصيص مادة لمشروع =====
+exports.allocateMaterialToProject = onCall(async (request) => {
+  try {
+    const callerTenantId = await requireModule(request.auth, MODULES.PROJECTS);
+    const data = request.data || {};
+    const projectId = typeof data.projectId === "string" ? data.projectId.trim() : "";
+    const itemId = typeof data.itemId === "string" ? data.itemId.trim() : "";
+    const quantity = Number(data.quantity) || 0;
+    const unitCost = Number(data.unitCost) || 0;
+    const unitSellPrice = Number(data.unitSellPrice) || 0;
+    const notes = typeof data.notes === "string" ? data.notes.trim() : "";
+
+    if (!projectId) throw new HttpsError("invalid-argument", "يجب تحديد المشروع.");
+    if (!itemId) throw new HttpsError("invalid-argument", "يجب تحديد الصنف.");
+    if (quantity <= 0) throw new HttpsError("invalid-argument", "الكمية يجب أن تكون أكبر من صفر.");
+    if (unitCost < 0 || unitSellPrice < 0) throw new HttpsError("invalid-argument", "السعر غير صحيح.");
+
+    const projSnap = await db.collection(COLLECTIONS.PROJECTS).doc(projectId).get();
+    if (!projSnap.exists || projSnap.data().tenantId !== callerTenantId) {
+      throw new HttpsError("invalid-argument", "المشروع غير صحيح.");
+    }
+    const proj = projSnap.data();
+    const itemSnap = await db.collection(COLLECTIONS.ITEMS).doc(itemId).get();
+    if (!itemSnap.exists || itemSnap.data().tenantId !== callerTenantId) {
+      throw new HttpsError("invalid-argument", "الصنف غير صحيح.");
+    }
+    const item = itemSnap.data();
+
+    const tenantRef = db.collection(COLLECTIONS.TENANTS).doc(callerTenantId);
+    const allocRef = db.collection(COLLECTIONS.MATERIAL_ALLOCATIONS).doc();
+    const nextNumber = await db.runTransaction(async (tx) => {
+      const tSnap = await tx.get(tenantRef);
+      const n = ((tSnap.data() || {}).lastMaterialAllocationNumber || 0) + 1;
+      tx.set(allocRef, buildMaterialAllocationDoc({
+        tenantId: callerTenantId, allocationNumber: n,
+        itemId, itemName: item.name || null, itemCode: item.itemCode || null, unit: item.unit || null,
+        projectId, projectName: proj.name || null, projectNumber: proj.projectNumber || null,
+        quantity, unitCost, unitSellPrice,
+        status: "active", notes,
+        createdBy: request.auth.uid, createdAt: FieldValue.serverTimestamp(),
+      }));
+      tx.update(tenantRef, { lastMaterialAllocationNumber: n });
+      return n;
+    });
+
+    return { id: allocRef.id, allocationNumber: nextNumber, itemName: item.name };
+  } catch (err) {
+    if (err instanceof HttpsError) throw err;
+    console.error("allocateMaterialToProject failed:", err);
+    throw new HttpsError("internal", "تعذّر تخصيص المادة، حاول مرة أخرى.");
+  }
+});
+
+// ===== إزالة تخصيص مادة =====
+exports.removeMaterialAllocation = onCall(async (request) => {
+  try {
+    const callerTenantId = await requireModule(request.auth, MODULES.PROJECTS);
+    const data = request.data || {};
+    const allocationId = typeof data.allocationId === "string" ? data.allocationId.trim() : "";
+    if (!allocationId) throw new HttpsError("invalid-argument", "يجب تحديد التخصيص.");
+
+    const ref = db.collection(COLLECTIONS.MATERIAL_ALLOCATIONS).doc(allocationId);
+    const snap = await ref.get();
+    if (!snap.exists || snap.data().tenantId !== callerTenantId) {
+      throw new HttpsError("invalid-argument", "التخصيص غير صحيح.");
+    }
+    await ref.update({ status: "removed", removedBy: request.auth.uid, removedAt: FieldValue.serverTimestamp() });
+    return { id: allocationId, status: "removed" };
+  } catch (err) {
+    if (err instanceof HttpsError) throw err;
+    console.error("removeMaterialAllocation failed:", err);
+    throw new HttpsError("internal", "تعذّر إزالة التخصيص، حاول مرة أخرى.");
   }
 });
 

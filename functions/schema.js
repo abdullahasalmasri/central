@@ -36,6 +36,7 @@ const COLLECTIONS = {
   EVALUATIONS: "evaluations",
   EMPLOYEE_ASSIGNMENTS: "employeeAssignments",
   ASSET_ASSIGNMENTS: "assetAssignments",
+  MATERIAL_ALLOCATIONS: "materialAllocations",
 };
 
 const ROLES = {
@@ -1385,6 +1386,38 @@ function buildAssetAssignmentDoc({
   };
 }
 
+// تخصيص مادة/صنف لمشروع (تكامل مع المشتريات) — استهلاك بكمية (لا توزيع)
+function buildMaterialAllocationDoc({
+  tenantId, allocationNumber, itemId, itemName, itemCode, unit,
+  projectId, projectName, projectNumber,
+  quantity, unitCost, totalCost, unitSellPrice, totalSell,
+  status, notes, createdBy, createdAt,
+}) {
+  const qty = Number(quantity) || 0;
+  const uCost = Number(unitCost) || 0;
+  const uSell = Number(unitSellPrice) || 0;
+  return {
+    tenantId,
+    allocationNumber: allocationNumber || null,
+    itemId: itemId,
+    itemName: itemName || null,
+    itemCode: itemCode || null,
+    unit: unit || null,
+    projectId: projectId,
+    projectName: projectName || null,
+    projectNumber: projectNumber || null,
+    quantity: qty,
+    unitCost: uCost,
+    totalCost: typeof totalCost === "number" ? totalCost : Math.round(qty * uCost * 100) / 100,
+    unitSellPrice: uSell,
+    totalSell: typeof totalSell === "number" ? totalSell : Math.round(qty * uSell * 100) / 100,
+    status: status || "active", // active | removed
+    notes: notes || null,
+    createdBy: createdBy || null,
+    createdAt,
+  };
+}
+
 function buildProjectTypeDoc({ tenantId, name, code, description, isSystem, createdBy, createdAt }) {
   return {
     tenantId,
@@ -1764,6 +1797,7 @@ module.exports = {
   buildEvaluationDoc,
   buildEmployeeAssignmentDoc,
   buildAssetAssignmentDoc,
+  buildMaterialAllocationDoc,
   computeInvoiceTotals,
   buildProjectTypeDoc,
   buildProjectDoc,
