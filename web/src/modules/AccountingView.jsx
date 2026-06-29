@@ -77,6 +77,9 @@ export default function AccountingView() {
         <button style={{ ...styles.tab, ...(tab === "journal" ? styles.tabActive : {}) }} onClick={() => setTab("journal")}>
           📋 القيود
         </button>
+        <button style={{ ...styles.tab, ...(tab === "ledger" ? styles.tabActive : {}) }} onClick={() => setTab("ledger")}>
+          📖 دفتر الأستاذ
+        </button>
         <button style={{ ...styles.tab, ...(tab === "trial" ? styles.tabActive : {}) }} onClick={() => setTab("trial")}>
           ⚖️ ميزان المراجعة
         </button>
@@ -90,6 +93,8 @@ export default function AccountingView() {
         <AccountsPanel tenantId={tenantId} companyName={companyName} />
       ) : tab === "journal" ? (
         <JournalPanel tenantId={tenantId} companyName={companyName} />
+      ) : tab === "ledger" ? (
+        <LedgerPanel tenantId={tenantId} companyName={companyName} />
       ) : (
         <TrialBalancePanel tenantId={tenantId} companyName={companyName} />
       )}
@@ -588,6 +593,187 @@ function EntryDetail({ entry, onClose }) {
   );
 }
 
+// ═══════════ تبويب دفتر الأستاذ ═══════════
+function LedgerPanel({ tenantId, companyName }) {
+  const [accounts, setAccounts] = useState([]);
+  const [entries, setEntries] = useState([]);
+  const [selectedId, setSelectedId] = useState("");
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState("");
+
+  useEffect(() => { loadData(); /* eslint-disable-next-line */ }, []);
+
+  async function loadData() {
+    setLoading(true);
+    setError("");
+    try {
+      const [accSnap, jeSnap] = await Promise.all([
+        getDocs(query(collection(db, "accounts"), where("tenantId", "==", tenantId))),
+        getDocs(query(collection(db, "journalEntries"), where("tenantId", "==", tenantId))),
+      ]);
+      const accs = accSnap.docs.map((d) => ({ id: d.id, ...d.data() }));
+      accs.sort((a, b) => (a.code || "").localeCompare(b.code || ""));
+      setAccounts(accs);
+      setEntries(jeSnap.docs.map((d) => ({ id: d.id, ...d.data() })));
+    } catch (err) {
+      setError("تعذّر تحميل البيانات.");
+    } finally {
+      setLoading(false);
+    }
+  }
+
+  const company = companyName || "الشركة";
+  const account = accounts.find((a) => a.id === selectedId) || null;
+  const isDebitNature = account ? DEBIT_NATURE.includes(account.type) : true;
+
+  // الحسابات التي لها حركات (لتمييزها في القائمة)
+  const movingIds = new Set();
+  for (const je of entries) {
+    if (je.status && je.status !== "posted") continue;
+    for (const ln of (je.lines || [])) movingIds.add(ln.accountId);
+  }
+
+  // استخراج حركات الحساب المختار من كل القيود المعتمدة
+  const movements = [];
+  if (account) {
+    for (const je of entries) {
+      if (je.status && je.status !== "posted") continue;
+      for (const ln of (je.lines || [])) {
+        if (ln.accountId === selectedId) {
+          movements.push({
+            date: je.date || "",
+            entryNumber: je.entryNumber || null,
+            description: je.description || "",
+            note: ln.note || "",
+            debit: Number(ln.debit) || 0,
+            credit: Number(ln.credit) || 0,
+          });
+        }
+      }
+    }
+    movements.sort((a, b) => (a.date).localeCompare(b.date) || (a.entryNumber || 0) - (b.entryNumber || 0));
+  }
+
+  let running = 0, totalDebit = 0, totalCredit = 0;
+  const rows = movements.map((m) => {
+    running += isDebitNature ? (m.debit - m.credit) : (m.credit - m.debit);
+    totalDebit += m.debit;
+    totalCredit += m.credit;
+    return { ...m, running };
+  });
+
+  const natural = isDebitNature ? "مدين" : "دائن";
+  function sideLabel(bal) {
+    if (Math.abs(bal) < 0.005) return "—";
+    const side = bal >= 0 ? natural : (isDebitNature ? "دائن" : "مدين");
+    return `${Math.abs(bal).toLocaleString()} ${side}`;
+  }
+
+  // تصدير
+  function buildExportRows() {
+    return rows.map((r) => ({
+      date: r.date,
+      entry: r.entryNumber ? `#${r.entryNumber}` : "",
+      desc: [r.description, r.note].filter(Boolean).join(" — "),
+      debit: r.debit || "",
+      credit: r.credit || "",
+      balance: sideLabel(r.running),
+    }));
+  }
+  const exportColumns = [
+    { key: "date", header: "التاريخ" },
+    { key: "entry", header: "القيد" },
+    { key: "desc", header: "البيان" },
+    { key: "debit", header: "مدين" },
+    { key: "credit", header: "دائن" },
+    { key: "balance", header: "الرصيد الجاري" },
+  ];
+  const exportExcel = () => exportToExcel({ rows: buildExportRows(), columns: exportColumns, fileName: datedFileName(`دفتر-${account ? account.code : ""}`), sheetName: "دفتر الأستاذ" });
+  const exportPDF = () => exportToPDF({ rows: buildExportRows(), columns: exportColumns, fileName: datedFileName(`دفتر-${account ? account.code : ""}`), header: { companyName: company, title: `دفتر الأستاذ — ${account ? account.code + " " + account.name : ""}`, subtitle: "General Ledger" } });
+
+  if (loading) return <p style={styles.muted}>جارٍ التحميل...</p>;
+
+  return (
+    <div>
+      <div style={styles.toolbar}>
+        <div style={styles.ledgerPick}>
+          <label style={styles.ledgerLabel}>الحساب:</label>
+          <select style={styles.ledgerSelect} value={selectedId} onChange={(e) => setSelectedId(e.target.value)}>
+            <option value="">— اختر حسابًا —</option>
+            {accounts.map((a) => (
+              <option key={a.id} value={a.id}>
+                {a.code} - {a.name}{movingIds.has(a.id) ? "" : " (بلا حركات)"}
+              </option>
+            ))}
+          </select>
+        </div>
+        {account && rows.length > 0 ? (
+          <div style={styles.toolBtns}>
+            <button style={styles.pdfBtn} onClick={exportPDF}>⬇ PDF</button>
+            <button style={styles.exportBtn} onClick={exportExcel}>⬇ Excel</button>
+          </div>
+        ) : null}
+      </div>
+
+      {error ? <div style={styles.error}>{error}</div> : null}
+
+      {!account ? (
+        <div style={styles.empty}>
+          <p style={styles.muted}>اختر حسابًا من القائمة لعرض حركاته ورصيده الجاري.</p>
+        </div>
+      ) : rows.length === 0 ? (
+        <div style={styles.empty}>
+          <p style={styles.muted}>لا توجد حركات على حساب «{account.name}» بعد.</p>
+        </div>
+      ) : (
+        <div style={styles.panel}>
+          <div style={styles.ledgerHead}>
+            <span style={styles.ledgerTitle} dir="ltr">{account.code} — {account.name}</span>
+            <span style={styles.ledgerNature}>طبيعة الحساب: {natural}</span>
+          </div>
+          <table style={styles.table}>
+            <thead>
+              <tr>
+                <th style={styles.th}>التاريخ</th>
+                <th style={styles.th}>البيان</th>
+                <th style={styles.thAmount}>مدين</th>
+                <th style={styles.thAmount}>دائن</th>
+                <th style={styles.thAmount}>الرصيد الجاري</th>
+              </tr>
+            </thead>
+            <tbody>
+              {rows.map((r, i) => (
+                <tr key={i}>
+                  <td style={styles.tdName} dir="ltr">{r.date}</td>
+                  <td style={styles.tdName}>
+                    {r.entryNumber ? <span style={styles.entryTag}>#{r.entryNumber}</span> : null}
+                    {[r.description, r.note].filter(Boolean).join(" — ") || "—"}
+                  </td>
+                  <td style={styles.tdAmount} dir="ltr">{r.debit ? r.debit.toLocaleString() : "—"}</td>
+                  <td style={styles.tdAmount} dir="ltr">{r.credit ? r.credit.toLocaleString() : "—"}</td>
+                  <td style={{ ...styles.tdAmount, fontWeight: 700, color: "#0f172a" }} dir="ltr">{sideLabel(r.running)}</td>
+                </tr>
+              ))}
+            </tbody>
+            <tfoot>
+              <tr style={styles.totalRow}>
+                <td style={styles.tdTotal} colSpan={2}>الإجمالي</td>
+                <td style={styles.tdAmountTotal} dir="ltr">{totalDebit.toLocaleString()}</td>
+                <td style={styles.tdAmountTotal} dir="ltr">{totalCredit.toLocaleString()}</td>
+                <td style={styles.tdAmountTotal} dir="ltr">{sideLabel(running)}</td>
+              </tr>
+            </tfoot>
+          </table>
+        </div>
+      )}
+
+      <p style={styles.hint}>
+        دفتر الأستاذ يجمع كل حركات الحساب من القيود المعتمدة، ويحسب الرصيد الجاري بعد كل حركة حسب طبيعة الحساب.
+      </p>
+    </div>
+  );
+}
+
 // ═══════════ تبويب ميزان المراجعة ═══════════
 function TrialBalancePanel({ tenantId, companyName }) {
   const [accounts, setAccounts] = useState([]);
@@ -817,6 +1003,14 @@ const styles = {
   balancedOk: { background: "#dcfce7", color: "#166534" },
   balancedBad: { background: "#fef3c7", color: "#92400e" },
   hint: { marginTop: 16, padding: "12px 16px", background: "#f0fdf4", color: "#15803d", borderRadius: 8, fontSize: 13 },
+
+  ledgerPick: { display: "flex", alignItems: "center", gap: 8 },
+  ledgerLabel: { fontSize: 14, fontWeight: 600, color: "#334155" },
+  ledgerSelect: { padding: "9px 12px", fontSize: 14, border: "1px solid #cbd5e1", borderRadius: 8, minWidth: 240, fontFamily: "inherit", background: "#fff" },
+  ledgerHead: { display: "flex", justifyContent: "space-between", alignItems: "center", padding: "14px 16px", background: "#f8fafc", borderBottom: "1px solid #e2e8f0", flexWrap: "wrap", gap: 8 },
+  ledgerTitle: { fontSize: 15, fontWeight: 800, color: "#0f172a", fontFamily: "monospace" },
+  ledgerNature: { fontSize: 13, color: "#64748b" },
+  entryTag: { display: "inline-block", padding: "1px 8px", marginLeft: 8, background: "#eef2ff", color: "#4338ca", borderRadius: 6, fontSize: 12, fontWeight: 700, fontFamily: "monospace" },
 
   error: { padding: "10px 12px", background: "#fee2e2", color: "#b91c1c", borderRadius: 8, fontSize: 14, marginBottom: 16 },
   muted: { color: "#94a3b8", fontSize: 14 },
