@@ -25,6 +25,10 @@ const COLLECTIONS = {
   RECEIPTS: "receipts",
   CLOSINGS: "closings",
   PAYMENTS: "payments",
+  EMPLOYEES: "employees",
+  PAYROLL_RUNS: "payrollRuns",
+  VACANCIES: "vacancies",
+  APPLICANTS: "applicants",
 };
 
 const ROLES = {
@@ -1066,6 +1070,130 @@ function buildPaymentDoc({
   };
 }
 
+// ملف الموارد البشرية للموظف (منفصل عن حساب الدخول في users)
+function buildEmployeeProfileDoc({
+  tenantId, employeeCode, name, nationality, phone, birthDate, gender,
+  iqamaNumber, iqamaExpiry, passportNumber, passportExpiry,
+  workPermitNumber, workPermitExpiry, healthCertNumber, healthCertExpiry,
+  insuranceNumber, insuranceExpiry,
+  jobTitle, department, hireDate, contractType, contractExpiry,
+  basicSalary, housingAllowance, transportAllowance, otherAllowance,
+  linkedUserId, status, notes, createdBy, createdAt,
+}) {
+  const basic = Number(basicSalary) || 0;
+  const housing = Number(housingAllowance) || 0;
+  const transport = Number(transportAllowance) || 0;
+  const other = Number(otherAllowance) || 0;
+  return {
+    tenantId,
+    employeeCode: employeeCode || null,
+    name: name,
+    nationality: nationality || null,
+    phone: phone || null,
+    birthDate: birthDate || null,
+    gender: gender || null,
+    documents: {
+      iqama: { number: iqamaNumber || null, expiry: iqamaExpiry || null },
+      passport: { number: passportNumber || null, expiry: passportExpiry || null },
+      workPermit: { number: workPermitNumber || null, expiry: workPermitExpiry || null },
+      healthCert: { number: healthCertNumber || null, expiry: healthCertExpiry || null },
+      insurance: { number: insuranceNumber || null, expiry: insuranceExpiry || null },
+    },
+    job: {
+      title: jobTitle || null,
+      department: department || null,
+      hireDate: hireDate || null,
+      contractType: contractType || null,
+      contractExpiry: contractExpiry || null,
+    },
+    salary: {
+      basic: basic,
+      housing: housing,
+      transport: transport,
+      other: other,
+      total: basic + housing + transport + other,
+    },
+    linkedUserId: linkedUserId || null,
+    status: status || "active",
+    notes: notes || null,
+    createdBy: createdBy || null,
+    createdAt,
+  };
+}
+
+// مسير رواتب شهري: يجمع الموظفين، يحسب صافي كل واحد، ويُربط بقيد محاسبي
+function buildPayrollRunDoc({
+  tenantId, payrollNumber, year, month, status, paymentMethod,
+  lines, totalGross, totalDeductions, totalNet,
+  journalEntryId, paymentJournalEntryId, createdBy, createdAt,
+}) {
+  return {
+    tenantId,
+    payrollNumber: payrollNumber || null,
+    year: year,
+    month: month,
+    period: `${year}-${String(month).padStart(2, "0")}`,
+    status: status || "draft", // draft | approved | paid
+    paymentMethod: paymentMethod || null, // cash | accrued
+    lines: Array.isArray(lines) ? lines : [],
+    totalGross: totalGross || 0,
+    totalDeductions: totalDeductions || 0,
+    totalNet: totalNet || 0,
+    journalEntryId: journalEntryId || null,
+    paymentJournalEntryId: paymentJournalEntryId || null,
+    approvedBy: null,
+    approvedAt: null,
+    paidBy: null,
+    paidAt: null,
+    createdBy: createdBy || null,
+    createdAt,
+  };
+}
+
+// شاغر وظيفي
+function buildVacancyDoc({
+  tenantId, vacancyNumber, title, department, count, employmentType,
+  description, salaryMin, salaryMax, status, createdBy, createdAt,
+}) {
+  return {
+    tenantId,
+    vacancyNumber: vacancyNumber || null,
+    title: title,
+    department: department || null,
+    count: typeof count === "number" && count > 0 ? count : 1,
+    employmentType: employmentType || null,
+    description: description || null,
+    salaryMin: typeof salaryMin === "number" ? salaryMin : null,
+    salaryMax: typeof salaryMax === "number" ? salaryMax : null,
+    status: status || "open", // open | closed
+    createdBy: createdBy || null,
+    createdAt,
+  };
+}
+
+// متقدم على شاغر
+function buildApplicantDoc({
+  tenantId, vacancyId, vacancyTitle, name, phone, email, nationality,
+  source, stage, rating, notes, linkedEmployeeId, createdBy, createdAt,
+}) {
+  return {
+    tenantId,
+    vacancyId: vacancyId || null,
+    vacancyTitle: vacancyTitle || null,
+    name: name,
+    phone: phone || null,
+    email: email || null,
+    nationality: nationality || null,
+    source: source || null,
+    stage: stage || "new", // new | screening | interview | offer | hired | rejected
+    rating: typeof rating === "number" ? rating : null,
+    notes: notes || null,
+    linkedEmployeeId: linkedEmployeeId || null,
+    createdBy: createdBy || null,
+    createdAt,
+  };
+}
+
 function buildProjectTypeDoc({ tenantId, name, code, description, isSystem, createdBy, createdAt }) {
   return {
     tenantId,
@@ -1434,6 +1562,10 @@ module.exports = {
   buildReceiptDoc,
   buildClosingDoc,
   buildPaymentDoc,
+  buildEmployeeProfileDoc,
+  buildPayrollRunDoc,
+  buildVacancyDoc,
+  buildApplicantDoc,
   computeInvoiceTotals,
   buildProjectTypeDoc,
   buildProjectDoc,

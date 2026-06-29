@@ -41,6 +41,10 @@ const {
   buildReceiptDoc,
   buildClosingDoc,
   buildPaymentDoc,
+  buildEmployeeProfileDoc,
+  buildPayrollRunDoc,
+  buildVacancyDoc,
+  buildApplicantDoc,
   computeInvoiceTotals,
   validatePermissions,
   isValidTime,
@@ -60,6 +64,9 @@ const db = admin.firestore();
 const TREASURY_ACCOUNT_CODE = "1100";
 // كود حساب الأرباح المُبقاة (لترحيل صافي الربح/الخسارة عند الإقفال)
 const RETAINED_EARNINGS_CODE = "3200";
+// أكواد حسابات الرواتب
+const SALARY_EXPENSE_CODE = "5100"; // مصروف رواتب العمالة
+const ACCRUED_SALARY_CODE = "2300"; // رواتب مستحقة الدفع
 
 exports.ping = onCall(() => ({ ok: true, ts: Date.now() }));
 
@@ -2810,6 +2817,657 @@ exports.getFinancialAnalysis = onCall(async (request) => {
     if (err instanceof HttpsError) throw err;
     console.error("getFinancialAnalysis failed:", err);
     throw new HttpsError("internal", "تعذّر إنشاء التحليل المالي، حاول مرة أخرى.");
+  }
+});
+
+// ═══════════════════════════════════════════════════════
+// ===== الموارد البشرية: ملف الموظف الكامل =====
+// ===== (منفصل عن حساب الدخول في users، يُربط به اختياريًا) =====
+// ═══════════════════════════════════════════════════════
+
+function extractEmployeeFields(data) {
+  const str = (v) => typeof v === "string" ? v.trim() : "";
+  const dateOrNull = (v) => { const s = str(v); return isValidDate(s) ? s : null; };
+  return {
+    employeeCode: str(data.employeeCode),
+    name: str(data.name),
+    nationality: str(data.nationality),
+    phone: str(data.phone),
+    birthDate: dateOrNull(data.birthDate),
+    gender: ["male", "female"].includes(data.gender) ? data.gender : null,
+    iqamaNumber: str(data.iqamaNumber), iqamaExpiry: dateOrNull(data.iqamaExpiry),
+    passportNumber: str(data.passportNumber), passportExpiry: dateOrNull(data.passportExpiry),
+    workPermitNumber: str(data.workPermitNumber), workPermitExpiry: dateOrNull(data.workPermitExpiry),
+    healthCertNumber: str(data.healthCertNumber), healthCertExpiry: dateOrNull(data.healthCertExpiry),
+    insuranceNumber: str(data.insuranceNumber), insuranceExpiry: dateOrNull(data.insuranceExpiry),
+    jobTitle: str(data.jobTitle), department: str(data.department),
+    hireDate: dateOrNull(data.hireDate), contractType: str(data.contractType),
+    contractExpiry: dateOrNull(data.contractExpiry),
+    basicSalary: Number(data.basicSalary) || 0,
+    housingAllowance: Number(data.housingAllowance) || 0,
+    transportAllowance: Number(data.transportAllowance) || 0,
+    otherAllowance: Number(data.otherAllowance) || 0,
+    status: ["active", "on_leave", "terminated"].includes(data.status) ? data.status : "active",
+    notes: str(data.notes),
+  };
+}
+
+async function validateLinkedUser(linkedUserId, tenantId) {
+  if (!linkedUserId) return null;
+  const uDoc = await db.collection(COLLECTIONS.USERS).doc(linkedUserId).get();
+  if (!uDoc.exists || uDoc.data().tenantId !== tenantId) {
+    throw new HttpsError("invalid-argument", "حساب الدخول المرتبط غير صحيح.");
+  }
+  return linkedUserId;
+}
+
+// ===== إنشاء ملف موظف =====
+exports.createEmployeeProfile = onCall(async (request) => {
+  try {
+    const callerTenantId = await requireModule(request.auth, MODULES.HR);
+    const data = request.data || {};
+    const fields = extractEmployeeFields(data);
+    const linkedUserId = typeof data.linkedUserId === "string" ? data.linkedUserId.trim() : "";
+
+    if (fields.name.length < 2) {
+      throw new HttpsError("invalid-argument", "اسم الموظف مطلوب (حرفان على الأقل).");
+    }
+    if (fields.basicSalary < 0) {
+      throw new HttpsError("invalid-argument", "الراتب الأساسي غير صحيح.");
+    }
+
+    const finalLinkedUser = await validateLinkedUser(linkedUserId, callerTenantId);
+    // منع ربط نفس الحساب بأكثر من ملف موظف
+    if (finalLinkedUser) {
+      const dup = await db.collection(COLLECTIONS.EMPLOYEES)
+        .where("tenantId", "==", callerTenantId)
+        .where("linkedUserId", "==", finalLinkedUser)
+        .limit(1).get();
+      if (!dup.empty) {
+        throw new HttpsError("already-exists", "هذا الحساب مرتبط بملف موظف آخر بالفعل.");
+      }
+    }
+
+    const empRef = db.collection(COLLECTIONS.EMPLOYEES).doc();
+    await empRef.set(buildEmployeeProfileDoc({
+      tenantId: callerTenantId,
+      ...fields,
+      linkedUserId: finalLinkedUser,
+      createdBy: request.auth.uid,
+      createdAt: FieldValue.serverTimestamp(),
+    }));
+    return { id: empRef.id, name: fields.name };
+  } catch (err) {
+    if (err instanceof HttpsError) throw err;
+    console.error("createEmployeeProfile failed:", err);
+    throw new HttpsError("internal", "تعذّر إنشاء ملف الموظف، حاول مرة أخرى.");
+  }
+});
+
+// ===== تعديل ملف موظف =====
+exports.updateEmployeeProfile = onCall(async (request) => {
+  try {
+    const callerTenantId = await requireModule(request.auth, MODULES.HR);
+    const data = request.data || {};
+    const employeeId = typeof data.employeeId === "string" ? data.employeeId.trim() : "";
+    if (!employeeId) throw new HttpsError("invalid-argument", "يجب تحديد الموظف.");
+
+    const empRef = db.collection(COLLECTIONS.EMPLOYEES).doc(employeeId);
+    const empSnap = await empRef.get();
+    if (!empSnap.exists || empSnap.data().tenantId !== callerTenantId) {
+      throw new HttpsError("invalid-argument", "الموظف غير صحيح.");
+    }
+
+    const fields = extractEmployeeFields(data);
+    const linkedUserId = typeof data.linkedUserId === "string" ? data.linkedUserId.trim() : "";
+    if (fields.name.length < 2) {
+      throw new HttpsError("invalid-argument", "اسم الموظف مطلوب (حرفان على الأقل).");
+    }
+
+    const finalLinkedUser = await validateLinkedUser(linkedUserId, callerTenantId);
+    if (finalLinkedUser) {
+      const dup = await db.collection(COLLECTIONS.EMPLOYEES)
+        .where("tenantId", "==", callerTenantId)
+        .where("linkedUserId", "==", finalLinkedUser)
+        .limit(2).get();
+      const conflict = dup.docs.some((d) => d.id !== employeeId);
+      if (conflict) {
+        throw new HttpsError("already-exists", "هذا الحساب مرتبط بملف موظف آخر بالفعل.");
+      }
+    }
+
+    const updated = buildEmployeeProfileDoc({
+      tenantId: callerTenantId,
+      ...fields,
+      linkedUserId: finalLinkedUser,
+      createdBy: empSnap.data().createdBy || null,
+      createdAt: empSnap.data().createdAt || FieldValue.serverTimestamp(),
+    });
+    updated.updatedBy = request.auth.uid;
+    updated.updatedAt = FieldValue.serverTimestamp();
+    await empRef.set(updated, { merge: true });
+    return { id: employeeId, name: fields.name };
+  } catch (err) {
+    if (err instanceof HttpsError) throw err;
+    console.error("updateEmployeeProfile failed:", err);
+    throw new HttpsError("internal", "تعذّر تعديل ملف الموظف، حاول مرة أخرى.");
+  }
+});
+
+// ═══════════════════════════════════════════════════════
+// ===== الموارد البشرية: مسير الرواتب =====
+// ═══════════════════════════════════════════════════════
+
+// حساب صافي السطر الواحد
+function computePayrollLine(ln) {
+  const basic = Number(ln.basic) || 0;
+  const allowances = Number(ln.allowances) || 0;
+  const overtime = Number(ln.overtime) || 0;
+  const deductions = Number(ln.deductions) || 0;
+  const advances = Number(ln.advances) || 0;
+  const gross = basic + allowances + overtime;
+  const net = gross - deductions - advances;
+  return { basic, allowances, overtime, deductions, advances, gross, net: Math.round(net * 100) / 100 };
+}
+function summarizePayroll(lines) {
+  let totalGross = 0, totalDeductions = 0, totalNet = 0;
+  for (const ln of lines) {
+    totalGross += Number(ln.gross) || 0;
+    totalDeductions += (Number(ln.deductions) || 0) + (Number(ln.advances) || 0);
+    totalNet += Number(ln.net) || 0;
+  }
+  const r = (n) => Math.round(n * 100) / 100;
+  return { totalGross: r(totalGross), totalDeductions: r(totalDeductions), totalNet: r(totalNet) };
+}
+
+// ===== إنشاء مسير رواتب لشهر (مسودة) من الموظفين النشطين =====
+exports.createPayrollRun = onCall(async (request) => {
+  try {
+    const callerTenantId = await requireModule(request.auth, MODULES.HR);
+    const data = request.data || {};
+    const year = parseInt(data.year, 10);
+    const month = parseInt(data.month, 10);
+    if (!Number.isFinite(year) || year < 2000 || year > 2100) {
+      throw new HttpsError("invalid-argument", "السنة غير صحيحة.");
+    }
+    if (!Number.isFinite(month) || month < 1 || month > 12) {
+      throw new HttpsError("invalid-argument", "الشهر غير صحيح.");
+    }
+    const period = `${year}-${String(month).padStart(2, "0")}`;
+
+    // منع تكرار مسير لنفس الشهر
+    const existing = await db.collection(COLLECTIONS.PAYROLL_RUNS)
+      .where("tenantId", "==", callerTenantId)
+      .where("period", "==", period)
+      .limit(1).get();
+    if (!existing.empty) {
+      throw new HttpsError("already-exists", `يوجد مسير لشهر ${period} بالفعل.`);
+    }
+
+    // الموظفون النشطون
+    const empSnap = await db.collection(COLLECTIONS.EMPLOYEES)
+      .where("tenantId", "==", callerTenantId)
+      .where("status", "==", "active").get();
+    if (empSnap.empty) {
+      throw new HttpsError("failed-precondition", "لا يوجد موظفون نشطون لإنشاء مسير.");
+    }
+
+    const lines = empSnap.docs.map((d) => {
+      const emp = d.data();
+      const sal = emp.salary || {};
+      const basic = Number(sal.basic) || 0;
+      const allowances = (Number(sal.housing) || 0) + (Number(sal.transport) || 0) + (Number(sal.other) || 0);
+      const computed = computePayrollLine({ basic, allowances, overtime: 0, deductions: 0, advances: 0 });
+      return {
+        employeeId: d.id,
+        employeeCode: emp.employeeCode || null,
+        name: emp.name || "—",
+        ...computed,
+      };
+    });
+    const totals = summarizePayroll(lines);
+
+    const tenantRef = db.collection(COLLECTIONS.TENANTS).doc(callerTenantId);
+    const payrollRef = db.collection(COLLECTIONS.PAYROLL_RUNS).doc();
+    const nextNumber = await db.runTransaction(async (tx) => {
+      const tSnap = await tx.get(tenantRef);
+      const n = ((tSnap.data() || {}).lastPayrollNumber || 0) + 1;
+      tx.set(payrollRef, buildPayrollRunDoc({
+        tenantId: callerTenantId, payrollNumber: n, year, month,
+        status: "draft", lines, ...totals,
+        createdBy: request.auth.uid, createdAt: FieldValue.serverTimestamp(),
+      }));
+      tx.update(tenantRef, { lastPayrollNumber: n });
+      return n;
+    });
+
+    return { id: payrollRef.id, payrollNumber: nextNumber, period, employeeCount: lines.length, totalNet: totals.totalNet };
+  } catch (err) {
+    if (err instanceof HttpsError) throw err;
+    console.error("createPayrollRun failed:", err);
+    throw new HttpsError("internal", "تعذّر إنشاء المسير، حاول مرة أخرى.");
+  }
+});
+
+// ===== تحديث متغيرات المسير (إضافي/خصومات/سلف) — مسودة فقط =====
+exports.updatePayrollLines = onCall(async (request) => {
+  try {
+    const callerTenantId = await requireModule(request.auth, MODULES.HR);
+    const data = request.data || {};
+    const payrollId = typeof data.payrollId === "string" ? data.payrollId.trim() : "";
+    const inputLines = Array.isArray(data.lines) ? data.lines : null;
+    if (!payrollId) throw new HttpsError("invalid-argument", "يجب تحديد المسير.");
+    if (!inputLines) throw new HttpsError("invalid-argument", "بيانات السطور غير صحيحة.");
+
+    const payrollRef = db.collection(COLLECTIONS.PAYROLL_RUNS).doc(payrollId);
+    const snap = await payrollRef.get();
+    if (!snap.exists || snap.data().tenantId !== callerTenantId) {
+      throw new HttpsError("invalid-argument", "المسير غير صحيح.");
+    }
+    if (snap.data().status !== "draft") {
+      throw new HttpsError("failed-precondition", "لا يمكن تعديل مسير معتمد أو مدفوع.");
+    }
+
+    const existingLines = snap.data().lines || [];
+    const byId = {};
+    inputLines.forEach((l) => { if (l && l.employeeId) byId[l.employeeId] = l; });
+
+    const updatedLines = existingLines.map((ln) => {
+      const inp = byId[ln.employeeId] || {};
+      const computed = computePayrollLine({
+        basic: ln.basic, allowances: ln.allowances,
+        overtime: inp.overtime !== undefined ? inp.overtime : ln.overtime,
+        deductions: inp.deductions !== undefined ? inp.deductions : ln.deductions,
+        advances: inp.advances !== undefined ? inp.advances : ln.advances,
+      });
+      return { employeeId: ln.employeeId, employeeCode: ln.employeeCode || null, name: ln.name, ...computed };
+    });
+    const totals = summarizePayroll(updatedLines);
+
+    await payrollRef.update({ lines: updatedLines, ...totals, updatedAt: FieldValue.serverTimestamp() });
+    return { id: payrollId, ...totals };
+  } catch (err) {
+    if (err instanceof HttpsError) throw err;
+    console.error("updatePayrollLines failed:", err);
+    throw new HttpsError("internal", "تعذّر تحديث المسير، حاول مرة أخرى.");
+  }
+});
+
+// ===== اعتماد المسير + توليد القيد (نقدي أو مستحق) =====
+exports.approvePayrollRun = onCall(async (request) => {
+  try {
+    const callerTenantId = await requireModule(request.auth, MODULES.HR);
+    const data = request.data || {};
+    const payrollId = typeof data.payrollId === "string" ? data.payrollId.trim() : "";
+    const paymentMethod = data.paymentMethod === "cash" ? "cash" : data.paymentMethod === "accrued" ? "accrued" : null;
+    if (!payrollId) throw new HttpsError("invalid-argument", "يجب تحديد المسير.");
+    if (!paymentMethod) throw new HttpsError("invalid-argument", "اختر طريقة الصرف (نقدي أو مستحق).");
+
+    async function findAccountByCode(code) {
+      const s = await db.collection(COLLECTIONS.ACCOUNTS)
+        .where("tenantId", "==", callerTenantId).where("code", "==", code).limit(1).get();
+      return s.empty ? null : s.docs[0];
+    }
+    const salaryExpenseDoc = await findAccountByCode(SALARY_EXPENSE_CODE);
+    if (!salaryExpenseDoc) throw new HttpsError("failed-precondition", `حساب مصروف الرواتب (${SALARY_EXPENSE_CODE}) غير موجود.`);
+    const creditCode = paymentMethod === "cash" ? TREASURY_ACCOUNT_CODE : ACCRUED_SALARY_CODE;
+    const creditDoc = await findAccountByCode(creditCode);
+    if (!creditDoc) throw new HttpsError("failed-precondition", `الحساب الدائن (${creditCode}) غير موجود في دليل الحسابات.`);
+
+    const payrollRef = db.collection(COLLECTIONS.PAYROLL_RUNS).doc(payrollId);
+    const snap0 = await payrollRef.get();
+    if (!snap0.exists || snap0.data().tenantId !== callerTenantId) {
+      throw new HttpsError("invalid-argument", "المسير غير صحيح.");
+    }
+    if (snap0.data().status !== "draft") {
+      throw new HttpsError("failed-precondition", "المسير معتمد بالفعل.");
+    }
+    const totalNet = Number(snap0.data().totalNet) || 0;
+    if (totalNet <= 0) throw new HttpsError("failed-precondition", "إجمالي المسير صفر — لا يمكن اعتماده.");
+
+    // تحقق رصيد الخزينة إن كان الصرف نقديًا
+    if (paymentMethod === "cash") {
+      const bal = Number(creditDoc.data().balance) || 0;
+      if (totalNet > bal + 0.01) {
+        throw new HttpsError("failed-precondition", `رصيد الخزينة (${bal.toLocaleString()}) غير كافٍ لصرف الرواتب (${totalNet.toLocaleString()}).`);
+      }
+    }
+
+    const tenantRef = db.collection(COLLECTIONS.TENANTS).doc(callerTenantId);
+    const journalRef = db.collection(COLLECTIONS.JOURNAL_ENTRIES).doc();
+
+    await db.runTransaction(async (tx) => {
+      const snap = await tx.get(payrollRef);
+      if (snap.data().status !== "draft") throw new HttpsError("failed-precondition", "المسير معتمد بالفعل.");
+      const tSnap = await tx.get(tenantRef);
+      const expRef = salaryExpenseDoc.ref;
+      const crRef = creditDoc.ref;
+      const expSnap = await tx.get(expRef);
+      const crSnap = await tx.get(crRef);
+      const expData = expSnap.data();
+      const crData = crSnap.data();
+
+      if (paymentMethod === "cash") {
+        const bal = Number(crData.balance) || 0;
+        if (totalNet > bal + 0.01) throw new HttpsError("failed-precondition", "تغيّر رصيد الخزينة، أعد المحاولة.");
+      }
+
+      const nextJournalNumber = ((tSnap.data() || {}).lastJournalNumber || 0) + 1;
+      const period = snap.data().period;
+      const journalLines = [
+        { accountId: expRef.id, accountCode: expData.code || null, accountName: expData.name || null, debit: totalNet, credit: 0, note: `رواتب ${period}` },
+        { accountId: crRef.id, accountCode: crData.code || null, accountName: crData.name || null, debit: 0, credit: totalNet, note: paymentMethod === "cash" ? "صرف رواتب نقدًا" : "رواتب مستحقة" },
+      ];
+      const check = validateJournalLines(journalLines);
+      if (!check.valid) throw new HttpsError("internal", "خطأ في توازن قيد الرواتب: " + check.error);
+
+      const entryDoc = buildJournalEntryDoc({
+        tenantId: callerTenantId, entryNumber: nextJournalNumber, date: new Date().toISOString().slice(0, 10),
+        description: `قيد رواتب ${period} (مسير رقم ${snap.data().payrollNumber})`,
+        lines: check.cleanLines, totalDebit: check.totalDebit, totalCredit: check.totalCredit,
+        source: "payroll", sourceRef: payrollId, status: JOURNAL_STATUS.POSTED,
+        createdBy: request.auth.uid, createdAt: FieldValue.serverTimestamp(),
+      });
+      entryDoc.postedAt = FieldValue.serverTimestamp();
+      tx.set(journalRef, entryDoc);
+
+      // أرصدة: مصروف +، (خزينة - نقدًا) أو (مستحق +)
+      tx.update(expRef, { balance: FieldValue.increment(totalNet) });
+      if (paymentMethod === "cash") {
+        tx.update(crRef, { balance: FieldValue.increment(-totalNet) });
+      } else {
+        tx.update(crRef, { balance: FieldValue.increment(-totalNet) }); // الخصوم دائنة: balance يقل (أكثر دائنية)
+      }
+
+      tx.update(payrollRef, {
+        status: paymentMethod === "cash" ? "paid" : "approved",
+        paymentMethod, journalEntryId: journalRef.id,
+        approvedBy: request.auth.uid, approvedAt: FieldValue.serverTimestamp(),
+        ...(paymentMethod === "cash" ? { paidBy: request.auth.uid, paidAt: FieldValue.serverTimestamp() } : {}),
+      });
+      tx.update(tenantRef, { lastJournalNumber: nextJournalNumber });
+    });
+
+    return { id: payrollId, status: paymentMethod === "cash" ? "paid" : "approved", paymentMethod, journalEntryId: journalRef.id, totalNet };
+  } catch (err) {
+    if (err instanceof HttpsError) throw err;
+    console.error("approvePayrollRun failed:", err);
+    throw new HttpsError("internal", "تعذّر اعتماد المسير، حاول مرة أخرى.");
+  }
+});
+
+// ===== صرف الرواتب المستحقة (للمسير المعتمد بطريقة مستحق) =====
+exports.payAccruedPayroll = onCall(async (request) => {
+  try {
+    const callerTenantId = await requireModule(request.auth, MODULES.HR);
+    const data = request.data || {};
+    const payrollId = typeof data.payrollId === "string" ? data.payrollId.trim() : "";
+    if (!payrollId) throw new HttpsError("invalid-argument", "يجب تحديد المسير.");
+
+    async function findAccountByCode(code) {
+      const s = await db.collection(COLLECTIONS.ACCOUNTS)
+        .where("tenantId", "==", callerTenantId).where("code", "==", code).limit(1).get();
+      return s.empty ? null : s.docs[0];
+    }
+    const accruedDoc = await findAccountByCode(ACCRUED_SALARY_CODE);
+    const treasuryDoc = await findAccountByCode(TREASURY_ACCOUNT_CODE);
+    if (!accruedDoc || !treasuryDoc) {
+      throw new HttpsError("failed-precondition", "حساب الرواتب المستحقة أو الخزينة غير موجود.");
+    }
+
+    const payrollRef = db.collection(COLLECTIONS.PAYROLL_RUNS).doc(payrollId);
+    const snap0 = await payrollRef.get();
+    if (!snap0.exists || snap0.data().tenantId !== callerTenantId) {
+      throw new HttpsError("invalid-argument", "المسير غير صحيح.");
+    }
+    if (snap0.data().status !== "approved" || snap0.data().paymentMethod !== "accrued") {
+      throw new HttpsError("failed-precondition", "هذا المسير ليس مستحقًا بانتظار الصرف.");
+    }
+    const totalNet = Number(snap0.data().totalNet) || 0;
+    const treasuryBal = Number(treasuryDoc.data().balance) || 0;
+    if (totalNet > treasuryBal + 0.01) {
+      throw new HttpsError("failed-precondition", `رصيد الخزينة (${treasuryBal.toLocaleString()}) غير كافٍ لصرف ${totalNet.toLocaleString()}.`);
+    }
+
+    const tenantRef = db.collection(COLLECTIONS.TENANTS).doc(callerTenantId);
+    const journalRef = db.collection(COLLECTIONS.JOURNAL_ENTRIES).doc();
+
+    await db.runTransaction(async (tx) => {
+      const snap = await tx.get(payrollRef);
+      if (snap.data().status !== "approved") throw new HttpsError("failed-precondition", "تغيّرت حالة المسير.");
+      const tSnap = await tx.get(tenantRef);
+      const accRef = accruedDoc.ref;
+      const treaRef = treasuryDoc.ref;
+      const accData = (await tx.get(accRef)).data();
+      const treaData = (await tx.get(treaRef)).data();
+
+      const balTx = Number(treaData.balance) || 0;
+      if (totalNet > balTx + 0.01) throw new HttpsError("failed-precondition", "تغيّر رصيد الخزينة، أعد المحاولة.");
+
+      const nextJournalNumber = ((tSnap.data() || {}).lastJournalNumber || 0) + 1;
+      const period = snap.data().period;
+      const journalLines = [
+        { accountId: accRef.id, accountCode: accData.code || null, accountName: accData.name || null, debit: totalNet, credit: 0, note: `سداد رواتب ${period}` },
+        { accountId: treaRef.id, accountCode: treaData.code || null, accountName: treaData.name || null, debit: 0, credit: totalNet, note: "صرف من الخزينة" },
+      ];
+      const check = validateJournalLines(journalLines);
+      if (!check.valid) throw new HttpsError("internal", "خطأ في توازن قيد السداد: " + check.error);
+
+      const entryDoc = buildJournalEntryDoc({
+        tenantId: callerTenantId, entryNumber: nextJournalNumber, date: new Date().toISOString().slice(0, 10),
+        description: `سداد رواتب مستحقة ${period} (مسير رقم ${snap.data().payrollNumber})`,
+        lines: check.cleanLines, totalDebit: check.totalDebit, totalCredit: check.totalCredit,
+        source: "payroll_payment", sourceRef: payrollId, status: JOURNAL_STATUS.POSTED,
+        createdBy: request.auth.uid, createdAt: FieldValue.serverTimestamp(),
+      });
+      entryDoc.postedAt = FieldValue.serverTimestamp();
+      tx.set(journalRef, entryDoc);
+
+      // أرصدة: مستحق يقل (debit على خصم: balance يزيد نحو الصفر)، خزينة تقل
+      tx.update(accRef, { balance: FieldValue.increment(totalNet) });
+      tx.update(treaRef, { balance: FieldValue.increment(-totalNet) });
+
+      tx.update(payrollRef, {
+        status: "paid", paymentJournalEntryId: journalRef.id,
+        paidBy: request.auth.uid, paidAt: FieldValue.serverTimestamp(),
+      });
+      tx.update(tenantRef, { lastJournalNumber: nextJournalNumber });
+    });
+
+    return { id: payrollId, status: "paid", journalEntryId: journalRef.id, totalNet };
+  } catch (err) {
+    if (err instanceof HttpsError) throw err;
+    console.error("payAccruedPayroll failed:", err);
+    throw new HttpsError("internal", "تعذّر صرف الرواتب، حاول مرة أخرى.");
+  }
+});
+
+// ═══════════════════════════════════════════════════════
+// ===== الموارد البشرية: التوظيف (شواغر · متقدمون · مراحل) =====
+// ═══════════════════════════════════════════════════════
+
+const APPLICANT_STAGES = ["new", "screening", "interview", "offer", "hired", "rejected"];
+
+// ===== إنشاء شاغر وظيفي =====
+exports.createVacancy = onCall(async (request) => {
+  try {
+    const callerTenantId = await requireModule(request.auth, MODULES.HR);
+    const data = request.data || {};
+    const title = typeof data.title === "string" ? data.title.trim() : "";
+    const department = typeof data.department === "string" ? data.department.trim() : "";
+    const employmentType = typeof data.employmentType === "string" ? data.employmentType.trim() : "";
+    const description = typeof data.description === "string" ? data.description.trim() : "";
+    const count = parseInt(data.count, 10);
+    const salaryMin = data.salaryMin !== undefined && data.salaryMin !== null && data.salaryMin !== "" ? Number(data.salaryMin) : null;
+    const salaryMax = data.salaryMax !== undefined && data.salaryMax !== null && data.salaryMax !== "" ? Number(data.salaryMax) : null;
+
+    if (title.length < 2) throw new HttpsError("invalid-argument", "المسمى الوظيفي مطلوب (حرفان على الأقل).");
+    if (salaryMin !== null && (!Number.isFinite(salaryMin) || salaryMin < 0)) throw new HttpsError("invalid-argument", "الحد الأدنى للراتب غير صحيح.");
+    if (salaryMax !== null && (!Number.isFinite(salaryMax) || salaryMax < 0)) throw new HttpsError("invalid-argument", "الحد الأعلى للراتب غير صحيح.");
+
+    const tenantRef = db.collection(COLLECTIONS.TENANTS).doc(callerTenantId);
+    const vacancyRef = db.collection(COLLECTIONS.VACANCIES).doc();
+    const nextNumber = await db.runTransaction(async (tx) => {
+      const tSnap = await tx.get(tenantRef);
+      const n = ((tSnap.data() || {}).lastVacancyNumber || 0) + 1;
+      tx.set(vacancyRef, buildVacancyDoc({
+        tenantId: callerTenantId, vacancyNumber: n, title, department,
+        count: Number.isFinite(count) ? count : 1, employmentType, description,
+        salaryMin, salaryMax, status: "open",
+        createdBy: request.auth.uid, createdAt: FieldValue.serverTimestamp(),
+      }));
+      tx.update(tenantRef, { lastVacancyNumber: n });
+      return n;
+    });
+    return { id: vacancyRef.id, vacancyNumber: nextNumber, title };
+  } catch (err) {
+    if (err instanceof HttpsError) throw err;
+    console.error("createVacancy failed:", err);
+    throw new HttpsError("internal", "تعذّر إنشاء الشاغر، حاول مرة أخرى.");
+  }
+});
+
+// ===== تغيير حالة الشاغر (فتح/إغلاق) =====
+exports.updateVacancyStatus = onCall(async (request) => {
+  try {
+    const callerTenantId = await requireModule(request.auth, MODULES.HR);
+    const data = request.data || {};
+    const vacancyId = typeof data.vacancyId === "string" ? data.vacancyId.trim() : "";
+    const status = data.status === "open" || data.status === "closed" ? data.status : null;
+    if (!vacancyId) throw new HttpsError("invalid-argument", "يجب تحديد الشاغر.");
+    if (!status) throw new HttpsError("invalid-argument", "حالة غير صحيحة.");
+
+    const ref = db.collection(COLLECTIONS.VACANCIES).doc(vacancyId);
+    const snap = await ref.get();
+    if (!snap.exists || snap.data().tenantId !== callerTenantId) {
+      throw new HttpsError("invalid-argument", "الشاغر غير صحيح.");
+    }
+    await ref.update({ status, updatedAt: FieldValue.serverTimestamp() });
+    return { id: vacancyId, status };
+  } catch (err) {
+    if (err instanceof HttpsError) throw err;
+    console.error("updateVacancyStatus failed:", err);
+    throw new HttpsError("internal", "تعذّر تحديث الشاغر، حاول مرة أخرى.");
+  }
+});
+
+// ===== تسجيل متقدم على شاغر =====
+exports.createApplicant = onCall(async (request) => {
+  try {
+    const callerTenantId = await requireModule(request.auth, MODULES.HR);
+    const data = request.data || {};
+    const vacancyId = typeof data.vacancyId === "string" ? data.vacancyId.trim() : "";
+    const name = typeof data.name === "string" ? data.name.trim() : "";
+    const phone = typeof data.phone === "string" ? data.phone.trim() : "";
+    const email = typeof data.email === "string" ? data.email.trim() : "";
+    const nationality = typeof data.nationality === "string" ? data.nationality.trim() : "";
+    const source = typeof data.source === "string" ? data.source.trim() : "";
+    const notes = typeof data.notes === "string" ? data.notes.trim() : "";
+
+    if (name.length < 2) throw new HttpsError("invalid-argument", "اسم المتقدم مطلوب (حرفان على الأقل).");
+    if (!vacancyId) throw new HttpsError("invalid-argument", "يجب تحديد الشاغر.");
+
+    const vacancySnap = await db.collection(COLLECTIONS.VACANCIES).doc(vacancyId).get();
+    if (!vacancySnap.exists || vacancySnap.data().tenantId !== callerTenantId) {
+      throw new HttpsError("invalid-argument", "الشاغر غير صحيح.");
+    }
+
+    const applicantRef = db.collection(COLLECTIONS.APPLICANTS).doc();
+    await applicantRef.set(buildApplicantDoc({
+      tenantId: callerTenantId, vacancyId, vacancyTitle: vacancySnap.data().title || null,
+      name, phone, email, nationality, source, stage: "new", notes,
+      createdBy: request.auth.uid, createdAt: FieldValue.serverTimestamp(),
+    }));
+    return { id: applicantRef.id, name };
+  } catch (err) {
+    if (err instanceof HttpsError) throw err;
+    console.error("createApplicant failed:", err);
+    throw new HttpsError("internal", "تعذّر تسجيل المتقدم، حاول مرة أخرى.");
+  }
+});
+
+// ===== نقل المتقدم بين المراحل =====
+exports.moveApplicantStage = onCall(async (request) => {
+  try {
+    const callerTenantId = await requireModule(request.auth, MODULES.HR);
+    const data = request.data || {};
+    const applicantId = typeof data.applicantId === "string" ? data.applicantId.trim() : "";
+    const stage = APPLICANT_STAGES.includes(data.stage) ? data.stage : null;
+    if (!applicantId) throw new HttpsError("invalid-argument", "يجب تحديد المتقدم.");
+    if (!stage) throw new HttpsError("invalid-argument", "مرحلة غير صحيحة.");
+    if (stage === "hired") {
+      throw new HttpsError("invalid-argument", "لتعيين المتقدم استخدم زر التعيين كموظف.");
+    }
+
+    const ref = db.collection(COLLECTIONS.APPLICANTS).doc(applicantId);
+    const snap = await ref.get();
+    if (!snap.exists || snap.data().tenantId !== callerTenantId) {
+      throw new HttpsError("invalid-argument", "المتقدم غير صحيح.");
+    }
+    if (snap.data().stage === "hired") {
+      throw new HttpsError("failed-precondition", "هذا المتقدم مُعيّن بالفعل.");
+    }
+    await ref.update({ stage, updatedAt: FieldValue.serverTimestamp() });
+    return { id: applicantId, stage };
+  } catch (err) {
+    if (err instanceof HttpsError) throw err;
+    console.error("moveApplicantStage failed:", err);
+    throw new HttpsError("internal", "تعذّر نقل المتقدم، حاول مرة أخرى.");
+  }
+});
+
+// ===== تعيين المتقدم كموظف (يُنشئ ملف موظف ويربطه) =====
+exports.hireApplicant = onCall(async (request) => {
+  try {
+    const callerTenantId = await requireModule(request.auth, MODULES.HR);
+    const data = request.data || {};
+    const applicantId = typeof data.applicantId === "string" ? data.applicantId.trim() : "";
+    const jobTitle = typeof data.jobTitle === "string" ? data.jobTitle.trim() : "";
+    const department = typeof data.department === "string" ? data.department.trim() : "";
+    const hireDate = typeof data.hireDate === "string" && isValidDate(data.hireDate) ? data.hireDate : null;
+    const basicSalary = Number(data.basicSalary) || 0;
+
+    if (!applicantId) throw new HttpsError("invalid-argument", "يجب تحديد المتقدم.");
+
+    const appRef = db.collection(COLLECTIONS.APPLICANTS).doc(applicantId);
+    const appSnap = await appRef.get();
+    if (!appSnap.exists || appSnap.data().tenantId !== callerTenantId) {
+      throw new HttpsError("invalid-argument", "المتقدم غير صحيح.");
+    }
+    const app = appSnap.data();
+    if (app.stage === "hired" || app.linkedEmployeeId) {
+      throw new HttpsError("failed-precondition", "هذا المتقدم مُعيّن بالفعل.");
+    }
+
+    // إنشاء ملف الموظف من بيانات المتقدم
+    const empRef = db.collection(COLLECTIONS.EMPLOYEES).doc();
+    await empRef.set(buildEmployeeProfileDoc({
+      tenantId: callerTenantId,
+      name: app.name,
+      nationality: app.nationality || null,
+      phone: app.phone || null,
+      jobTitle: jobTitle || app.vacancyTitle || null,
+      department: department || null,
+      hireDate: hireDate,
+      basicSalary: basicSalary,
+      status: "active",
+      notes: `معيّن عبر التوظيف${app.vacancyTitle ? " — شاغر: " + app.vacancyTitle : ""}`,
+      createdBy: request.auth.uid,
+      createdAt: FieldValue.serverTimestamp(),
+    }));
+
+    // تحديث المتقدم
+    await appRef.update({
+      stage: "hired",
+      linkedEmployeeId: empRef.id,
+      hiredAt: FieldValue.serverTimestamp(),
+    });
+
+    return { applicantId, employeeId: empRef.id, name: app.name };
+  } catch (err) {
+    if (err instanceof HttpsError) throw err;
+    console.error("hireApplicant failed:", err);
+    throw new HttpsError("internal", "تعذّر تعيين المتقدم، حاول مرة أخرى.");
   }
 });
 
