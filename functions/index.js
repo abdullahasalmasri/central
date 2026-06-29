@@ -40,6 +40,7 @@ const {
   buildInvoiceDoc,
   buildReceiptDoc,
   buildClosingDoc,
+  buildPaymentDoc,
   computeInvoiceTotals,
   validatePermissions,
   isValidTime,
@@ -2233,6 +2234,168 @@ exports.reverseClosing = onCall(async (request) => {
     if (err instanceof HttpsError) throw err;
     console.error("reverseClosing failed:", err);
     throw new HttpsError("internal", "تعذّر عكس الإقفال، حاول مرة أخرى.");
+  }
+});
+
+// ═══════════════════════════════════════════════════════
+// ===== المالية: الخزينة — سند صرف (مصروف نقدي) =====
+// ═══════════════════════════════════════════════════════
+
+// ===== إنشاء سند صرف + قيده (مدين المصروف / دائن الخزينة) ذرّيًا =====
+// data: { date, expenseAccountId, amount, method?, beneficiary?, notes? }
+exports.createPayment = onCall(async (request) => {
+  try {
+    const callerTenantId = await requireModule(request.auth, MODULES.FINANCE);
+    const data = request.data || {};
+    const date = typeof data.date === "string" ? data.date.trim() : "";
+    const expenseAccountId = typeof data.expenseAccountId === "string" ? data.expenseAccountId.trim() : "";
+    const amount = Number(data.amount);
+    const method = ["cash", "transfer", "cheque"].includes(data.method) ? data.method : "cash";
+    const beneficiary = typeof data.beneficiary === "string" ? data.beneficiary.trim() : "";
+    const notes = typeof data.notes === "string" ? data.notes.trim() : "";
+
+    if (!isValidDate(date)) {
+      throw new HttpsError("invalid-argument", "تاريخ الصرف غير صحيح (YYYY-MM-DD).");
+    }
+    if (!expenseAccountId) {
+      throw new HttpsError("invalid-argument", "يجب اختيار حساب المصروف.");
+    }
+    if (!Number.isFinite(amount) || amount <= 0) {
+      throw new HttpsError("invalid-argument", "مبلغ الصرف يجب أن يكون أكبر من صفر.");
+    }
+
+    async function findAccountByCode(code) {
+      const snap = await db.collection(COLLECTIONS.ACCOUNTS)
+        .where("tenantId", "==", callerTenantId)
+        .where("code", "==", code)
+        .limit(1)
+        .get();
+      return snap.empty ? null : snap.docs[0];
+    }
+    const treasuryDoc = await findAccountByCode(TREASURY_ACCOUNT_CODE);
+    if (!treasuryDoc) {
+      throw new HttpsError("failed-precondition", `حساب النقد/الخزينة (${TREASURY_ACCOUNT_CODE}) غير موجود في دليل الحسابات.`);
+    }
+
+    const expenseRef = db.collection(COLLECTIONS.ACCOUNTS).doc(expenseAccountId);
+    const expenseSnap = await expenseRef.get();
+    if (!expenseSnap.exists || expenseSnap.data().tenantId !== callerTenantId) {
+      throw new HttpsError("invalid-argument", "حساب المصروف غير صحيح.");
+    }
+    const expenseData = expenseSnap.data();
+    if (expenseData.type !== "expense") {
+      throw new HttpsError("invalid-argument", "الحساب المختار ليس حساب مصروف.");
+    }
+    if (expenseData.isActive === false) {
+      throw new HttpsError("failed-precondition", "حساب المصروف غير نشط.");
+    }
+
+    // تحقّق رصيد الخزينة كافٍ (منع الرصيد السالب)
+    const treasuryBalance = Number(treasuryDoc.data().balance) || 0;
+    if (amount > treasuryBalance + 0.01) {
+      throw new HttpsError("failed-precondition", `رصيد الخزينة (${treasuryBalance.toLocaleString()}) غير كافٍ لصرف ${amount.toLocaleString()}.`);
+    }
+
+    const tenantRef = db.collection(COLLECTIONS.TENANTS).doc(callerTenantId);
+    const paymentRef = db.collection(COLLECTIONS.PAYMENTS).doc();
+    const journalRef = db.collection(COLLECTIONS.JOURNAL_ENTRIES).doc();
+
+    const result = await db.runTransaction(async (tx) => {
+      const tenantSnap = await tx.get(tenantRef);
+      if (!tenantSnap.exists) throw new HttpsError("failed-precondition", "الشركة غير موجودة.");
+      const tData = tenantSnap.data();
+      const nextPaymentNumber = (tData.lastPaymentNumber || 0) + 1;
+      const nextJournalNumber = (tData.lastJournalNumber || 0) + 1;
+
+      const treasuryRef = treasuryDoc.ref;
+      const treasurySnapTx = await tx.get(treasuryRef);
+      const expenseSnapTx = await tx.get(expenseRef);
+      const treasuryDataTx = treasurySnapTx.data();
+      const expenseDataTx = expenseSnapTx.data();
+
+      const balTx = Number(treasuryDataTx.balance) || 0;
+      if (amount > balTx + 0.01) {
+        throw new HttpsError("failed-precondition", "تغيّر رصيد الخزينة، أعد المحاولة.");
+      }
+
+      // ===== القيد: مدين المصروف / دائن الخزينة =====
+      const journalLines = [
+        {
+          accountId: expenseRef.id,
+          accountCode: expenseDataTx.code || null,
+          accountName: expenseDataTx.name || null,
+          debit: amount,
+          credit: 0,
+          note: beneficiary ? `صرف لـ ${beneficiary}` : "صرف نقدي",
+        },
+        {
+          accountId: treasuryRef.id,
+          accountCode: treasuryDataTx.code || null,
+          accountName: treasuryDataTx.name || null,
+          debit: 0,
+          credit: amount,
+          note: "سند صرف",
+        },
+      ];
+
+      const check = validateJournalLines(journalLines);
+      if (!check.valid) {
+        throw new HttpsError("internal", "خطأ في توازن قيد الصرف: " + check.error);
+      }
+
+      const entryDoc = buildJournalEntryDoc({
+        tenantId: callerTenantId,
+        entryNumber: nextJournalNumber,
+        date: date,
+        description: `قيد صرف سند رقم ${nextPaymentNumber}${beneficiary ? " — " + beneficiary : ""}`,
+        lines: check.cleanLines,
+        totalDebit: check.totalDebit,
+        totalCredit: check.totalCredit,
+        source: "payment",
+        sourceRef: paymentRef.id,
+        status: JOURNAL_STATUS.POSTED,
+        createdBy: request.auth.uid,
+        createdAt: FieldValue.serverTimestamp(),
+      });
+      entryDoc.postedAt = FieldValue.serverTimestamp();
+      tx.set(journalRef, entryDoc);
+
+      // أرصدة: مصروف +amount، خزينة -amount
+      tx.update(expenseRef, { balance: FieldValue.increment(amount) });
+      tx.update(treasuryRef, { balance: FieldValue.increment(-amount) });
+
+      const paymentDoc = buildPaymentDoc({
+        tenantId: callerTenantId,
+        paymentNumber: nextPaymentNumber,
+        date: date,
+        expenseAccountId: expenseAccountId,
+        expenseAccountCode: expenseDataTx.code || null,
+        expenseAccountName: expenseDataTx.name || null,
+        amount: amount,
+        method: method,
+        beneficiary: beneficiary || null,
+        journalEntryId: journalRef.id,
+        notes: notes || null,
+        createdBy: request.auth.uid,
+        createdAt: FieldValue.serverTimestamp(),
+      });
+      tx.set(paymentRef, paymentDoc);
+
+      tx.update(tenantRef, { lastPaymentNumber: nextPaymentNumber, lastJournalNumber: nextJournalNumber });
+
+      return { paymentNumber: nextPaymentNumber, journalNumber: nextJournalNumber };
+    });
+
+    return {
+      id: paymentRef.id,
+      paymentNumber: result.paymentNumber,
+      journalEntryId: journalRef.id,
+      amount: amount,
+    };
+  } catch (err) {
+    if (err instanceof HttpsError) throw err;
+    console.error("createPayment failed:", err);
+    throw new HttpsError("internal", "تعذّر إنشاء سند الصرف، حاول مرة أخرى.");
   }
 });
 
@@ -5178,6 +5341,122 @@ exports.getFinancialStatements = onCall(async (request) => {
     assetsCurrent.sort(byCode); assetsNonCurrent.sort(byCode);
     liabCurrent.sort(byCode); liabNonCurrent.sort(byCode); equityItems.sort(byCode);
 
+    // ═══ الأرصدة الافتتاحية (قبل بداية الفترة) ═══
+    const openingRaw = {};
+    const allIds = new Set([...Object.keys(cumRaw), ...Object.keys(periodRaw)]);
+    for (const id of allIds) {
+      openingRaw[id] = (cumRaw[id] || 0) - (periodRaw[id] || 0);
+    }
+
+    // ═══ (3) قائمة الدخل الشامل ═══
+    // الدخل الشامل = صافي الدخل + بنود الدخل الشامل الأخرى (OCI). لا توجد بنود OCI حاليًا.
+    const comprehensiveIncome = {
+      netIncome: netIncome,
+      ociItems: [],
+      totalOci: 0,
+      totalComprehensiveIncome: netIncome,
+    };
+
+    // ═══ (4) قائمة التغير في حقوق الملكية ═══
+    const openingRevenueVal = cumRevenue - totalRevenue;   // الإيراد المتراكم قبل الفترة
+    const openingExpenseVal = cumExpense - totalExpense;   // المصروف المتراكم قبل الفترة
+    const openingRetainedExtra = openingRevenueVal - openingExpenseVal;  // دخل غير مُقفل قبل الفترة
+    const closingRetainedExtra = cumRevenue - cumExpense;  // = retainedEarnings (دخل غير مُقفل تراكمي)
+
+    const equityComponents = [];
+    let openingEquitySum = 0;
+    for (const [id, acc] of Object.entries(accounts)) {
+      if (acc.type !== ACCOUNT_TYPES.EQUITY) continue;
+      const cum = cumRaw[id] || 0;
+      const opn = openingRaw[id] || 0;
+      let opening = -opn;       // حقوق الملكية دائنة الطبيعة
+      let closing = -cum;
+      // الأرباح المُبقاة: تشمل الدخل غير المُقفل (لتطابق الميزانية)
+      if (acc.code === RETAINED_EARNINGS_CODE) {
+        opening += openingRetainedExtra;
+        closing += closingRetainedExtra;
+      }
+      equityComponents.push({ code: acc.code, name: acc.name, opening: r(opening), closing: r(closing) });
+      openingEquitySum += opening;
+    }
+    equityComponents.sort(byCode);
+    const openingEquityTotal = r(openingEquitySum);
+    const closingEquityTotal = totalEquityWithRE;
+    const capitalMovement = r(closingEquityTotal - openingEquityTotal - netIncome);  // حركات رأس المال/توزيعات
+
+    const equityStatement = {
+      components: equityComponents,
+      openingTotal: openingEquityTotal,
+      netIncome: netIncome,
+      capitalMovement: capitalMovement,
+      closingTotal: closingEquityTotal,
+    };
+
+    // ═══ (5) قائمة التدفقات النقدية (طريقة مباشرة) ═══
+    // حسابات النقد وما في حكمه: أصول كودها يبدأ بـ "11"
+    const cashIds = new Set();
+    for (const [id, acc] of Object.entries(accounts)) {
+      if (acc.type === ACCOUNT_TYPES.ASSET && typeof acc.code === "string" && acc.code.startsWith("11")) {
+        cashIds.add(id);
+      }
+    }
+    let openingCash = 0, closingCash = 0;
+    for (const id of cashIds) {
+      openingCash += (openingRaw[id] || 0);
+      closingCash += (cumRaw[id] || 0);
+    }
+    openingCash = r(openingCash);
+    closingCash = r(closingCash);
+
+    // تصنيف الحركات النقدية ضمن الفترة حسب الطرف المقابل الأكبر
+    let cfOperating = 0, cfInvesting = 0, cfFinancing = 0;
+    const cfOpItems = [], cfInvItems = [], cfFinItems = [];
+    for (const jeDoc of jeSnap.docs) {
+      const je = jeDoc.data();
+      if (je.status !== JOURNAL_STATUS.POSTED) continue;
+      const d = je.date;
+      if (!d || d < fromDate || d > toDate) continue;
+      const lines = je.lines || [];
+      let cashDelta = 0, hasCash = false;
+      for (const ln of lines) {
+        if (cashIds.has(ln.accountId)) {
+          cashDelta += (Number(ln.debit) || 0) - (Number(ln.credit) || 0);
+          hasCash = true;
+        }
+      }
+      if (!hasCash || Math.abs(cashDelta) < 0.005) continue;
+      // الطرف المقابل الأكبر (غير نقدي)
+      let bestType = null, bestSub = null, bestAmt = -1;
+      for (const ln of lines) {
+        if (cashIds.has(ln.accountId)) continue;
+        const acc = accounts[ln.accountId];
+        if (!acc) continue;
+        const amt = Math.abs((Number(ln.debit) || 0) - (Number(ln.credit) || 0));
+        if (amt > bestAmt) { bestAmt = amt; bestType = acc.type; bestSub = acc.subtype; }
+      }
+      let category = "operating";
+      if (bestType === ACCOUNT_TYPES.ASSET && bestSub === "non_current_asset") category = "investing";
+      else if (bestType === ACCOUNT_TYPES.EQUITY) category = "financing";
+      else if (bestType === ACCOUNT_TYPES.LIABILITY && bestSub === "non_current_liability") category = "financing";
+
+      const item = { description: je.description || "حركة نقدية", amount: r(cashDelta), date: d };
+      if (category === "operating") { cfOperating += cashDelta; cfOpItems.push(item); }
+      else if (category === "investing") { cfInvesting += cashDelta; cfInvItems.push(item); }
+      else { cfFinancing += cashDelta; cfFinItems.push(item); }
+    }
+    cfOperating = r(cfOperating); cfInvesting = r(cfInvesting); cfFinancing = r(cfFinancing);
+    const cfNetChange = r(cfOperating + cfInvesting + cfFinancing);
+
+    const cashFlow = {
+      operating: { items: cfOpItems, total: cfOperating },
+      investing: { items: cfInvItems, total: cfInvesting },
+      financing: { items: cfFinItems, total: cfFinancing },
+      netChange: cfNetChange,
+      openingCash: openingCash,
+      closingCash: closingCash,
+      reconciles: Math.abs((openingCash + cfNetChange) - closingCash) < 0.01,
+    };
+
     return {
       fromDate: fromDate,
       toDate: toDate,
@@ -5188,6 +5467,7 @@ exports.getFinancialStatements = onCall(async (request) => {
         totalExpense: r(totalExpense),
         netIncome: netIncome,
       },
+      comprehensiveIncome: comprehensiveIncome,
       balanceSheet: {
         asOf: toDate,
         assets: { current: assetsCurrent, nonCurrent: assetsNonCurrent, total: totalAssetsR },
@@ -5196,6 +5476,8 @@ exports.getFinancialStatements = onCall(async (request) => {
         totalLiabilitiesAndEquity: totalLiabAndEquity,
         balanced: Math.abs(totalAssetsR - totalLiabAndEquity) < 0.01,
       },
+      equityStatement: equityStatement,
+      cashFlow: cashFlow,
     };
   } catch (err) {
     if (err instanceof HttpsError) throw err;

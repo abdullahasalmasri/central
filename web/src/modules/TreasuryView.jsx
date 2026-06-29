@@ -1,274 +1,418 @@
-import React from "react";
-import {
-  Wallet, ArrowDownToLine, ArrowUpFromLine, Activity, Landmark,
-  AlertTriangle, ArrowDownLeft, ArrowUpRight, Calendar, ChevronDown
-} from "lucide-react";
+import { useState, useEffect } from "react";
+import { collection, query, where, getDocs, doc, getDoc } from "firebase/firestore";
+import { httpsCallable } from "firebase/functions";
+import { db, auth, functions } from "../firebase";
+import { exportToExcel, exportToPDF, datedFileName } from "../exportUtils";
 
 /* ============================================================
    الخزينة — قسم المالية
-   البيانات تجريبية. دوال backend المطلوبة مكتوبة بجانب كل مجموعة.
+   تعرض رصيد النقد وحركاته (وارد/صادر) من القيود، وتسجّل سندات الصرف.
+   سند الصرف (createPayment) يولّد قيدًا: مدين المصروف / دائن الخزينة.
    ============================================================ */
 
-// 📊 البطاقات — مصدرها: getFinancialStatements + حركات الصندوق
-const KPIS = [
-  { id: "liq", label: "إجمالي السيولة", value: "2,340,000", unit: "ر.س", icon: Wallet,          color: "#059669" },
-  { id: "in",  label: "داخل هذا الشهر", value: "1,180,000", unit: "ر.س", icon: ArrowDownToLine,  color: "#16a34a" },
-  { id: "out", label: "خارج هذا الشهر", value: "890,000",   unit: "ر.س", icon: ArrowUpFromLine,  color: "#dc2626" },
-  { id: "net", label: "صافي التدفق",    value: "+290,000",  unit: "ر.س", icon: Activity,         color: "#2563eb" },
-];
-
-// 🏦 أرصدة الحسابات البنكية — مصدرها: getFinancialStatements (حسابات النقد)
-const BANKS = [
-  { name: "مصرف الراجحي", value: 1420000, pct: 61 },
-  { name: "البنك الأهلي", value: 580000,  pct: 25 },
-  { name: "بنك الرياض",   value: 240000,  pct: 10 },
-  { name: "نقد بالصندوق", value: 100000,  pct: 4  },
-];
-
-// 📅 التنبؤ بالتدفق (بالألف) — مصدرها: getCashForecast (دالة backend جديدة)
-const FORECAST = [
-  { m: "يوليو",   in: 1250, out: 920  },
-  { m: "أغسطس",  in: 1100, out: 980  },
-  { m: "سبتمبر", in: 1350, out: 1050 },
-  { m: "أكتوبر",  in: 1200, out: 1100 },
-];
-
-// 🔄 آخر الحركات — مصدرها: قيود/معاملات النقد
-const MOVES = [
-  { desc: "تحصيل — عقد أرامكو",   date: "٢٤ يونيو", amount: 180000  },
-  { desc: "رواتب الموظفين",       date: "٢٣ يونيو", amount: -420000 },
-  { desc: "تحصيل — مشروع نيوم",   date: "٢٢ يونيو", amount: 95000   },
-  { desc: "إيجار سكن العمّال",    date: "٢١ يونيو", amount: -68000  },
-  { desc: "وقود الأسطول",         date: "٢٠ يونيو", amount: -34000  },
-];
-
-const fmt = (n) => Math.abs(n).toLocaleString("en-US");
-const fMax = Math.max(...FORECAST.flatMap((f) => [f.in, f.out]));
-
-const STYLES = `
-  *{margin:0;padding:0;box-sizing:border-box}
-  .trs-root{
-    --bg:#f4f6f9; --panel:#fff; --ink:#161b26; --ink2:#5a6580; --ink3:#94a0b8;
-    --line:#e7ebf1; --line2:#dde2ec;
-    font-family:'IBM Plex Sans Arabic','Segoe UI',Tahoma,sans-serif;
-    direction:rtl; background:var(--bg); color:var(--ink); min-height:100vh;
-    padding:26px 30px; -webkit-font-smoothing:antialiased;
-  }
-  .trs-num{font-variant-numeric:tabular-nums; letter-spacing:-.3px}
-
-  .trs-head{display:flex; align-items:center; gap:14px; margin-bottom:24px; flex-wrap:wrap}
-  .trs-head-ic{width:50px; height:50px; border-radius:13px; display:grid; place-items:center;
-    background:#0596691a; color:#059669; flex-shrink:0}
-  .trs-title{font-size:23px; font-weight:700; letter-spacing:-.4px; line-height:1.1}
-  .trs-sub{font-size:13px; color:var(--ink2); margin-top:2px}
-  .trs-period{margin-right:auto; display:flex; align-items:center; gap:7px; height:42px; padding:0 15px;
-    background:var(--panel); border:1px solid var(--line2); border-radius:11px; cursor:pointer;
-    font-family:inherit; font-size:13.5px; font-weight:600; color:var(--ink)}
-  .trs-period svg:first-child{color:#059669}
-
-  .trs-kpis{display:grid; grid-template-columns:repeat(4,1fr); gap:14px; margin-bottom:16px}
-  .trs-kpi{background:var(--panel); border:1px solid var(--line); border-radius:15px; padding:17px 18px;
-    position:relative; overflow:hidden}
-  .trs-kpi::after{content:""; position:absolute; top:0; right:0; width:3px; height:100%; background:var(--c)}
-  .trs-kpi-ic{width:38px; height:38px; border-radius:10px; display:grid; place-items:center;
-    background:color-mix(in srgb,var(--c) 14%,transparent); color:var(--c); margin-bottom:12px}
-  .trs-kpi-label{font-size:12.5px; color:var(--ink2); font-weight:500; margin-bottom:5px}
-  .trs-kpi-val{font-size:24px; font-weight:700}
-  .trs-kpi-val .u{font-size:13px; color:var(--ink3); font-weight:600; margin-right:3px}
-
-  .trs-row{display:grid; gap:16px; margin-bottom:16px; align-items:start}
-  .trs-row.a{grid-template-columns:1.6fr 1fr}
-  .trs-row.b{grid-template-columns:1.6fr 1fr}
-  .trs-card{background:var(--panel); border:1px solid var(--line); border-radius:16px; padding:20px}
-  .trs-card-head{display:flex; align-items:center; justify-content:space-between; margin-bottom:18px}
-  .trs-card-title{font-size:15.5px; font-weight:700}
-  .trs-legend{display:flex; gap:13px}
-  .trs-leg{display:flex; align-items:center; gap:6px; font-size:11.5px; color:var(--ink2); font-weight:500}
-  .trs-leg b{width:9px; height:9px; border-radius:2px; display:block}
-
-  /* FORECAST bars */
-  .trs-fc{display:flex; align-items:flex-end; justify-content:space-around; gap:12px; height:170px; padding-top:8px}
-  .trs-fc-m{flex:1; display:flex; flex-direction:column; align-items:center; gap:9px; height:100%}
-  .trs-fc-bars{flex:1; display:flex; align-items:flex-end; gap:6px; width:100%; justify-content:center}
-  .trs-fc-bar{width:26px; border-radius:6px 6px 0 0; position:relative; transition:height .3s}
-  .trs-fc-bar.in{background:linear-gradient(180deg,#22c55e,#16a34a)}
-  .trs-fc-bar.out{background:linear-gradient(180deg,#f87171,#dc2626)}
-  .trs-fc-label{font-size:12px; color:var(--ink2); font-weight:600}
-
-  /* BANKS */
-  .trs-banks{display:flex; flex-direction:column; gap:15px}
-  .trs-bank-top{display:flex; align-items:center; justify-content:space-between; margin-bottom:7px}
-  .trs-bank-name{display:flex; align-items:center; gap:8px; font-size:13px; font-weight:600}
-  .trs-bank-ic{width:26px; height:26px; border-radius:7px; background:#0596691a; color:#059669; display:grid; place-items:center; flex-shrink:0}
-  .trs-bank-val{font-size:13px; font-weight:700; font-variant-numeric:tabular-nums}
-  .trs-bank-bar{height:7px; background:#eef1f6; border-radius:999px; overflow:hidden}
-  .trs-bank-bar i{display:block; height:100%; border-radius:999px; background:linear-gradient(90deg,#059669,#34d399)}
-
-  /* MOVES */
-  .trs-moves{display:flex; flex-direction:column}
-  .trs-move{display:flex; align-items:center; gap:12px; padding:11px 4px; border-bottom:1px solid var(--line)}
-  .trs-move:last-child{border-bottom:none}
-  .trs-move-ic{width:34px; height:34px; border-radius:9px; display:grid; place-items:center; flex-shrink:0}
-  .trs-move-ic.in{background:#dcfce7; color:#16a34a}
-  .trs-move-ic.out{background:#fee2e2; color:#dc2626}
-  .trs-move-info{flex:1; min-width:0}
-  .trs-move-desc{font-size:13px; font-weight:600; color:var(--ink)}
-  .trs-move-date{font-size:11.5px; color:var(--ink3)}
-  .trs-move-amt{font-size:13.5px; font-weight:700; font-variant-numeric:tabular-nums; white-space:nowrap}
-  .trs-move-amt.in{color:#15803d} .trs-move-amt.out{color:#b91c1c}
-
-  /* ALERTS */
-  .trs-alerts{display:flex; flex-direction:column; gap:10px}
-  .trs-alert{display:flex; gap:11px; align-items:flex-start; padding:13px 14px; border-radius:12px;
-    background:#fffbeb; border:1px solid #fde68a}
-  .trs-alert-ic{width:30px; height:30px; border-radius:8px; display:grid; place-items:center; flex-shrink:0;
-    background:#fef3c7; color:#d97706}
-  .trs-alert-t{font-size:13px; font-weight:700; margin-bottom:2px}
-  .trs-alert-v{font-size:12px; color:var(--ink2); line-height:1.5}
-
-  @media(max-width:1000px){
-    .trs-kpis{grid-template-columns:repeat(2,1fr)}
-    .trs-row.a,.trs-row.b{grid-template-columns:1fr}
-  }
-  @media(max-width:560px){
-    .trs-root{padding:18px 14px}
-    .trs-kpis{grid-template-columns:1fr}
-    .trs-title{font-size:19px}
-    .trs-fc-bar{width:18px}
-  }
-`;
+const TREASURY_CODE = "1100";
+const METHOD_LABELS = { cash: "نقدًا", transfer: "تحويل", cheque: "شيك" };
 
 export default function TreasuryView() {
-  return (
-    <div className="trs-root">
-      <style>{STYLES}</style>
+  const [tenantId, setTenantId] = useState("");
+  const [companyName, setCompanyName] = useState("الشركة");
+  const [accounts, setAccounts] = useState([]);
+  const [entries, setEntries] = useState([]);
+  const [payments, setPayments] = useState([]);
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState("");
+  const [tab, setTab] = useState("movements");
+  const [showForm, setShowForm] = useState(false);
 
-      {/* HEAD */}
-      <div className="trs-head">
-        <div className="trs-head-ic"><Landmark size={24} /></div>
+  useEffect(() => {
+    (async () => {
+      try {
+        const uid = auth.currentUser && auth.currentUser.uid;
+        if (!uid) { setError("لم يتم تسجيل الدخول."); setLoading(false); return; }
+        const userSnap = await getDoc(doc(db, "users", uid));
+        const tid = userSnap.exists() ? userSnap.data().tenantId : null;
+        if (!tid) { setError("تعذّر تحديد المنشأة."); setLoading(false); return; }
+        try {
+          const tSnap = await getDoc(doc(db, "tenants", tid));
+          if (tSnap.exists() && tSnap.data().name) setCompanyName(tSnap.data().name);
+        } catch (e) { /* اختياري */ }
+        setTenantId(tid);
+      } catch (e) {
+        setError("تعذّر تحميل بيانات المستخدم.");
+        setLoading(false);
+      }
+    })();
+  }, []);
+
+  useEffect(() => {
+    if (tenantId) loadData();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [tenantId]);
+
+  async function loadData() {
+    setLoading(true);
+    setError("");
+    try {
+      const [accSnap, jeSnap, paySnap] = await Promise.all([
+        getDocs(query(collection(db, "accounts"), where("tenantId", "==", tenantId))),
+        getDocs(query(collection(db, "journalEntries"), where("tenantId", "==", tenantId))),
+        getDocs(query(collection(db, "payments"), where("tenantId", "==", tenantId))),
+      ]);
+      setAccounts(accSnap.docs.map((d) => ({ id: d.id, ...d.data() })));
+      setEntries(jeSnap.docs.map((d) => ({ id: d.id, ...d.data() })));
+      const payList = paySnap.docs.map((d) => ({ id: d.id, ...d.data() }));
+      payList.sort((a, b) => (b.paymentNumber || 0) - (a.paymentNumber || 0));
+      setPayments(payList);
+    } catch (err) {
+      setError("تعذّر تحميل البيانات.");
+    } finally {
+      setLoading(false);
+    }
+  }
+
+  const company = companyName;
+  const treasury = accounts.find((a) => a.code === TREASURY_CODE) || null;
+  const expenseAccounts = accounts
+    .filter((a) => a.type === "expense" && a.isActive !== false)
+    .sort((a, b) => (a.code || "").localeCompare(b.code || ""));
+  const balance = treasury ? (Number(treasury.balance) || 0) : 0;
+
+  // حركات الخزينة من القيود المعتمدة
+  const movements = [];
+  let totalIn = 0, totalOut = 0;
+  if (treasury) {
+    for (const je of entries) {
+      if (je.status && je.status !== "posted") continue;
+      for (const ln of (je.lines || [])) {
+        if (ln.accountId === treasury.id) {
+          const debit = Number(ln.debit) || 0;
+          const credit = Number(ln.credit) || 0;
+          totalIn += debit;
+          totalOut += credit;
+          movements.push({
+            date: je.date || "",
+            entryNumber: je.entryNumber || null,
+            description: je.description || "",
+            note: ln.note || "",
+            debit, credit,
+          });
+        }
+      }
+    }
+    movements.sort((a, b) => (a.date).localeCompare(b.date) || (a.entryNumber || 0) - (b.entryNumber || 0));
+  }
+  // الرصيد الجاري
+  let run = 0;
+  const movementsRun = movements.map((m) => { run += m.debit - m.credit; return { ...m, running: run }; });
+  const displayMovements = [...movementsRun].reverse(); // الأحدث أولاً
+
+  // تصدير الحركات
+  function buildMovRows() {
+    return movementsRun.map((m) => ({
+      date: m.date,
+      entry: m.entryNumber ? `#${m.entryNumber}` : "",
+      desc: [m.description, m.note].filter(Boolean).join(" — "),
+      in: m.debit || "",
+      out: m.credit || "",
+      balance: m.running,
+    }));
+  }
+  const movColumns = [
+    { key: "date", header: "التاريخ" },
+    { key: "entry", header: "القيد" },
+    { key: "desc", header: "البيان" },
+    { key: "in", header: "وارد" },
+    { key: "out", header: "صادر" },
+    { key: "balance", header: "الرصيد" },
+  ];
+  const exportMovExcel = () => exportToExcel({ rows: buildMovRows(), columns: movColumns, fileName: datedFileName("حركات-الخزينة"), sheetName: "حركات الخزينة" });
+  const exportMovPDF = () => exportToPDF({ rows: buildMovRows(), columns: movColumns, fileName: datedFileName("حركات-الخزينة"), header: { companyName: company, title: "حركات الخزينة", subtitle: "النقد وما في حكمه" } });
+
+  return (
+    <div style={styles.page}>
+      <div style={styles.topRow}>
         <div>
-          <div className="trs-title">الخزينة</div>
-          <div className="trs-sub">إدارة النقد والسيولة والتنبؤ بالتدفقات · المالية</div>
+          <h1 style={styles.pageTitle}>الخزينة</h1>
+          <p style={styles.pageSub}>رصيد النقد وحركاته، وتسجيل سندات الصرف.</p>
         </div>
-        <button className="trs-period">
-          <Calendar size={16} /> هذا الشهر <ChevronDown size={15} />
+        <button style={styles.payBtn} onClick={() => setShowForm(true)} disabled={!treasury}>➖ سند صرف</button>
+      </div>
+
+      {!treasury && !loading ? (
+        <div style={styles.error}>حساب الخزينة (1100) غير موجود في دليل الحسابات. أنشئ دليل الحسابات أولًا.</div>
+      ) : null}
+
+      {/* مؤشرات */}
+      <div style={styles.cards}>
+        <div style={styles.cardBig}>
+          <span style={styles.cardLabel}>رصيد الخزينة الحالي</span>
+          <span style={{ ...styles.cardValueBig, color: balance >= 0 ? "#059669" : "#dc2626" }} dir="ltr">{balance.toLocaleString()} ﷼</span>
+        </div>
+        <div style={styles.card}>
+          <span style={styles.cardLabel}>إجمالي الوارد</span>
+          <span style={{ ...styles.cardValue, color: "#16a34a" }} dir="ltr">{totalIn.toLocaleString()}</span>
+        </div>
+        <div style={styles.card}>
+          <span style={styles.cardLabel}>إجمالي الصادر</span>
+          <span style={{ ...styles.cardValue, color: "#dc2626" }} dir="ltr">{totalOut.toLocaleString()}</span>
+        </div>
+      </div>
+
+      <div style={styles.tabs}>
+        <button style={{ ...styles.tab, ...(tab === "movements" ? styles.tabActive : {}) }} onClick={() => setTab("movements")}>
+          💵 حركات الخزينة
+        </button>
+        <button style={{ ...styles.tab, ...(tab === "payments" ? styles.tabActive : {}) }} onClick={() => setTab("payments")}>
+          🧾 سندات الصرف
         </button>
       </div>
 
-      {/* KPIs */}
-      <div className="trs-kpis">
-        {KPIS.map((k) => {
-          const Icon = k.icon;
-          return (
-            <div className="trs-kpi" key={k.id} style={{ "--c": k.color }}>
-              <div className="trs-kpi-ic"><Icon size={19} /></div>
-              <div className="trs-kpi-label">{k.label}</div>
-              <div className="trs-kpi-val trs-num">
-                {k.value}<span className="u">{k.unit}</span>
-              </div>
-            </div>
-          );
-        })}
-      </div>
+      {error && treasury ? <div style={styles.error}>{error}</div> : null}
 
-      {/* ROW A: FORECAST + BANKS */}
-      <div className="trs-row a">
-
-        <div className="trs-card">
-          <div className="trs-card-head">
-            <span className="trs-card-title">التنبؤ بالتدفق النقدي — ٤ أشهر قادمة</span>
-            <div className="trs-legend">
-              <span className="trs-leg"><b style={{ background: "#16a34a" }} /> متوقّع داخل</span>
-              <span className="trs-leg"><b style={{ background: "#dc2626" }} /> متوقّع خارج</span>
-            </div>
-          </div>
-          <div className="trs-fc">
-            {FORECAST.map((f) => (
-              <div className="trs-fc-m" key={f.m}>
-                <div className="trs-fc-bars">
-                  <div className="trs-fc-bar in"  style={{ height: `${(f.in / fMax) * 100}%` }} title={`داخل ${f.in} ألف`} />
-                  <div className="trs-fc-bar out" style={{ height: `${(f.out / fMax) * 100}%` }} title={`خارج ${f.out} ألف`} />
+      {loading ? <p style={styles.muted}>جارٍ التحميل...</p> : (
+        tab === "movements" ? (
+          <>
+            <div style={styles.toolbar}>
+              <span style={styles.summaryText}>{movements.length} حركة</span>
+              {movements.length > 0 ? (
+                <div style={styles.toolBtns}>
+                  <button style={styles.pdfBtn} onClick={exportMovPDF}>⬇ PDF</button>
+                  <button style={styles.exportBtn} onClick={exportMovExcel}>⬇ Excel</button>
                 </div>
-                <div className="trs-fc-label">{f.m}</div>
-              </div>
-            ))}
-          </div>
-        </div>
-
-        <div className="trs-card">
-          <div className="trs-card-head">
-            <span className="trs-card-title">أرصدة الحسابات</span>
-          </div>
-          <div className="trs-banks">
-            {BANKS.map((b) => (
-              <div key={b.name}>
-                <div className="trs-bank-top">
-                  <span className="trs-bank-name">
-                    <span className="trs-bank-ic"><Landmark size={14} /></span>
-                    {b.name}
-                  </span>
-                  <span className="trs-bank-val trs-num">{fmt(b.value)}</span>
-                </div>
-                <div className="trs-bank-bar"><i style={{ width: `${b.pct}%` }} /></div>
-              </div>
-            ))}
-          </div>
-        </div>
-
-      </div>
-
-      {/* ROW B: MOVES + ALERTS */}
-      <div className="trs-row b">
-
-        <div className="trs-card">
-          <div className="trs-card-head">
-            <span className="trs-card-title">آخر الحركات النقدية</span>
-          </div>
-          <div className="trs-moves">
-            {MOVES.map((m, i) => {
-              const dir = m.amount >= 0 ? "in" : "out";
-              return (
-                <div className="trs-move" key={i}>
-                  <div className={`trs-move-ic ${dir}`}>
-                    {dir === "in" ? <ArrowDownLeft size={17} /> : <ArrowUpRight size={17} />}
-                  </div>
-                  <div className="trs-move-info">
-                    <div className="trs-move-desc">{m.desc}</div>
-                    <div className="trs-move-date">{m.date}</div>
-                  </div>
-                  <div className={`trs-move-amt ${dir}`}>
-                    {m.amount >= 0 ? "+" : "−"}{fmt(m.amount)}
-                  </div>
-                </div>
-              );
-            })}
-          </div>
-        </div>
-
-        <div className="trs-card">
-          <div className="trs-card-head">
-            <span className="trs-card-title">تنبيهات السيولة</span>
-            <AlertTriangle size={17} style={{ color: "#94a0b8" }} />
-          </div>
-          <div className="trs-alerts">
-            <div className="trs-alert">
-              <div className="trs-alert-ic"><AlertTriangle size={16} /></div>
-              <div>
-                <div className="trs-alert-t">هامش أغسطس ضيق</div>
-                <div className="trs-alert-v">صافي التدفق المتوقّع +١٢٠ ألف فقط — راقب التحصيل قبل المصروفات الكبيرة.</div>
-              </div>
+              ) : null}
             </div>
-            <div className="trs-alert">
-              <div className="trs-alert-ic"><AlertTriangle size={16} /></div>
-              <div>
-                <div className="trs-alert-t">نقد الصندوق منخفض</div>
-                <div className="trs-alert-v">رصيد الصندوق ١٠٠ ألف — يكفي للمصروفات النثرية فقط.</div>
+            {movements.length === 0 ? (
+              <div style={styles.empty}><p style={styles.muted}>لا توجد حركات نقدية بعد.</p></div>
+            ) : (
+              <div style={styles.panel}>
+                <table style={styles.table}>
+                  <thead>
+                    <tr>
+                      <th style={styles.th}>التاريخ</th>
+                      <th style={styles.th}>البيان</th>
+                      <th style={styles.thAmount}>وارد</th>
+                      <th style={styles.thAmount}>صادر</th>
+                      <th style={styles.thAmount}>الرصيد</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {displayMovements.map((m, i) => (
+                      <tr key={i}>
+                        <td style={styles.tdName} dir="ltr">{m.date}</td>
+                        <td style={styles.tdName}>
+                          {m.entryNumber ? <span style={styles.entryTag}>#{m.entryNumber}</span> : null}
+                          {[m.description, m.note].filter(Boolean).join(" — ") || "—"}
+                        </td>
+                        <td style={{ ...styles.tdAmount, color: "#16a34a" }} dir="ltr">{m.debit ? m.debit.toLocaleString() : "—"}</td>
+                        <td style={{ ...styles.tdAmount, color: "#dc2626" }} dir="ltr">{m.credit ? m.credit.toLocaleString() : "—"}</td>
+                        <td style={{ ...styles.tdAmount, fontWeight: 700 }} dir="ltr">{m.running.toLocaleString()}</td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
               </div>
+            )}
+          </>
+        ) : (
+          payments.length === 0 ? (
+            <div style={styles.empty}><p style={styles.muted}>لا توجد سندات صرف بعد. اضغط «سند صرف» لتسجيل مصروف نقدي.</p></div>
+          ) : (
+            <div style={styles.panel}>
+              <table style={styles.table}>
+                <thead>
+                  <tr>
+                    <th style={styles.th}>السند</th>
+                    <th style={styles.th}>التاريخ</th>
+                    <th style={styles.th}>المصروف</th>
+                    <th style={styles.th}>المستفيد</th>
+                    <th style={styles.thCenter}>الطريقة</th>
+                    <th style={styles.thAmount}>المبلغ</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {payments.map((p) => (
+                    <tr key={p.id}>
+                      <td style={styles.tdCode} dir="ltr">PAY-{p.paymentNumber}</td>
+                      <td style={styles.tdName} dir="ltr">{p.date}</td>
+                      <td style={styles.tdName}>
+                        {p.expenseAccountCode ? <span style={styles.entryTag}>{p.expenseAccountCode}</span> : null}
+                        {p.expenseAccountName || "—"}
+                      </td>
+                      <td style={styles.tdName}>{p.beneficiary || "—"}</td>
+                      <td style={styles.tdCenter}>{METHOD_LABELS[p.method] || p.method}</td>
+                      <td style={{ ...styles.tdAmount, fontWeight: 700, color: "#dc2626" }} dir="ltr">{(Number(p.amount) || 0).toLocaleString()}</td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
             </div>
-          </div>
+          )
+        )
+      )}
+
+      {showForm ? (
+        <PaymentForm
+          expenseAccounts={expenseAccounts}
+          balance={balance}
+          onClose={() => setShowForm(false)}
+          onSaved={() => { setShowForm(false); loadData(); }}
+        />
+      ) : null}
+    </div>
+  );
+}
+
+// ═══════════ مودال سند الصرف ═══════════
+function PaymentForm({ expenseAccounts, balance, onClose, onSaved }) {
+  const today = new Date().toISOString().slice(0, 10);
+  const [date, setDate] = useState(today);
+  const [expenseAccountId, setExpenseAccountId] = useState("");
+  const [amount, setAmount] = useState("");
+  const [method, setMethod] = useState("cash");
+  const [beneficiary, setBeneficiary] = useState("");
+  const [notes, setNotes] = useState("");
+  const [err, setErr] = useState("");
+  const [saving, setSaving] = useState(false);
+
+  const amountNum = Number(amount) || 0;
+  const exceedsBalance = amountNum > balance + 0.01;
+
+  async function save() {
+    setErr("");
+    if (!expenseAccountId) { setErr("اختر حساب المصروف."); return; }
+    if (!(amountNum > 0)) { setErr("أدخل مبلغًا أكبر من صفر."); return; }
+    if (exceedsBalance) { setErr(`المبلغ يتجاوز رصيد الخزينة (${balance.toLocaleString()} ﷼).`); return; }
+
+    setSaving(true);
+    try {
+      const fn = httpsCallable(functions, "createPayment");
+      await fn({ date, expenseAccountId, amount: amountNum, method, beneficiary, notes });
+      onSaved();
+    } catch (e) {
+      setErr(e.message || "تعذّر تسجيل السند.");
+    } finally {
+      setSaving(false);
+    }
+  }
+
+  return (
+    <div style={styles.overlay} onClick={onClose}>
+      <div style={styles.modal} onClick={(e) => e.stopPropagation()}>
+        <div style={styles.modalHead}>
+          <h2 style={styles.modalTitle}>سند صرف</h2>
+          <button style={styles.close} onClick={onClose}>✕</button>
         </div>
 
+        <div style={styles.balanceHint}>
+          <span>رصيد الخزينة المتاح</span>
+          <span dir="ltr" style={{ fontWeight: 800, color: balance >= 0 ? "#059669" : "#dc2626" }}>{balance.toLocaleString()} ﷼</span>
+        </div>
+
+        {err ? <div style={styles.error}>{err}</div> : null}
+
+        <label style={styles.label}>حساب المصروف *</label>
+        <select style={styles.input} value={expenseAccountId} onChange={(e) => setExpenseAccountId(e.target.value)} disabled={saving}>
+          <option value="">— اختر حساب المصروف —</option>
+          {expenseAccounts.map((a) => <option key={a.id} value={a.id}>{a.code} - {a.name}</option>)}
+        </select>
+
+        <div style={styles.row}>
+          <div style={{ flex: 1 }}>
+            <label style={styles.label}>المبلغ *</label>
+            <input style={{ ...styles.input, ...(exceedsBalance ? styles.inputError : {}) }} type="number" min="0" value={amount} onChange={(e) => setAmount(e.target.value)} disabled={saving} dir="ltr" />
+          </div>
+          <div style={{ flex: 1 }}>
+            <label style={styles.label}>التاريخ *</label>
+            <input style={styles.input} type="date" value={date} onChange={(e) => setDate(e.target.value)} disabled={saving} dir="ltr" />
+          </div>
+        </div>
+        {exceedsBalance ? <div style={styles.warnSmall}>⚠ المبلغ يتجاوز رصيد الخزينة المتاح.</div> : null}
+
+        <label style={styles.label}>طريقة الصرف</label>
+        <div style={styles.methodRow}>
+          {["cash", "transfer", "cheque"].map((m) => (
+            <button key={m} type="button" onClick={() => setMethod(m)} disabled={saving}
+              style={{ ...styles.methodBtn, ...(method === m ? styles.methodBtnActive : {}) }}>
+              {METHOD_LABELS[m]}
+            </button>
+          ))}
+        </div>
+
+        <label style={styles.label}>المستفيد (اختياري)</label>
+        <input style={styles.input} value={beneficiary} onChange={(e) => setBeneficiary(e.target.value)} placeholder="اسم المستفيد / الجهة" disabled={saving} />
+
+        <label style={styles.label}>ملاحظات (اختياري)</label>
+        <input style={styles.input} value={notes} onChange={(e) => setNotes(e.target.value)} placeholder="رقم الفاتورة، البيان..." disabled={saving} />
+
+        <div style={styles.modalActions}>
+          <button style={styles.cancelBtn} onClick={onClose} disabled={saving}>إلغاء</button>
+          <button style={styles.saveBtn} onClick={save} disabled={saving || exceedsBalance}>
+            {saving ? "جارٍ الحفظ..." : "تسجيل السند"}
+          </button>
+        </div>
       </div>
     </div>
   );
 }
+
+const styles = {
+  page: { padding: "26px 30px 40px", minHeight: "100%", background: "#f4f6f9", fontFamily: "'IBM Plex Sans Arabic', system-ui, sans-serif", direction: "rtl" },
+  topRow: { display: "flex", justifyContent: "space-between", alignItems: "flex-start", marginBottom: 22, flexWrap: "wrap", gap: 12 },
+  pageTitle: { fontSize: 24, fontWeight: 800, color: "#059669", margin: "0 0 4px" },
+  pageSub: { fontSize: 14, color: "#64748b", margin: 0 },
+  payBtn: { padding: "11px 20px", fontSize: 14, fontWeight: 700, color: "#fff", background: "#dc2626", border: "none", borderRadius: 8, cursor: "pointer", whiteSpace: "nowrap" },
+
+  cards: { display: "flex", gap: 14, marginBottom: 22, flexWrap: "wrap" },
+  cardBig: { flex: 2, minWidth: 240, display: "flex", flexDirection: "column", gap: 6, padding: "18px 20px", background: "#fff", border: "2px solid #059669", borderRadius: 12 },
+  card: { flex: 1, minWidth: 160, display: "flex", flexDirection: "column", gap: 6, padding: "16px 18px", background: "#fff", border: "1px solid #e2e8f0", borderRadius: 12 },
+  cardLabel: { fontSize: 13, color: "#64748b" },
+  cardValueBig: { fontSize: 28, fontWeight: 800, fontFamily: "monospace" },
+  cardValue: { fontSize: 20, fontWeight: 800, fontFamily: "monospace" },
+
+  tabs: { display: "flex", gap: 8, marginBottom: 18, borderBottom: "2px solid #e2e8f0" },
+  tab: { padding: "10px 18px", fontSize: 14, fontWeight: 600, color: "#64748b", background: "none", border: "none", borderBottom: "3px solid transparent", cursor: "pointer", marginBottom: -2 },
+  tabActive: { color: "#059669", borderBottomColor: "#059669" },
+
+  toolbar: { display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 16, flexWrap: "wrap", gap: 10 },
+  summaryText: { fontSize: 14, color: "#15803d", fontWeight: 600 },
+  toolBtns: { display: "flex", gap: 8 },
+  pdfBtn: { padding: "9px 14px", fontSize: 13, fontWeight: 600, color: "#b91c1c", background: "#fee2e2", border: "none", borderRadius: 8, cursor: "pointer" },
+  exportBtn: { padding: "9px 14px", fontSize: 13, fontWeight: 600, color: "#15803d", background: "#dcfce7", border: "none", borderRadius: 8, cursor: "pointer" },
+
+  panel: { background: "#fff", border: "1px solid #e2e8f0", borderRadius: 12, overflow: "hidden" },
+  table: { width: "100%", borderCollapse: "collapse" },
+  th: { textAlign: "right", padding: "12px 14px", fontSize: 13, color: "#64748b", borderBottom: "2px solid #e2e8f0", background: "#f8fafc" },
+  thAmount: { textAlign: "left", padding: "12px 14px", fontSize: 13, color: "#64748b", borderBottom: "2px solid #e2e8f0", background: "#f8fafc" },
+  thCenter: { textAlign: "center", padding: "12px 14px", fontSize: 13, color: "#64748b", borderBottom: "2px solid #e2e8f0", background: "#f8fafc" },
+  tdCode: { padding: "11px 14px", fontSize: 14, fontWeight: 600, color: "#475569", fontFamily: "monospace", borderBottom: "1px solid #f1f5f9" },
+  tdName: { padding: "11px 14px", fontSize: 14, borderBottom: "1px solid #f1f5f9" },
+  tdAmount: { padding: "11px 14px", fontSize: 14, textAlign: "left", borderBottom: "1px solid #f1f5f9", fontFamily: "monospace" },
+  tdCenter: { padding: "11px 14px", fontSize: 14, textAlign: "center", borderBottom: "1px solid #f1f5f9" },
+  entryTag: { display: "inline-block", padding: "1px 8px", marginLeft: 8, background: "#eef2ff", color: "#4338ca", borderRadius: 6, fontSize: 12, fontWeight: 700, fontFamily: "monospace" },
+
+  empty: { padding: 40, background: "#fff", border: "1px solid #e2e8f0", borderRadius: 12, textAlign: "center" },
+  muted: { color: "#94a3b8", fontSize: 14 },
+  error: { padding: "10px 12px", background: "#fee2e2", color: "#b91c1c", borderRadius: 8, fontSize: 14, marginBottom: 16 },
+
+  overlay: { position: "fixed", inset: 0, background: "rgba(15,23,42,.5)", display: "flex", alignItems: "center", justifyContent: "center", zIndex: 1000, padding: 16 },
+  modal: { background: "#fff", borderRadius: 16, width: "100%", maxWidth: 480, maxHeight: "90vh", overflowY: "auto", padding: 24, direction: "rtl", fontFamily: "'IBM Plex Sans Arabic', system-ui, sans-serif" },
+  modalHead: { display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 18 },
+  modalTitle: { fontSize: 18, fontWeight: 800, color: "#0f172a", margin: 0 },
+  close: { fontSize: 20, color: "#94a3b8", background: "none", border: "none", cursor: "pointer" },
+
+  balanceHint: { display: "flex", justifyContent: "space-between", alignItems: "center", padding: "12px 16px", background: "#ecfdf5", border: "1px solid #a7f3d0", borderRadius: 10, marginBottom: 16, fontSize: 14, color: "#475569" },
+
+  row: { display: "flex", gap: 12 },
+  label: { display: "block", fontSize: 13, fontWeight: 600, color: "#334155", margin: "12px 0 6px" },
+  input: { width: "100%", padding: "10px 12px", fontSize: 14, border: "1px solid #cbd5e1", borderRadius: 8, boxSizing: "border-box", fontFamily: "inherit" },
+  inputError: { borderColor: "#dc2626", background: "#fef2f2" },
+  warnSmall: { padding: "8px 12px", background: "#fef3c7", color: "#92400e", borderRadius: 8, fontSize: 12, marginTop: 8 },
+
+  methodRow: { display: "flex", gap: 8 },
+  methodBtn: { flex: 1, padding: "9px 8px", fontSize: 13, fontWeight: 600, color: "#475569", background: "#fff", border: "2px solid #e2e8f0", borderRadius: 8, cursor: "pointer" },
+  methodBtnActive: { borderColor: "#059669", background: "#ecfdf5", color: "#059669" },
+
+  modalActions: { display: "flex", gap: 10, marginTop: 22 },
+  cancelBtn: { flex: 1, padding: "11px", fontSize: 14, fontWeight: 600, color: "#475569", background: "#f1f5f9", border: "none", borderRadius: 8, cursor: "pointer" },
+  saveBtn: { flex: 2, padding: "11px", fontSize: 14, fontWeight: 700, color: "#fff", background: "#059669", border: "none", borderRadius: 8, cursor: "pointer" },
+};

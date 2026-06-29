@@ -24,6 +24,7 @@ const COLLECTIONS = {
   FINANCE_APPROVALS: "financeApprovals",
   RECEIPTS: "receipts",
   CLOSINGS: "closings",
+  PAYMENTS: "payments",
 };
 
 const ROLES = {
@@ -1043,6 +1044,28 @@ function buildClosingDoc({
   };
 }
 
+// سند صرف: مصروف نقدي (مدين مصروف / دائن خزينة)
+function buildPaymentDoc({
+  tenantId, paymentNumber, date, expenseAccountId, expenseAccountCode, expenseAccountName,
+  amount, method, beneficiary, journalEntryId, notes, createdBy, createdAt,
+}) {
+  return {
+    tenantId,
+    paymentNumber: paymentNumber || null,
+    date: date,
+    expenseAccountId: expenseAccountId || null,
+    expenseAccountCode: expenseAccountCode || null,
+    expenseAccountName: expenseAccountName || null,
+    amount: amount || 0,
+    method: method || "cash",
+    beneficiary: beneficiary || null,
+    journalEntryId: journalEntryId || null,
+    notes: notes || null,
+    createdBy: createdBy || null,
+    createdAt,
+  };
+}
+
 function buildProjectTypeDoc({ tenantId, name, code, description, isSystem, createdBy, createdAt }) {
   return {
     tenantId,
@@ -1410,6 +1433,7 @@ module.exports = {
   buildInvoiceDoc,
   buildReceiptDoc,
   buildClosingDoc,
+  buildPaymentDoc,
   computeInvoiceTotals,
   buildProjectTypeDoc,
   buildProjectDoc,
