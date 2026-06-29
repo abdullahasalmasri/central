@@ -2400,6 +2400,420 @@ exports.createPayment = onCall(async (request) => {
 });
 
 // ═══════════════════════════════════════════════════════
+// ===== المالية: التخطيط والتحليل المالي (FP&A) =====
+// ===== تحليل شامل: مؤشرات + اتجاهات + نِسب + تنبؤ + توصيات =====
+// ═══════════════════════════════════════════════════════
+
+// أدوات مساعدة للتحليل
+function fpaLastNMonths(asOf, n) {
+  const months = [];
+  let cy = parseInt(asOf.slice(0, 4), 10);
+  let cm = parseInt(asOf.slice(5, 7), 10);
+  for (let i = 0; i < n; i++) {
+    months.unshift(`${cy}-${String(cm).padStart(2, "0")}`);
+    cm--; if (cm === 0) { cm = 12; cy--; }
+  }
+  return months;
+}
+function fpaLinearForecast(points) {
+  // انحدار خطي least-squares: y = a + b*x. points = [{x,y}]
+  const n = points.length;
+  if (n < 2) return { a: n === 1 ? points[0].y : 0, b: 0 };
+  let sumX = 0, sumY = 0, sumXY = 0, sumXX = 0;
+  for (const p of points) { sumX += p.x; sumY += p.y; sumXY += p.x * p.y; sumXX += p.x * p.x; }
+  const denom = n * sumXX - sumX * sumX;
+  const b = denom !== 0 ? (n * sumXY - sumX * sumY) / denom : 0;
+  const a = (sumY - b * sumX) / n;
+  return { a, b };
+}
+
+// data: { asOf? }  — تاريخ التحليل (افتراضي اليوم). يحلّل البيانات التراكمية + آخر 12 شهرًا.
+exports.getFinancialAnalysis = onCall(async (request) => {
+  try {
+    const callerTenantId = await requireModule(request.auth, MODULES.FINANCE);
+    const data = request.data || {};
+    let asOf = typeof data.asOf === "string" && isValidDate(data.asOf) ? data.asOf : null;
+    if (!asOf) {
+      const now = new Date();
+      asOf = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, "0")}-${String(now.getDate()).padStart(2, "0")}`;
+    }
+
+    const r2 = (n) => Math.round((Number(n) || 0) * 100) / 100;
+    const pct = (n) => Math.round((Number(n) || 0) * 1000) / 1000; // 3 منازل للنِسب
+
+    // ===== جلب البيانات =====
+    const [accSnap, jeSnap, invSnap] = await Promise.all([
+      db.collection(COLLECTIONS.ACCOUNTS).where("tenantId", "==", callerTenantId).get(),
+      db.collection(COLLECTIONS.JOURNAL_ENTRIES).where("tenantId", "==", callerTenantId).get(),
+      db.collection(COLLECTIONS.INVOICES).where("tenantId", "==", callerTenantId).get(),
+    ]);
+
+    const accountsById = {};
+    const accountsList = [];
+    accSnap.docs.forEach((d) => { const a = d.data(); accountsById[d.id] = a; accountsList.push({ id: d.id, ...a }); });
+    const journalEntries = jeSnap.docs.map((d) => d.data());
+    const invoices = invSnap.docs.map((d) => d.data());
+
+    const isPosted = (je) => je.status === JOURNAL_STATUS.POSTED;
+    const isClosing = (je) => je.source === "closing" || je.source === "closing_reversal";
+    const isCashCode = (code) => typeof code === "string" && code.startsWith("11");
+
+    // ===== الاتجاهات الشهرية (آخر 12 شهرًا) =====
+    const monthKeys = fpaLastNMonths(asOf, 12);
+    const monthData = {};
+    monthKeys.forEach((k) => { monthData[k] = { revenue: 0, expense: 0, cashIn: 0, cashOut: 0 }; });
+
+    // ===== التراكمي الكلي (كل التاريخ، مع استثناء قيود الإقفال من الإيراد/المصروف) =====
+    let totalRevenue = 0, totalExpense = 0;
+    const revByAcc = {}, expByAcc = {};
+
+    for (const je of journalEntries) {
+      if (!isPosted(je)) continue;
+      const skipRevExp = isClosing(je);
+      const mk = (je.date || "").slice(0, 7);
+      const inWindow = Object.prototype.hasOwnProperty.call(monthData, mk);
+      for (const ln of (je.lines || [])) {
+        const acc = accountsById[ln.accountId];
+        if (!acc) continue;
+        const debit = Number(ln.debit) || 0;
+        const credit = Number(ln.credit) || 0;
+        if (acc.type === ACCOUNT_TYPES.REVENUE && !skipRevExp) {
+          const v = credit - debit;
+          totalRevenue += v;
+          if (inWindow) monthData[mk].revenue += v;
+          const key = acc.code || "—";
+          if (!revByAcc[key]) revByAcc[key] = { code: acc.code, name: acc.name, amount: 0 };
+          revByAcc[key].amount += v;
+        } else if (acc.type === ACCOUNT_TYPES.EXPENSE && !skipRevExp) {
+          const v = debit - credit;
+          totalExpense += v;
+          if (inWindow) monthData[mk].expense += v;
+          const key = acc.code || "—";
+          if (!expByAcc[key]) expByAcc[key] = { code: acc.code, name: acc.name, amount: 0, subtype: acc.subtype };
+          expByAcc[key].amount += v;
+        }
+        // التدفق النقدي الشهري
+        if (acc.type === ACCOUNT_TYPES.ASSET && isCashCode(acc.code) && inWindow) {
+          monthData[mk].cashIn += debit;
+          monthData[mk].cashOut += credit;
+        }
+      }
+    }
+
+    const netProfit = r2(totalRevenue - totalExpense);
+    totalRevenue = r2(totalRevenue);
+    totalExpense = r2(totalExpense);
+
+    const monthlyTrends = monthKeys.map((k) => ({
+      month: k,
+      revenue: r2(monthData[k].revenue),
+      expense: r2(monthData[k].expense),
+      netProfit: r2(monthData[k].revenue - monthData[k].expense),
+      cashFlow: r2(monthData[k].cashIn - monthData[k].cashOut),
+    }));
+
+    // الشهر الحالي مقابل السابق
+    const curM = monthData[monthKeys[monthKeys.length - 1]];
+    const prevM = monthData[monthKeys[monthKeys.length - 2]];
+    const currentMonthRevenue = r2(curM.revenue);
+    const prevMonthRevenue = r2(prevM.revenue);
+    const revenueGrowth = prevMonthRevenue > 0 ? pct((currentMonthRevenue - prevMonthRevenue) / prevMonthRevenue) : null;
+
+    // ===== الأرصدة الحالية (للنِسب) =====
+    let cash = 0, currentAssets = 0, nonCurrentAssets = 0, currentLiab = 0, nonCurrentLiab = 0, receivablesBal = 0;
+    for (const acc of accountsList) {
+      const bal = Number(acc.balance) || 0;
+      if (acc.type === ACCOUNT_TYPES.ASSET) {
+        if (isCashCode(acc.code)) cash += bal;
+        if (acc.code === "1200") receivablesBal += bal;
+        if (acc.subtype === "non_current_asset") nonCurrentAssets += bal; else currentAssets += bal;
+      } else if (acc.type === ACCOUNT_TYPES.LIABILITY) {
+        const pos = -bal; // الخصوم دائنة (balance سالب)
+        if (acc.subtype === "non_current_liability") nonCurrentLiab += pos; else currentLiab += pos;
+      }
+    }
+    cash = r2(cash);
+    currentAssets = r2(currentAssets);
+    currentLiab = r2(currentLiab);
+    receivablesBal = r2(receivablesBal);
+
+    // ===== الذمم المدينة وأعمارها + التحصيل (من الفواتير الآجلة) =====
+    let totalCredit = 0, totalCollected = 0;
+    const aging = { d0_30: 0, d31_60: 0, d61_90: 0, d90plus: 0 };
+    const asOfMs = new Date(asOf + "T00:00:00").getTime();
+    const overdueInvoices = [];
+    for (const inv of invoices) {
+      const method = inv.paymentMethod || "credit";
+      const total = Number(inv.total) || 0;
+      if (method !== "credit") continue;
+      const remaining = inv.remainingAmount != null ? Number(inv.remainingAmount) : total;
+      const paid = Number(inv.paidAmount) || 0;
+      totalCredit += total;
+      totalCollected += paid;
+      if (remaining > 0.01) {
+        const invMs = new Date((inv.date || asOf) + "T00:00:00").getTime();
+        const days = Math.max(0, Math.floor((asOfMs - invMs) / 86400000));
+        if (days <= 30) aging.d0_30 += remaining;
+        else if (days <= 60) aging.d31_60 += remaining;
+        else if (days <= 90) aging.d61_90 += remaining;
+        else aging.d90plus += remaining;
+        if (days > 60) {
+          overdueInvoices.push({
+            number: inv.invoiceNumber || null,
+            customer: (inv.customerSnapshot && inv.customerSnapshot.name) || "—",
+            remaining: r2(remaining),
+            days,
+          });
+        }
+      }
+    }
+    totalCredit = r2(totalCredit);
+    totalCollected = r2(totalCollected);
+    const collectionRate = totalCredit > 0 ? pct(totalCollected / totalCredit) : null;
+    const totalReceivables = r2(aging.d0_30 + aging.d31_60 + aging.d61_90 + aging.d90plus);
+    overdueInvoices.sort((a, b) => b.remaining - a.remaining);
+    Object.keys(aging).forEach((k) => { aging[k] = r2(aging[k]); });
+
+    // ===== تركيز العملاء =====
+    const custMap = {};
+    let allCustTotal = 0;
+    for (const inv of invoices) {
+      const name = (inv.customerSnapshot && inv.customerSnapshot.name) || "عميل غير محدد";
+      const total = Number(inv.total) || 0;
+      custMap[name] = (custMap[name] || 0) + total;
+      allCustTotal += total;
+    }
+    const topCustomers = Object.entries(custMap)
+      .map(([name, total]) => ({ name, total: r2(total), pct: allCustTotal > 0 ? pct(total / allCustTotal) : 0 }))
+      .sort((a, b) => b.total - a.total)
+      .slice(0, 5);
+
+    // ===== تركيبة الإيراد/المصروف =====
+    const revenueComposition = Object.values(revByAcc)
+      .filter((x) => x.amount > 0.01)
+      .map((x) => ({ code: x.code, name: x.name, amount: r2(x.amount), pct: totalRevenue > 0 ? pct(x.amount / totalRevenue) : 0 }))
+      .sort((a, b) => b.amount - a.amount);
+    const expenseComposition = Object.values(expByAcc)
+      .filter((x) => x.amount > 0.01)
+      .map((x) => ({ code: x.code, name: x.name, amount: r2(x.amount), pct: totalExpense > 0 ? pct(x.amount / totalExpense) : 0 }))
+      .sort((a, b) => b.amount - a.amount);
+    const biggestExpense = expenseComposition.length ? expenseComposition[0] : null;
+
+    let opexTotal = 0, cogsTotal = 0;
+    for (const x of Object.values(expByAcc)) {
+      if (x.subtype === "operating_expense") opexTotal += x.amount;
+      else if (x.subtype === "cogs") cogsTotal += x.amount;
+    }
+    opexTotal = r2(opexTotal);
+    cogsTotal = r2(cogsTotal);
+
+    // ===== النِسب المالية =====
+    const netMargin = totalRevenue > 0 ? pct(netProfit / totalRevenue) : null;
+    const grossProfit = r2(totalRevenue - cogsTotal);
+    const grossMargin = totalRevenue > 0 ? pct(grossProfit / totalRevenue) : null;
+    const currentRatio = currentLiab > 0 ? r2(currentAssets / currentLiab) : null;
+    const cashRatio = currentLiab > 0 ? r2(cash / currentLiab) : null;
+    const opexRatio = totalRevenue > 0 ? pct(opexTotal / totalRevenue) : null;
+    const dso = totalRevenue > 0 ? Math.round((totalReceivables / totalRevenue) * 365) : null;
+
+    const ratios = {
+      netMargin, grossMargin, currentRatio, cashRatio, opexRatio, dso,
+      grossProfit, opexTotal, cogsTotal,
+    };
+
+    // ===== التنبؤ (انحدار خطي على آخر 6 أشهر) =====
+    const last6Rev = monthlyTrends.slice(-6).map((m, i) => ({ x: i, y: m.revenue }));
+    const last6Exp = monthlyTrends.slice(-6).map((m, i) => ({ x: i, y: m.expense }));
+    const revFit = fpaLinearForecast(last6Rev);
+    const expFit = fpaLinearForecast(last6Exp);
+    const nF = last6Rev.length;
+    const forecastRevenue = [0, 1, 2].map((k) => Math.max(0, r2(revFit.a + revFit.b * (nF + k))));
+    const forecastExpense = [0, 1, 2].map((k) => Math.max(0, r2(expFit.a + expFit.b * (nF + k))));
+    const avgMonthlyExpense = r2(last6Exp.reduce((s, p) => s + p.y, 0) / (last6Exp.length || 1));
+    const avgMonthlyRevenue = r2(last6Rev.reduce((s, p) => s + p.y, 0) / (last6Rev.length || 1));
+    const breakEvenRevenue = avgMonthlyExpense; // الإيراد الشهري المطلوب لتغطية المصروفات
+    const runwayMonths = avgMonthlyExpense > 0 ? r2(cash / avgMonthlyExpense) : null; // أشهر الأمان النقدي
+
+    const forecast = {
+      method: "انحدار خطي (آخر 6 أشهر)",
+      nextMonths: monthKeys.slice(-1).concat([]), // placeholder، الواجهة تحسب الأسماء
+      forecastRevenue,
+      forecastExpense,
+      forecastNetProfit: [0, 1, 2].map((k) => r2(forecastRevenue[k] - forecastExpense[k])),
+      avgMonthlyRevenue,
+      avgMonthlyExpense,
+      breakEvenRevenue,
+      runwayMonths,
+    };
+
+    // ===== مؤشر الصحة المالية (0-100) =====
+    let score = 0;
+    if (netMargin === null) score += 12;
+    else if (netMargin >= 0.2) score += 30; else if (netMargin >= 0.1) score += 22; else if (netMargin >= 0) score += 12; else score += 0;
+    if (currentRatio === null) score += 13;
+    else if (currentRatio >= 2) score += 25; else if (currentRatio >= 1) score += 18; else if (currentRatio >= 0.5) score += 8; else score += 0;
+    if (collectionRate === null) score += 18;
+    else if (collectionRate >= 0.8) score += 25; else if (collectionRate >= 0.5) score += 15; else score += 5;
+    if (revenueGrowth === null) score += 12;
+    else if (revenueGrowth >= 0.1) score += 20; else if (revenueGrowth >= 0) score += 14; else if (revenueGrowth >= -0.1) score += 8; else score += 2;
+    score = Math.round(score);
+    const healthLabel = score >= 80 ? "ممتاز" : score >= 60 ? "جيد" : score >= 40 ? "مقبول" : "يحتاج تحسين";
+
+    // ===== محرّك التوصيات =====
+    const recommendations = [];
+    const money = (v) => `${r2(v).toLocaleString()} ﷼`;
+
+    // 1. خسارة
+    if (netProfit < 0) {
+      recommendations.push({
+        priority: "high",
+        area: "الربحية",
+        observation: `المنشأة تحقّق خسارة صافية بمقدار ${money(Math.abs(netProfit))}.`,
+        action: `أولوية قصوى لخفض المصروفات${biggestExpense ? ` (أكبر بند: ${biggestExpense.name} بـ ${money(biggestExpense.amount)})` : ""} أو رفع الإيراد.`,
+        expectedOutcome: `الوصول لنقطة التعادل يتطلب إيرادًا شهريًا ~${money(breakEvenRevenue)} (متوسط مصروفك الحالي).`,
+      });
+    } else if (netMargin !== null && netMargin < 0.1) {
+      // 2. هامش ربح منخفض
+      recommendations.push({
+        priority: "medium",
+        area: "الربحية",
+        observation: `هامش صافي الربح ${(netMargin * 100).toFixed(1)}% (أقل من 10%).`,
+        action: `راجع أعلى بنود التكلفة${biggestExpense ? ` — أكبرها ${biggestExpense.name} (${(biggestExpense.pct * 100).toFixed(0)}% من المصروفات)` : ""}، وادرس رفع الأسعار.`,
+        expectedOutcome: `خفض المصروفات 10% يرفع صافي الربح بـ ~${money(totalExpense * 0.1)}.`,
+      });
+    }
+
+    // 3. تحصيل منخفض
+    if (collectionRate !== null && collectionRate < 0.7 && totalReceivables > 0) {
+      const recoverable = r2((aging.d31_60 + aging.d61_90 + aging.d90plus) * 0.5);
+      recommendations.push({
+        priority: aging.d90plus > 0 ? "high" : "medium",
+        area: "التحصيل والذمم",
+        observation: `معدّل التحصيل ${(collectionRate * 100).toFixed(0)}%، ولديك ${money(totalReceivables)} ذمم غير محصّلة.`,
+        action: `كثّف متابعة العملاء، خاصة الذمم المتأخرة فوق 60 يومًا (${money(aging.d61_90 + aging.d90plus)}).`,
+        expectedOutcome: `تحصيل 50% من المتأخر يضيف ~${money(recoverable)} نقدًا فوريًا ويحسّن السيولة.`,
+      });
+    }
+
+    // 4. ذمم متقادمة جدًا
+    if (aging.d90plus > 0.01) {
+      recommendations.push({
+        priority: "high",
+        area: "جودة الذمم",
+        observation: `لديك ${money(aging.d90plus)} ذمم متأخرة أكثر من 90 يومًا${overdueInvoices.length ? ` (أبرزها: ${overdueInvoices[0].customer})` : ""}.`,
+        action: "راجع هذه الفواتير — قد تحتاج جدولة دفع أو تكوين مخصّص ديون مشكوك فيها.",
+        expectedOutcome: "معالجتها تحسّن جودة الذمم وتقلّل مخاطر التعثّر والديون المعدومة.",
+      });
+    }
+
+    // 5. سيولة منخفضة
+    if (currentRatio !== null && currentRatio < 1) {
+      recommendations.push({
+        priority: "high",
+        area: "السيولة",
+        observation: `نسبة التداول ${currentRatio} (أقل من 1) — الخصوم المتداولة تتجاوز الأصول المتداولة.`,
+        action: "سرّع التحصيل وأجّل المصروفات غير الضرورية لتحسين التدفق النقدي.",
+        expectedOutcome: "رفع النسبة فوق 1 يقلّل مخاطر العسر المالي قصير الأجل.",
+      });
+    }
+
+    // 6. احتياطي نقدي
+    if (runwayMonths !== null && runwayMonths < 2 && avgMonthlyExpense > 0) {
+      recommendations.push({
+        priority: "medium",
+        area: "الاحتياطي النقدي",
+        observation: `النقد الحالي (${money(cash)}) يغطي ~${runwayMonths} شهر من المصروفات فقط.`,
+        action: "ابنِ احتياطيًا نقديًا يغطّي 2-3 أشهر مصروفات على الأقل.",
+        expectedOutcome: `احتياطي 3 أشهر يعني ~${money(avgMonthlyExpense * 3)} يحميك من تقلبات التدفق النقدي.`,
+      });
+    }
+
+    // 7. تركيز العملاء
+    if (topCustomers.length && topCustomers[0].pct > 0.4) {
+      recommendations.push({
+        priority: "medium",
+        area: "مخاطر التركّز",
+        observation: `العميل «${topCustomers[0].name}» يمثّل ${(topCustomers[0].pct * 100).toFixed(0)}% من إيراداتك.`,
+        action: "نوّع قاعدة العملاء لتقليل الاعتماد على عميل واحد.",
+        expectedOutcome: "تنويع المخاطر يحمي إيرادك إذا فقدت هذا العميل أو تأخّر في الدفع.",
+      });
+    }
+
+    // 8. نمو سلبي
+    if (revenueGrowth !== null && revenueGrowth < -0.05) {
+      recommendations.push({
+        priority: "medium",
+        area: "النمو",
+        observation: `الإيراد انخفض ${(Math.abs(revenueGrowth) * 100).toFixed(0)}% عن الشهر السابق (${money(currentMonthRevenue)} مقابل ${money(prevMonthRevenue)}).`,
+        action: "راجع أسباب التراجع: عملاء فقدوا، تغيّر أسعار، أو موسمية الطلب.",
+        expectedOutcome: "تحديد السبب مبكرًا يتيح تصحيح المسار قبل تفاقم الأثر.",
+      });
+    }
+
+    // 9. نمو إيجابي قوي (إيجابية)
+    if (revenueGrowth !== null && revenueGrowth > 0.15) {
+      recommendations.push({
+        priority: "low",
+        area: "فرصة نمو",
+        observation: `نمو إيراد ممتاز ${(revenueGrowth * 100).toFixed(0)}% عن الشهر السابق.`,
+        action: "استثمر النمو: عزّز القدرة التشغيلية وخطّط للتوسّع المدروس.",
+        expectedOutcome: `استمرار هذا النمو يرفع الإيراد المتوقع للشهر القادم إلى ~${money(forecastRevenue[0])}.`,
+      });
+    }
+
+    // 10. DSO مرتفع
+    if (dso !== null && dso > 60) {
+      recommendations.push({
+        priority: "low",
+        area: "كفاءة التحصيل",
+        observation: `متوسط فترة التحصيل (DSO) ${dso} يومًا (مرتفع).`,
+        action: "قلّل مدة الائتمان الممنوحة أو حفّز الدفع المبكر بخصومات بسيطة.",
+        expectedOutcome: "تقليل DSO يسرّع دوران النقد ويحسّن السيولة التشغيلية.",
+      });
+    }
+
+    // إذا لا توجد ملاحظات سلبية
+    if (recommendations.length === 0) {
+      recommendations.push({
+        priority: "low",
+        area: "الوضع العام",
+        observation: "المؤشرات المالية ضمن النطاقات الصحية ولا توجد إنذارات حرجة.",
+        action: "حافظ على الانضباط المالي الحالي وراقب الاتجاهات شهريًا.",
+        expectedOutcome: "الاستمرارية تدعم النمو المستدام والثقة لدى الممولين والشركاء.",
+      });
+    }
+
+    const prioRank = { high: 0, medium: 1, low: 2 };
+    recommendations.sort((a, b) => prioRank[a.priority] - prioRank[b.priority]);
+
+    // ===== الناتج =====
+    return {
+      asOf,
+      generatedAt: new Date().toISOString(),
+      kpis: {
+        totalRevenue, totalExpense, netProfit,
+        netMargin, cash, totalReceivables,
+        collectionRate, currentMonthRevenue, prevMonthRevenue, revenueGrowth,
+      },
+      health: { score, label: healthLabel },
+      monthlyTrends,
+      revenueComposition,
+      expenseComposition,
+      ratios,
+      topCustomers,
+      receivablesAging: aging,
+      overdueInvoices: overdueInvoices.slice(0, 8),
+      forecast,
+      recommendations,
+    };
+  } catch (err) {
+    if (err instanceof HttpsError) throw err;
+    console.error("getFinancialAnalysis failed:", err);
+    throw new HttpsError("internal", "تعذّر إنشاء التحليل المالي، حاول مرة أخرى.");
+  }
+});
+
+// ═══════════════════════════════════════════════════════
 // ===== إعدادات الشركة (بيانات البائع + إعدادات التكلفة) =====
 // ═══════════════════════════════════════════════════════
 
