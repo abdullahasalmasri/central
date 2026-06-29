@@ -1,0 +1,37 @@
+[debug] [2026-06-29T22:56:45.325Z] ----------------------------------------------------------------------
+[debug] [2026-06-29T22:56:45.327Z] Command:       C:\Program Files\nodejs\node.exe C:\Users\drdr-\AppData\Roaming\npm\node_modules\firebase-tools\lib\bin\firebase.js deploy --only hosting
+[debug] [2026-06-29T22:56:45.327Z] CLI Version:   15.22.2
+[debug] [2026-06-29T22:56:45.327Z] Platform:      win32
+[debug] [2026-06-29T22:56:45.327Z] Node Version:  v24.15.0
+[debug] [2026-06-29T22:56:45.327Z] Detected Agent: unknown
+[debug] [2026-06-29T22:56:45.328Z] Time:          Tue Jun 30 2026 01:56:45 GMT+0300 (التوقيت العربي الرسمي)
+[debug] [2026-06-29T22:56:45.328Z] ----------------------------------------------------------------------
+[debug] 
+[debug] [2026-06-29T22:56:47.034Z] > command requires scopes: ["email","openid","https://www.googleapis.com/auth/cloudplatformprojects.readonly","https://www.googleapis.com/auth/firebase","https://www.googleapis.com/auth/cloud-platform"]
+[debug] [2026-06-29T22:56:47.035Z] > authorizing via signed-in user (drdr-10@hotmail.com)
+[debug] [2026-06-29T22:56:47.035Z] [iam] checking project ba9it-424c8 for permissions ["firebase.projects.get","firebasehosting.sites.update"]
+[debug] [2026-06-29T22:56:47.036Z] Checked if tokens are valid: true, expires at: 1782777272581
+[debug] [2026-06-29T22:56:47.037Z] Checked if tokens are valid: true, expires at: 1782777272581
+[debug] [2026-06-29T22:56:47.038Z] >>> [apiv2][query] POST https://cloudresourcemanager.googleapis.com/v1/projects/ba9it-424c8:testIamPermissions [none]
+[debug] [2026-06-29T22:56:47.038Z] >>> [apiv2][(partial)header] POST https://cloudresourcemanager.googleapis.com/v1/projects/ba9it-424c8:testIamPermissions  x-goog-user-project=ba9it-424c8
+[debug] [2026-06-29T22:56:47.038Z] >>> [apiv2][body] POST https://cloudresourcemanager.googleapis.com/v1/projects/ba9it-424c8:testIamPermissions {"permissions":["firebase.projects.get","firebasehosting.sites.update"]}
+[debug] [2026-06-29T22:56:47.932Z] <<< [apiv2][status] POST https://cloudresourcemanager.googleapis.com/v1/projects/ba9it-424c8:testIamPermissions 200
+[debug] [2026-06-29T22:56:47.932Z] <<< [apiv2][body] POST https://cloudresourcemanager.googleapis.com/v1/projects/ba9it-424c8:testIamPermissions {"permissions":["firebase.projects.get","firebasehosting.sites.update"]}
+[debug] [2026-06-29T22:56:47.933Z] Checked if tokens are valid: true, expires at: 1782777272581
+[debug] [2026-06-29T22:56:47.933Z] Checked if tokens are valid: true, expires at: 1782777272581
+[debug] [2026-06-29T22:56:47.934Z] >>> [apiv2][query] GET https://firebase.googleapis.com/v1beta1/projects/ba9it-424c8 [none]
+[debug] [2026-06-29T22:56:48.636Z] <<< [apiv2][status] GET https://firebase.googleapis.com/v1beta1/projects/ba9it-424c8 200
+[debug] [2026-06-29T22:56:48.636Z] <<< [apiv2][body] GET https://firebase.googleapis.com/v1beta1/projects/ba9it-424c8 {"projectId":"ba9it-424c8","projectNumber":"884288584494","displayName":"ba9it","name":"projects/ba9it-424c8","resources":{"hostingSite":"ba9it-424c8"},"state":"ACTIVE","labels":{"firebase":"enabled","firebaseworkflows/environment":"production"},"etag":"1_10c2c414-7c72-427f-b6c2-035040db6f72"}
+[info] 
+[info] === Deploying to 'ba9it-424c8'...
+[info] 
+[info] i  deploying hosting 
+[debug] [2026-06-29T22:56:48.646Z] Checked if tokens are valid: true, expires at: 1782777272581
+[debug] [2026-06-29T22:56:48.646Z] Checked if tokens are valid: true, expires at: 1782777272581
+[debug] [2026-06-29T22:56:48.646Z] >>> [apiv2][query] GET https://firebasehosting.googleapis.com/v1beta1/projects/ba9it-424c8/sites/ba9it-424c8 [none]
+[debug] [2026-06-29T22:56:50.281Z] <<< [apiv2][status] GET https://firebasehosting.googleapis.com/v1beta1/projects/ba9it-424c8/sites/ba9it-424c8 200
+[debug] [2026-06-29T22:56:50.281Z] <<< [apiv2][body] GET https://firebasehosting.googleapis.com/v1beta1/projects/ba9it-424c8/sites/ba9it-424c8 {"name":"projects/ba9it-424c8/sites/ba9it-424c8","defaultUrl":"https://ba9it-424c8.web.app","appId":"1:884288584494:web:c8dbbc0c9c3c844c9cd8bf","type":"DEFAULT_SITE"}
+[debug] [2026-06-29T22:56:50.290Z] Checked if tokens are valid: true, expires at: 1782777272581
+[debug] [2026-06-29T22:56:50.290Z] Checked if tokens are valid: true, expires at: 1782777272581
+[debug] [2026-06-29T22:56:50.290Z] >>> [apiv2][query] POST https://firebasehosting.googleapis.com/v1beta1/projects/-/sites/ba9it-424c8/versions [none]
+[debug] [2026-06-29T22:56:50.291Z] >>> [apiv2][body] POST https://firebasehosting.googleapis.com/v1beta1/projects/-/sites/ba9it-424c8/versions {"status":"CREATED","labels":{"deployment-tool":"cli-firebase"}}
