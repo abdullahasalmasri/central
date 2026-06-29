@@ -53,6 +53,9 @@ const {
   buildEmployeeAssignmentDoc,
   buildAssetAssignmentDoc,
   buildMaterialAllocationDoc,
+  buildOperationTaskDoc,
+  buildMilestoneDoc,
+  buildInspectionDoc,
   computeInvoiceTotals,
   validatePermissions,
   isValidTime,
@@ -4296,6 +4299,243 @@ exports.removeMaterialAllocation = onCall(async (request) => {
     if (err instanceof HttpsError) throw err;
     console.error("removeMaterialAllocation failed:", err);
     throw new HttpsError("internal", "تعذّر إزالة التخصيص، حاول مرة أخرى.");
+  }
+});
+
+// ═══════════════════════════════════════════════════════
+// ===== العمليات التشغيلية (مهام · جدولة · جودة) =====
+// ═══════════════════════════════════════════════════════
+
+const TASK_PRIORITIES = ["low", "normal", "high", "urgent"];
+const TASK_STATUSES = ["todo", "in_progress", "done", "cancelled"];
+const MILESTONE_STATUSES = ["planned", "in_progress", "completed", "delayed"];
+const INSPECTION_RESULTS = ["pass", "fail", "conditional"];
+
+async function fetchProjectForOps(projectId, tenantId) {
+  const snap = await db.collection(COLLECTIONS.PROJECTS).doc(projectId).get();
+  if (!snap.exists || snap.data().tenantId !== tenantId) {
+    throw new HttpsError("invalid-argument", "المشروع غير صحيح.");
+  }
+  return snap.data();
+}
+async function nextCounter(tenantRef, field) {
+  return db.runTransaction(async (tx) => {
+    const tSnap = await tx.get(tenantRef);
+    const n = ((tSnap.data() || {})[field] || 0) + 1;
+    tx.update(tenantRef, { [field]: n });
+    return n;
+  });
+}
+
+// ---------- المهام ----------
+exports.createTask = onCall(async (request) => {
+  try {
+    const callerTenantId = await requireModule(request.auth, MODULES.PROJECTS);
+    const data = request.data || {};
+    const projectId = typeof data.projectId === "string" ? data.projectId.trim() : "";
+    const title = typeof data.title === "string" ? data.title.trim() : "";
+    const description = typeof data.description === "string" ? data.description.trim() : "";
+    const assigneeId = typeof data.assigneeId === "string" ? data.assigneeId.trim() : "";
+    const priority = TASK_PRIORITIES.includes(data.priority) ? data.priority : "normal";
+    const dueDate = typeof data.dueDate === "string" && isValidDate(data.dueDate) ? data.dueDate : null;
+
+    if (!projectId) throw new HttpsError("invalid-argument", "يجب تحديد المشروع.");
+    if (title.length < 2) throw new HttpsError("invalid-argument", "عنوان المهمة مطلوب.");
+
+    const proj = await fetchProjectForOps(projectId, callerTenantId);
+    let assigneeName = null;
+    if (assigneeId) {
+      const eSnap = await db.collection(COLLECTIONS.EMPLOYEES).doc(assigneeId).get();
+      if (eSnap.exists && eSnap.data().tenantId === callerTenantId) assigneeName = eSnap.data().name || null;
+    }
+    const tenantRef = db.collection(COLLECTIONS.TENANTS).doc(callerTenantId);
+    const n = await nextCounter(tenantRef, "lastTaskNumber");
+    const ref = db.collection(COLLECTIONS.OPERATION_TASKS).doc();
+    await ref.set(buildOperationTaskDoc({
+      tenantId: callerTenantId, taskNumber: n, projectId,
+      projectName: proj.name || null, projectNumber: proj.projectNumber || null,
+      title, description, assigneeId: assigneeId || null, assigneeName,
+      priority, status: "todo", dueDate,
+      createdBy: request.auth.uid, createdAt: FieldValue.serverTimestamp(),
+    }));
+    return { id: ref.id, taskNumber: n };
+  } catch (err) {
+    if (err instanceof HttpsError) throw err;
+    console.error("createTask failed:", err);
+    throw new HttpsError("internal", "تعذّر إنشاء المهمة، حاول مرة أخرى.");
+  }
+});
+
+exports.updateTaskStatus = onCall(async (request) => {
+  try {
+    const callerTenantId = await requireModule(request.auth, MODULES.PROJECTS);
+    const data = request.data || {};
+    const taskId = typeof data.taskId === "string" ? data.taskId.trim() : "";
+    const status = TASK_STATUSES.includes(data.status) ? data.status : null;
+    if (!taskId) throw new HttpsError("invalid-argument", "يجب تحديد المهمة.");
+    if (!status) throw new HttpsError("invalid-argument", "حالة غير صحيحة.");
+
+    const ref = db.collection(COLLECTIONS.OPERATION_TASKS).doc(taskId);
+    const snap = await ref.get();
+    if (!snap.exists || snap.data().tenantId !== callerTenantId) throw new HttpsError("invalid-argument", "المهمة غير صحيحة.");
+    await ref.update({ status, updatedBy: request.auth.uid, updatedAt: FieldValue.serverTimestamp() });
+    return { id: taskId, status };
+  } catch (err) {
+    if (err instanceof HttpsError) throw err;
+    console.error("updateTaskStatus failed:", err);
+    throw new HttpsError("internal", "تعذّر تحديث المهمة، حاول مرة أخرى.");
+  }
+});
+
+exports.deleteTask = onCall(async (request) => {
+  try {
+    const callerTenantId = await requireModule(request.auth, MODULES.PROJECTS);
+    const data = request.data || {};
+    const taskId = typeof data.taskId === "string" ? data.taskId.trim() : "";
+    if (!taskId) throw new HttpsError("invalid-argument", "يجب تحديد المهمة.");
+    const ref = db.collection(COLLECTIONS.OPERATION_TASKS).doc(taskId);
+    const snap = await ref.get();
+    if (!snap.exists || snap.data().tenantId !== callerTenantId) throw new HttpsError("invalid-argument", "المهمة غير صحيحة.");
+    await ref.delete();
+    return { id: taskId, deleted: true };
+  } catch (err) {
+    if (err instanceof HttpsError) throw err;
+    console.error("deleteTask failed:", err);
+    throw new HttpsError("internal", "تعذّر حذف المهمة، حاول مرة أخرى.");
+  }
+});
+
+// ---------- المراحل (الجدولة) ----------
+exports.createMilestone = onCall(async (request) => {
+  try {
+    const callerTenantId = await requireModule(request.auth, MODULES.PROJECTS);
+    const data = request.data || {};
+    const projectId = typeof data.projectId === "string" ? data.projectId.trim() : "";
+    const title = typeof data.title === "string" ? data.title.trim() : "";
+    const description = typeof data.description === "string" ? data.description.trim() : "";
+    const startDate = typeof data.startDate === "string" && isValidDate(data.startDate) ? data.startDate : null;
+    const endDate = typeof data.endDate === "string" && isValidDate(data.endDate) ? data.endDate : null;
+    const progress = Number(data.progress) || 0;
+    const status = MILESTONE_STATUSES.includes(data.status) ? data.status : "planned";
+
+    if (!projectId) throw new HttpsError("invalid-argument", "يجب تحديد المشروع.");
+    if (title.length < 2) throw new HttpsError("invalid-argument", "عنوان المرحلة مطلوب.");
+    if (startDate && endDate && endDate < startDate) throw new HttpsError("invalid-argument", "تاريخ النهاية قبل البداية.");
+
+    const proj = await fetchProjectForOps(projectId, callerTenantId);
+    const tenantRef = db.collection(COLLECTIONS.TENANTS).doc(callerTenantId);
+    const n = await nextCounter(tenantRef, "lastMilestoneNumber");
+    const ref = db.collection(COLLECTIONS.PROJECT_MILESTONES).doc();
+    await ref.set(buildMilestoneDoc({
+      tenantId: callerTenantId, milestoneNumber: n, projectId,
+      projectName: proj.name || null, projectNumber: proj.projectNumber || null,
+      title, description, startDate, endDate, progress, status,
+      createdBy: request.auth.uid, createdAt: FieldValue.serverTimestamp(),
+    }));
+    return { id: ref.id, milestoneNumber: n };
+  } catch (err) {
+    if (err instanceof HttpsError) throw err;
+    console.error("createMilestone failed:", err);
+    throw new HttpsError("internal", "تعذّر إنشاء المرحلة، حاول مرة أخرى.");
+  }
+});
+
+exports.updateMilestone = onCall(async (request) => {
+  try {
+    const callerTenantId = await requireModule(request.auth, MODULES.PROJECTS);
+    const data = request.data || {};
+    const milestoneId = typeof data.milestoneId === "string" ? data.milestoneId.trim() : "";
+    if (!milestoneId) throw new HttpsError("invalid-argument", "يجب تحديد المرحلة.");
+    const ref = db.collection(COLLECTIONS.PROJECT_MILESTONES).doc(milestoneId);
+    const snap = await ref.get();
+    if (!snap.exists || snap.data().tenantId !== callerTenantId) throw new HttpsError("invalid-argument", "المرحلة غير صحيحة.");
+
+    const updates = { updatedBy: request.auth.uid, updatedAt: FieldValue.serverTimestamp() };
+    if (data.progress !== undefined) {
+      let p = Number(data.progress); if (!Number.isFinite(p) || p < 0) p = 0; if (p > 100) p = 100;
+      updates.progress = p;
+    }
+    if (MILESTONE_STATUSES.includes(data.status)) updates.status = data.status;
+    if (typeof data.title === "string" && data.title.trim().length >= 2) updates.title = data.title.trim();
+    if (typeof data.startDate === "string" && isValidDate(data.startDate)) updates.startDate = data.startDate;
+    if (typeof data.endDate === "string" && isValidDate(data.endDate)) updates.endDate = data.endDate;
+    await ref.update(updates);
+    return { id: milestoneId, updated: true };
+  } catch (err) {
+    if (err instanceof HttpsError) throw err;
+    console.error("updateMilestone failed:", err);
+    throw new HttpsError("internal", "تعذّر تحديث المرحلة، حاول مرة أخرى.");
+  }
+});
+
+exports.deleteMilestone = onCall(async (request) => {
+  try {
+    const callerTenantId = await requireModule(request.auth, MODULES.PROJECTS);
+    const data = request.data || {};
+    const milestoneId = typeof data.milestoneId === "string" ? data.milestoneId.trim() : "";
+    if (!milestoneId) throw new HttpsError("invalid-argument", "يجب تحديد المرحلة.");
+    const ref = db.collection(COLLECTIONS.PROJECT_MILESTONES).doc(milestoneId);
+    const snap = await ref.get();
+    if (!snap.exists || snap.data().tenantId !== callerTenantId) throw new HttpsError("invalid-argument", "المرحلة غير صحيحة.");
+    await ref.delete();
+    return { id: milestoneId, deleted: true };
+  } catch (err) {
+    if (err instanceof HttpsError) throw err;
+    console.error("deleteMilestone failed:", err);
+    throw new HttpsError("internal", "تعذّر حذف المرحلة، حاول مرة أخرى.");
+  }
+});
+
+// ---------- فحوصات الجودة ----------
+exports.createInspection = onCall(async (request) => {
+  try {
+    const callerTenantId = await requireModule(request.auth, MODULES.PROJECTS);
+    const data = request.data || {};
+    const projectId = typeof data.projectId === "string" ? data.projectId.trim() : "";
+    const title = typeof data.title === "string" ? data.title.trim() : "";
+    const inspectionDate = typeof data.inspectionDate === "string" && isValidDate(data.inspectionDate) ? data.inspectionDate : null;
+    const result = INSPECTION_RESULTS.includes(data.result) ? data.result : "pass";
+    const inspectorName = typeof data.inspectorName === "string" ? data.inspectorName.trim() : "";
+    const findings = typeof data.findings === "string" ? data.findings.trim() : "";
+    const notes = typeof data.notes === "string" ? data.notes.trim() : "";
+
+    if (!projectId) throw new HttpsError("invalid-argument", "يجب تحديد المشروع.");
+    if (title.length < 2) throw new HttpsError("invalid-argument", "عنوان الفحص مطلوب.");
+    if (!inspectionDate) throw new HttpsError("invalid-argument", "تاريخ الفحص مطلوب.");
+
+    const proj = await fetchProjectForOps(projectId, callerTenantId);
+    const tenantRef = db.collection(COLLECTIONS.TENANTS).doc(callerTenantId);
+    const n = await nextCounter(tenantRef, "lastInspectionNumber");
+    const ref = db.collection(COLLECTIONS.QUALITY_INSPECTIONS).doc();
+    await ref.set(buildInspectionDoc({
+      tenantId: callerTenantId, inspectionNumber: n, projectId,
+      projectName: proj.name || null, projectNumber: proj.projectNumber || null,
+      title, inspectionDate, result, inspectorName, findings, notes,
+      createdBy: request.auth.uid, createdAt: FieldValue.serverTimestamp(),
+    }));
+    return { id: ref.id, inspectionNumber: n };
+  } catch (err) {
+    if (err instanceof HttpsError) throw err;
+    console.error("createInspection failed:", err);
+    throw new HttpsError("internal", "تعذّر إنشاء الفحص، حاول مرة أخرى.");
+  }
+});
+
+exports.deleteInspection = onCall(async (request) => {
+  try {
+    const callerTenantId = await requireModule(request.auth, MODULES.PROJECTS);
+    const data = request.data || {};
+    const inspectionId = typeof data.inspectionId === "string" ? data.inspectionId.trim() : "";
+    if (!inspectionId) throw new HttpsError("invalid-argument", "يجب تحديد الفحص.");
+    const ref = db.collection(COLLECTIONS.QUALITY_INSPECTIONS).doc(inspectionId);
+    const snap = await ref.get();
+    if (!snap.exists || snap.data().tenantId !== callerTenantId) throw new HttpsError("invalid-argument", "الفحص غير صحيح.");
+    await ref.delete();
+    return { id: inspectionId, deleted: true };
+  } catch (err) {
+    if (err instanceof HttpsError) throw err;
+    console.error("deleteInspection failed:", err);
+    throw new HttpsError("internal", "تعذّر حذف الفحص، حاول مرة أخرى.");
   }
 });
 

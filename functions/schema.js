@@ -37,6 +37,9 @@ const COLLECTIONS = {
   EMPLOYEE_ASSIGNMENTS: "employeeAssignments",
   ASSET_ASSIGNMENTS: "assetAssignments",
   MATERIAL_ALLOCATIONS: "materialAllocations",
+  OPERATION_TASKS: "operationTasks",
+  PROJECT_MILESTONES: "projectMilestones",
+  QUALITY_INSPECTIONS: "qualityInspections",
 };
 
 const ROLES = {
@@ -1418,6 +1421,79 @@ function buildMaterialAllocationDoc({
   };
 }
 
+// ===== العمليات التشغيلية: مهمة =====
+function buildOperationTaskDoc({
+  tenantId, taskNumber, projectId, projectName, projectNumber,
+  title, description, assigneeId, assigneeName, priority, status, dueDate,
+  createdBy, createdAt,
+}) {
+  return {
+    tenantId,
+    taskNumber: taskNumber || null,
+    projectId: projectId,
+    projectName: projectName || null,
+    projectNumber: projectNumber || null,
+    title: title,
+    description: description || null,
+    assigneeId: assigneeId || null,
+    assigneeName: assigneeName || null,
+    priority: priority || "normal", // low | normal | high | urgent
+    status: status || "todo",       // todo | in_progress | done | cancelled
+    dueDate: dueDate || null,
+    createdBy: createdBy || null,
+    createdAt,
+  };
+}
+
+// ===== العمليات التشغيلية: مرحلة (جدولة زمنية) =====
+function buildMilestoneDoc({
+  tenantId, milestoneNumber, projectId, projectName, projectNumber,
+  title, description, startDate, endDate, progress, status,
+  createdBy, createdAt,
+}) {
+  let p = Number(progress);
+  if (!Number.isFinite(p) || p < 0) p = 0;
+  if (p > 100) p = 100;
+  return {
+    tenantId,
+    milestoneNumber: milestoneNumber || null,
+    projectId: projectId,
+    projectName: projectName || null,
+    projectNumber: projectNumber || null,
+    title: title,
+    description: description || null,
+    startDate: startDate || null,
+    endDate: endDate || null,
+    progress: p,
+    status: status || "planned", // planned | in_progress | completed | delayed
+    createdBy: createdBy || null,
+    createdAt,
+  };
+}
+
+// ===== العمليات التشغيلية: فحص جودة =====
+function buildInspectionDoc({
+  tenantId, inspectionNumber, projectId, projectName, projectNumber,
+  title, inspectionDate, result, inspectorName, findings, notes,
+  createdBy, createdAt,
+}) {
+  return {
+    tenantId,
+    inspectionNumber: inspectionNumber || null,
+    projectId: projectId,
+    projectName: projectName || null,
+    projectNumber: projectNumber || null,
+    title: title,
+    inspectionDate: inspectionDate || null,
+    result: result || "pass", // pass | fail | conditional
+    inspectorName: inspectorName || null,
+    findings: findings || null,
+    notes: notes || null,
+    createdBy: createdBy || null,
+    createdAt,
+  };
+}
+
 function buildProjectTypeDoc({ tenantId, name, code, description, isSystem, createdBy, createdAt }) {
   return {
     tenantId,
@@ -1798,6 +1874,9 @@ module.exports = {
   buildEmployeeAssignmentDoc,
   buildAssetAssignmentDoc,
   buildMaterialAllocationDoc,
+  buildOperationTaskDoc,
+  buildMilestoneDoc,
+  buildInspectionDoc,
   computeInvoiceTotals,
   buildProjectTypeDoc,
   buildProjectDoc,

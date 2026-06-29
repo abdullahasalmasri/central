@@ -27,6 +27,7 @@ import ProjectsView            from "./ProjectsView";
 import PeopleView              from "./PeopleView";
 import FacilitiesView          from "./FacilitiesView";
 import MaterialsView           from "./MaterialsView";
+import ProcessesView           from "./ProcessesView";
 import QualitySafetyView        from "./QualitySafetyView";
 import DepreciationView         from "./DepreciationView";
 import SalesView                from "./SalesView";
@@ -68,6 +69,7 @@ const views = {
   ops_people:    PeopleView,
   ops_facilities: FacilitiesView,
   ops_materials: MaterialsView,
+  ops_process:   ProcessesView,
   ops_qs:        QualitySafetyView,
 
   // الأصول والمرافق
@@ -93,7 +95,6 @@ const views = {
   build:         BuildSystemView,
 };
 
-console.log("✅ App.jsx الصحيح يُقرأ — views:", Object.keys(views));
 export default function App() {
   return <CentralShell views={views} />;
 }
