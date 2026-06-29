@@ -83,6 +83,9 @@ export default function AccountingView() {
         <button style={{ ...styles.tab, ...(tab === "trial" ? styles.tabActive : {}) }} onClick={() => setTab("trial")}>
           ⚖️ ميزان المراجعة
         </button>
+        <button style={{ ...styles.tab, ...(tab === "closing" ? styles.tabActive : {}) }} onClick={() => setTab("closing")}>
+          🔒 الإقفال
+        </button>
       </div>
 
       {identityLoading ? (
@@ -95,8 +98,10 @@ export default function AccountingView() {
         <JournalPanel tenantId={tenantId} companyName={companyName} />
       ) : tab === "ledger" ? (
         <LedgerPanel tenantId={tenantId} companyName={companyName} />
-      ) : (
+      ) : tab === "trial" ? (
         <TrialBalancePanel tenantId={tenantId} companyName={companyName} />
+      ) : (
+        <ClosingPanel tenantId={tenantId} companyName={companyName} />
       )}
     </div>
   );
@@ -910,6 +915,216 @@ function TrialBalancePanel({ tenantId, companyName }) {
   );
 }
 
+// ═══════════ تبويب الإقفال المحاسبي ═══════════
+function ClosingPanel({ tenantId, companyName }) {
+  const today = new Date().toISOString().slice(0, 10);
+  const yearStart = today.slice(0, 4) + "-01-01";
+  const [closings, setClosings] = useState([]);
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState("");
+  const [fromDate, setFromDate] = useState(yearStart);
+  const [toDate, setToDate] = useState(today);
+  const [preview, setPreview] = useState(null);
+  const [previewing, setPreviewing] = useState(false);
+  const [performing, setPerforming] = useState(false);
+  const [reversingId, setReversingId] = useState("");
+  const [msg, setMsg] = useState("");
+
+  useEffect(() => { loadData(); /* eslint-disable-next-line */ }, []);
+
+  async function loadData() {
+    setLoading(true);
+    setError("");
+    try {
+      const snap = await getDocs(query(collection(db, "closings"), where("tenantId", "==", tenantId)));
+      const list = snap.docs.map((d) => ({ id: d.id, ...d.data() }));
+      list.sort((a, b) => (b.closingNumber || 0) - (a.closingNumber || 0));
+      setClosings(list);
+    } catch (err) {
+      setError("تعذّر تحميل سجل الإقفالات.");
+    } finally {
+      setLoading(false);
+    }
+  }
+
+  async function doPreview() {
+    setError(""); setMsg(""); setPreview(null);
+    setPreviewing(true);
+    try {
+      const fn = httpsCallable(functions, "getClosingPreview");
+      const res = await fn({ fromDate, toDate });
+      setPreview(res.data);
+    } catch (e) {
+      setError(e.message || "تعذّر حساب المعاينة.");
+    } finally {
+      setPreviewing(false);
+    }
+  }
+
+  async function doPerform() {
+    if (!preview) return;
+    if (preview.overlap) { setError("الفترة تتداخل مع إقفال سابق. ألغِه أولًا أو اختر فترة مختلفة."); return; }
+    if (!preview.hasRetainedAccount) { setError("حساب الأرباح المُبقاة غير موجود."); return; }
+    const ok = window.confirm(`سيتم إنشاء قيد إقفال للفترة ${fromDate} إلى ${toDate}، وتصفير الإيرادات والمصروفات، وترحيل الصافي (${preview.netIncome.toLocaleString()} ﷼) للأرباح المُبقاة.\n\nهل أنت متأكد؟`);
+    if (!ok) return;
+    setError(""); setMsg("");
+    setPerforming(true);
+    try {
+      const fn = httpsCallable(functions, "performClosing");
+      const res = await fn({ fromDate, toDate });
+      setMsg(`تم الإقفال بنجاح (رقم ${res.data.closingNumber}). صافي ${res.data.netIncome >= 0 ? "ربح" : "خسارة"}: ${Math.abs(res.data.netIncome).toLocaleString()} ﷼`);
+      setPreview(null);
+      loadData();
+    } catch (e) {
+      setError(e.message || "تعذّر تنفيذ الإقفال.");
+    } finally {
+      setPerforming(false);
+    }
+  }
+
+  async function doReverse(closing) {
+    const ok = window.confirm(`سيتم إلغاء الإقفال رقم ${closing.closingNumber} (${closing.fromDate} إلى ${closing.toDate}) بقيد عكسي يعيد كل الأرصدة.\n\nهل أنت متأكد؟`);
+    if (!ok) return;
+    setError(""); setMsg("");
+    setReversingId(closing.id);
+    try {
+      const fn = httpsCallable(functions, "reverseClosing");
+      await fn({ closingId: closing.id });
+      setMsg(`تم إلغاء الإقفال رقم ${closing.closingNumber}.`);
+      loadData();
+    } catch (e) {
+      setError(e.message || "تعذّر إلغاء الإقفال.");
+    } finally {
+      setReversingId("");
+    }
+  }
+
+  const noActivity = preview && preview.revenues.length === 0 && preview.expenses.length === 0;
+
+  return (
+    <div>
+      <div style={styles.closeForm}>
+        <div style={styles.closeFormTitle}>إقفال فترة جديدة</div>
+        <div style={styles.row}>
+          <div style={{ flex: 1 }}>
+            <label style={styles.label}>من تاريخ *</label>
+            <input style={styles.input} type="date" value={fromDate} onChange={(e) => { setFromDate(e.target.value); setPreview(null); }} dir="ltr" />
+          </div>
+          <div style={{ flex: 1 }}>
+            <label style={styles.label}>إلى تاريخ *</label>
+            <input style={styles.input} type="date" value={toDate} onChange={(e) => { setToDate(e.target.value); setPreview(null); }} dir="ltr" />
+          </div>
+          <div style={{ display: "flex", alignItems: "flex-end" }}>
+            <button style={styles.previewBtn} onClick={doPreview} disabled={previewing}>
+              {previewing ? "جارٍ..." : "🔍 معاينة"}
+            </button>
+          </div>
+        </div>
+      </div>
+
+      {error ? <div style={styles.error}>{error}</div> : null}
+      {msg ? <div style={styles.success}>{msg}</div> : null}
+
+      {preview ? (
+        <div style={styles.previewBox}>
+          {preview.overlap ? (
+            <div style={styles.warnBox}>
+              ⚠ هذه الفترة تتداخل مع إقفال سابق رقم {preview.overlap.closingNumber} ({preview.overlap.fromDate} إلى {preview.overlap.toDate}). ألغِه أولًا أو اختر فترة مختلفة.
+            </div>
+          ) : null}
+
+          {noActivity ? (
+            <div style={styles.warnBox}>لا توجد إيرادات أو مصروفات في هذه الفترة.</div>
+          ) : (
+            <>
+              <div style={styles.previewGrid}>
+                <div style={styles.previewCol}>
+                  <div style={styles.previewColHead}>الإيرادات</div>
+                  {preview.revenues.length === 0 ? <p style={styles.muted}>لا يوجد</p> : preview.revenues.map((r) => (
+                    <div key={r.code} style={styles.previewLine}><span dir="ltr">{r.code} {r.name}</span><span dir="ltr">{r.amount.toLocaleString()}</span></div>
+                  ))}
+                  <div style={styles.previewSub}><span>إجمالي الإيرادات</span><span dir="ltr">{preview.totalRevenue.toLocaleString()} ﷼</span></div>
+                </div>
+                <div style={styles.previewCol}>
+                  <div style={styles.previewColHead}>المصروفات</div>
+                  {preview.expenses.length === 0 ? <p style={styles.muted}>لا يوجد</p> : preview.expenses.map((e) => (
+                    <div key={e.code} style={styles.previewLine}><span dir="ltr">{e.code} {e.name}</span><span dir="ltr">{e.amount.toLocaleString()}</span></div>
+                  ))}
+                  <div style={styles.previewSub}><span>إجمالي المصروفات</span><span dir="ltr">{preview.totalExpense.toLocaleString()} ﷼</span></div>
+                </div>
+              </div>
+
+              <div style={{ ...styles.netBox, ...(preview.netIncome >= 0 ? styles.netProfit : styles.netLoss) }}>
+                <span>{preview.netIncome >= 0 ? "صافي الربح" : "صافي الخسارة"}</span>
+                <span dir="ltr">{Math.abs(preview.netIncome).toLocaleString()} ﷼</span>
+              </div>
+              <p style={styles.previewNote}>
+                سيُرحَّل الصافي إلى حساب {preview.retainedAccount ? `${preview.retainedAccount.code} ${preview.retainedAccount.name}` : "الأرباح المُبقاة"}.
+              </p>
+
+              <button
+                style={{ ...styles.performBtn, ...((preview.overlap || noActivity) ? styles.performBtnDisabled : {}) }}
+                onClick={doPerform}
+                disabled={performing || !!preview.overlap || noActivity}
+              >
+                {performing ? "جارٍ تنفيذ الإقفال..." : "🔒 تنفيذ الإقفال"}
+              </button>
+            </>
+          )}
+        </div>
+      ) : null}
+
+      <div style={styles.historyTitle}>سجل الإقفالات</div>
+      {loading ? <p style={styles.muted}>جارٍ التحميل...</p> : closings.length === 0 ? (
+        <div style={styles.empty}><p style={styles.muted}>لا توجد إقفالات بعد.</p></div>
+      ) : (
+        <div style={styles.panel}>
+          <table style={styles.table}>
+            <thead>
+              <tr>
+                <th style={styles.th}>رقم</th>
+                <th style={styles.th}>الفترة</th>
+                <th style={styles.thAmount}>الإيرادات</th>
+                <th style={styles.thAmount}>المصروفات</th>
+                <th style={styles.thAmount}>الصافي</th>
+                <th style={styles.thCenter}>الحالة</th>
+                <th style={styles.thCenter}>إجراء</th>
+              </tr>
+            </thead>
+            <tbody>
+              {closings.map((c) => (
+                <tr key={c.id}>
+                  <td style={styles.tdCode} dir="ltr">#{c.closingNumber}</td>
+                  <td style={styles.tdName} dir="ltr">{c.fromDate} ← {c.toDate}</td>
+                  <td style={styles.tdAmount} dir="ltr">{(Number(c.totalRevenue) || 0).toLocaleString()}</td>
+                  <td style={styles.tdAmount} dir="ltr">{(Number(c.totalExpense) || 0).toLocaleString()}</td>
+                  <td style={{ ...styles.tdAmount, fontWeight: 700, color: (Number(c.netIncome) || 0) >= 0 ? "#16a34a" : "#dc2626" }} dir="ltr">{(Number(c.netIncome) || 0).toLocaleString()}</td>
+                  <td style={styles.tdCenter}>
+                    <span style={{ ...styles.badge, ...(c.status === "closed" ? styles.badgeClosed : styles.badgeReversed) }}>
+                      {c.status === "closed" ? "مُقفل" : "ملغى"}
+                    </span>
+                  </td>
+                  <td style={styles.tdCenter}>
+                    {c.status === "closed" ? (
+                      <button style={styles.reverseBtn} onClick={() => doReverse(c)} disabled={reversingId === c.id}>
+                        {reversingId === c.id ? "..." : "↩ إلغاء"}
+                      </button>
+                    ) : <span style={styles.muted}>—</span>}
+                  </td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      )}
+
+      <p style={styles.hint}>
+        الإقفال يُصفّر حسابات الإيرادات والمصروفات للفترة ويُرحّل صافي الربح/الخسارة إلى الأرباح المُبقاة. يمكن إلغاؤه بقيد عكسي إن لزم.
+      </p>
+    </div>
+  );
+}
+
 const styles = {
   page: { padding: "26px 30px 40px", minHeight: "100%", background: "#f4f6f9", fontFamily: "'IBM Plex Sans Arabic','Segoe UI',Tahoma,sans-serif", direction: "rtl" },
   pageHead: { marginBottom: 18 },
@@ -1011,6 +1226,33 @@ const styles = {
   ledgerTitle: { fontSize: 15, fontWeight: 800, color: "#0f172a", fontFamily: "monospace" },
   ledgerNature: { fontSize: 13, color: "#64748b" },
   entryTag: { display: "inline-block", padding: "1px 8px", marginLeft: 8, background: "#eef2ff", color: "#4338ca", borderRadius: 6, fontSize: 12, fontWeight: 700, fontFamily: "monospace" },
+
+  closeForm: { background: "#fff", border: "1px solid #e2e8f0", borderRadius: 12, padding: "16px 18px", marginBottom: 18 },
+  closeFormTitle: { fontSize: 15, fontWeight: 700, color: "#0f172a", marginBottom: 12 },
+  previewBtn: { padding: "10px 20px", fontSize: 14, fontWeight: 700, color: "#fff", background: "#0ea5e9", border: "none", borderRadius: 8, cursor: "pointer", whiteSpace: "nowrap" },
+  success: { padding: "10px 14px", background: "#dcfce7", color: "#166534", borderRadius: 8, fontSize: 14, marginBottom: 16, fontWeight: 600 },
+
+  previewBox: { background: "#fff", border: "2px solid #bae6fd", borderRadius: 12, padding: 18, marginBottom: 22 },
+  warnBox: { padding: "12px 16px", background: "#fef3c7", color: "#92400e", borderRadius: 8, fontSize: 13, fontWeight: 600, marginBottom: 14 },
+  previewGrid: { display: "flex", gap: 16, flexWrap: "wrap" },
+  previewCol: { flex: 1, minWidth: 240 },
+  previewColHead: { fontSize: 14, fontWeight: 700, color: "#334155", paddingBottom: 8, borderBottom: "2px solid #e2e8f0", marginBottom: 8 },
+  previewLine: { display: "flex", justifyContent: "space-between", fontSize: 13, color: "#475569", padding: "5px 0", fontFamily: "monospace" },
+  previewSub: { display: "flex", justifyContent: "space-between", fontSize: 14, fontWeight: 700, color: "#0f172a", padding: "8px 0", borderTop: "1px dashed #cbd5e1", marginTop: 6, fontFamily: "monospace" },
+  netBox: { display: "flex", justifyContent: "space-between", alignItems: "center", padding: "14px 18px", borderRadius: 10, marginTop: 16, fontSize: 17, fontWeight: 800, fontFamily: "monospace" },
+  netProfit: { background: "#dcfce7", color: "#166534" },
+  netLoss: { background: "#fee2e2", color: "#b91c1c" },
+  previewNote: { fontSize: 13, color: "#64748b", margin: "10px 0 16px", textAlign: "center" },
+  performBtn: { width: "100%", padding: "13px", fontSize: 15, fontWeight: 700, color: "#fff", background: "#059669", border: "none", borderRadius: 10, cursor: "pointer" },
+  performBtnDisabled: { background: "#cbd5e1", cursor: "not-allowed" },
+
+  historyTitle: { fontSize: 16, fontWeight: 700, color: "#0f172a", margin: "8px 0 14px" },
+  thCenter: { textAlign: "center", padding: "12px 14px", fontSize: 13, color: "#64748b", borderBottom: "2px solid #e2e8f0", background: "#f8fafc" },
+  tdCenter: { padding: "11px 14px", fontSize: 14, textAlign: "center", borderBottom: "1px solid #f1f5f9" },
+  badge: { display: "inline-block", padding: "3px 12px", borderRadius: 20, fontSize: 12, fontWeight: 700 },
+  badgeClosed: { background: "#dcfce7", color: "#166534" },
+  badgeReversed: { background: "#f1f5f9", color: "#64748b" },
+  reverseBtn: { padding: "6px 14px", fontSize: 12, fontWeight: 700, color: "#b45309", background: "#fef3c7", border: "none", borderRadius: 8, cursor: "pointer" },
 
   error: { padding: "10px 12px", background: "#fee2e2", color: "#b91c1c", borderRadius: 8, fontSize: 14, marginBottom: 16 },
   muted: { color: "#94a3b8", fontSize: 14 },

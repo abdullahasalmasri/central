@@ -38,6 +38,8 @@ const {
   buildTaxConfig,
   buildCustomerDoc,
   buildInvoiceDoc,
+  buildReceiptDoc,
+  buildClosingDoc,
   computeInvoiceTotals,
   validatePermissions,
   isValidTime,
@@ -52,6 +54,11 @@ const {
 
 admin.initializeApp();
 const db = admin.firestore();
+
+// كود حساب النقد/الخزينة (للفواتير النقدية والتحصيل لاحقًا)
+const TREASURY_ACCOUNT_CODE = "1100";
+// كود حساب الأرباح المُبقاة (لترحيل صافي الربح/الخسارة عند الإقفال)
+const RETAINED_EARNINGS_CODE = "3200";
 
 exports.ping = onCall(() => ({ ok: true, ts: Date.now() }));
 
@@ -1312,66 +1319,41 @@ exports.createJournalEntry = onCall(async (request) => {
 // ═══════════════════════════════════════════════════════
 
 // ===== إنشاء عميل =====
-// ===== إنشاء عميل (مع مواقع ومخوّلين متعددين) =====
 exports.createCustomer = onCall(async (request) => {
   try {
     const callerTenantId = await requireModule(request.auth, MODULES.FINANCE);
 
     const data = request.data || {};
     const name = typeof data.name === "string" ? data.name.trim() : "";
-    const type = data.type === "individual" ? "individual" : "company";
-    const phone = typeof data.phone === "string" ? data.phone.trim() : "";
+    const customerCode = typeof data.customerCode === "string" ? data.customerCode.trim() : "";
     const taxNumber = typeof data.taxNumber === "string" ? data.taxNumber.trim() : "";
     const crNumber = typeof data.crNumber === "string" ? data.crNumber.trim() : "";
-    const licenseNumber = typeof data.licenseNumber === "string" ? data.licenseNumber.trim() : "";
+    const contactPerson = typeof data.contactPerson === "string" ? data.contactPerson.trim() : "";
+    const phone = typeof data.phone === "string" ? data.phone.trim() : "";
     const email = typeof data.email === "string" ? data.email.trim() : "";
-    const website = typeof data.website === "string" ? data.website.trim() : "";
+    // العنوان الوطني
+    const buildingNumber = typeof data.buildingNumber === "string" ? data.buildingNumber.trim() : "";
+    const street = typeof data.street === "string" ? data.street.trim() : "";
+    const district = typeof data.district === "string" ? data.district.trim() : "";
+    const city = typeof data.city === "string" ? data.city.trim() : "";
+    const postalCode = typeof data.postalCode === "string" ? data.postalCode.trim() : "";
+    const additionalNumber = typeof data.additionalNumber === "string" ? data.additionalNumber.trim() : "";
 
     if (name.length < 2) {
       throw new HttpsError("invalid-argument", "اسم العميل مطلوب (حرفان على الأقل).");
-    }
-    if (!phone) {
-      throw new HttpsError("invalid-argument", "رقم التواصل الرسمي مطلوب.");
     }
     // الرقم الضريبي السعودي: 15 رقمًا يبدأ وينتهي بـ 3 (إن أُدخل)
     if (taxNumber && !/^3\d{13}3$/.test(taxNumber)) {
       throw new HttpsError("invalid-argument", "الرقم الضريبي يجب أن يكون 15 رقمًا يبدأ وينتهي بالرقم 3.");
     }
 
-    // تنظيف المواقع (نحذف الفارغة تمامًا)
-    const rawLocations = Array.isArray(data.locations) ? data.locations : [];
-    const locations = [];
-    for (const loc of rawLocations) {
-      const label = loc && typeof loc.label === "string" ? loc.label.trim() : "";
-      const mapLink = loc && typeof loc.mapLink === "string" ? loc.mapLink.trim() : "";
-      const address = loc && typeof loc.address === "string" ? loc.address.trim() : "";
-      if (!label && !mapLink && !address) continue;
-      locations.push({ label: label || null, mapLink: mapLink || null, address: address || null });
-    }
-    if (locations.length === 0) {
-      throw new HttpsError("invalid-argument", "العنوان الوطني مطلوب (موقع واحد على الأقل).");
-    }
-
-    // تنظيف المخوّلين (نحذف الفارغة تمامًا)
-    const rawContacts = Array.isArray(data.contacts) ? data.contacts : [];
-    const contacts = [];
-    for (const con of rawContacts) {
-      const cn = con && typeof con.name === "string" ? con.name.trim() : "";
-      const cp = con && typeof con.phone === "string" ? con.phone.trim() : "";
-      if (!cn && !cp) continue;
-      contacts.push({ name: cn || null, phone: cp || null });
-    }
-
-    // أول مخوّل يُستخدم كـ contactPerson للتوافق مع الفواتير
-    const contactPerson = contacts.length > 0 ? contacts[0].name : null;
-
     const customerRef = db.collection(COLLECTIONS.CUSTOMERS).doc();
     await customerRef.set(
       buildCustomerDoc({
         tenantId: callerTenantId,
-        name, type, taxNumber, crNumber, licenseNumber,
-        contactPerson, phone, email, website,
-        locations, contacts,
+        name, customerCode, taxNumber, crNumber,
+        contactPerson, phone, email,
+        buildingNumber, street, district, city, postalCode, additionalNumber,
         createdBy: request.auth.uid,
         createdAt: FieldValue.serverTimestamp(),
       })
@@ -1383,30 +1365,6 @@ exports.createCustomer = onCall(async (request) => {
     throw new HttpsError("internal", "تعذّر إنشاء العميل، حاول مرة أخرى.");
   }
 });
-
-// ===== حذف عميل =====
-exports.deleteCustomer = onCall(async (request) => {
-  try {
-    const callerTenantId = await requireModule(request.auth, MODULES.FINANCE);
-    const data = request.data || {};
-    const customerId = typeof data.customerId === "string" ? data.customerId.trim() : "";
-    if (!customerId) {
-      throw new HttpsError("invalid-argument", "يجب تحديد العميل.");
-    }
-    const ref = db.collection(COLLECTIONS.CUSTOMERS).doc(customerId);
-    const snap = await ref.get();
-    if (!snap.exists || snap.data().tenantId !== callerTenantId) {
-      throw new HttpsError("invalid-argument", "العميل غير صحيح.");
-    }
-    await ref.delete();
-    return { id: customerId, deleted: true };
-  } catch (err) {
-    if (err instanceof HttpsError) throw err;
-    console.error("deleteCustomer failed:", err);
-    throw new HttpsError("internal", "تعذّر حذف العميل، حاول مرة أخرى.");
-  }
-});
-
 
 // ===== تعديل عميل =====
 exports.updateCustomer = onCall(async (request) => {
@@ -1475,6 +1433,8 @@ exports.createInvoice = onCall(async (request) => {
     const revenueAccountId = typeof data.revenueAccountId === "string" ? data.revenueAccountId.trim() : "";
     const notes = typeof data.notes === "string" ? data.notes.trim() : "";
     const rawLines = data.lines;
+    // طريقة الدفع: "cash" نقدي (القيد للخزينة) أو "credit" آجل (القيد للذمم المدينة)
+    const paymentMethod = data.paymentMethod === "cash" ? "cash" : "credit";
 
     if (!isValidDate(date)) {
       throw new HttpsError("invalid-argument", "تاريخ الفاتورة غير صحيح (YYYY-MM-DD).");
@@ -1528,13 +1488,18 @@ exports.createInvoice = onCall(async (request) => {
       return snap.empty ? null : snap.docs[0];
     }
 
-    const [receivableDoc, vatDoc, exciseDoc] = await Promise.all([
+    const [receivableDoc, vatDoc, exciseDoc, treasuryDoc] = await Promise.all([
       findAccountByCode(INVOICE_ACCOUNT_CODES.RECEIVABLE),
       findAccountByCode(INVOICE_ACCOUNT_CODES.VAT_PAYABLE),
       findAccountByCode(INVOICE_ACCOUNT_CODES.EXCISE_PAYABLE),
+      findAccountByCode(TREASURY_ACCOUNT_CODE),
     ]);
 
-    if (!receivableDoc) {
+    // الطرف المدين يعتمد على طريقة الدفع: نقدي=الخزينة، آجل=الذمم المدينة
+    if (paymentMethod === "cash" && !treasuryDoc) {
+      throw new HttpsError("failed-precondition", `حساب النقد/الخزينة (${TREASURY_ACCOUNT_CODE}) غير موجود في دليل الحسابات.`);
+    }
+    if (paymentMethod === "credit" && !receivableDoc) {
       throw new HttpsError("failed-precondition", `حساب الذمم المدينة (${INVOICE_ACCOUNT_CODES.RECEIVABLE}) غير موجود في دليل الحسابات.`);
     }
     if (totalVat > 0 && !vatDoc) {
@@ -1574,10 +1539,11 @@ exports.createInvoice = onCall(async (request) => {
         throw new HttpsError("failed-precondition", "حساب الإيراد غير نشط.");
       }
 
-      // اقرأ حسابات الضرائب والذمم داخل المعاملة (لتحديث أرصدتها)
-      const receivableRef = receivableDoc.ref;
-      const receivableSnapTx = await tx.get(receivableRef);
-      const receivableBalance = receivableSnapTx.data();
+      // الطرف المدين حسب طريقة الدفع: الخزينة (نقدي) أو الذمم المدينة (آجل)
+      const debitDoc = paymentMethod === "cash" ? treasuryDoc : receivableDoc;
+      const debitRef = debitDoc.ref;
+      const debitSnapTx = await tx.get(debitRef);
+      const debitBalance = debitSnapTx.data();
 
       let vatRef = null, exciseRef = null;
       if (totalVat > 0) {
@@ -1593,14 +1559,16 @@ exports.createInvoice = onCall(async (request) => {
       // مدين: الذمم المدينة (الإجمالي)
       // دائن: الإيراد (الأساس) + VAT + الانتقائية
       const journalLines = [];
-      // الطرف المدين: العميل
+      // الطرف المدين: الخزينة (نقدي) أو العميل/الذمم (آجل)
       journalLines.push({
-        accountId: receivableRef.id,
-        accountCode: receivableBalance.code || null,
-        accountName: receivableBalance.name || null,
+        accountId: debitRef.id,
+        accountCode: debitBalance.code || null,
+        accountName: debitBalance.name || null,
         debit: total,
         credit: 0,
-        note: `فاتورة ${customerSnapshot.name || ""}`.trim(),
+        note: paymentMethod === "cash"
+          ? `تحصيل نقدي — فاتورة ${customerSnapshot.name || ""}`.trim()
+          : `فاتورة آجلة — ${customerSnapshot.name || ""}`.trim(),
       });
       // الطرف الدائن: الإيراد
       journalLines.push({
@@ -1659,8 +1627,8 @@ exports.createInvoice = onCall(async (request) => {
       tx.set(journalRef, entryDoc);
 
       // ===== حدّث أرصدة الحسابات =====
-      // الذمم (أصل، مدين الطبيعة): +total
-      tx.update(receivableRef, { balance: FieldValue.increment(total) });
+      // الطرف المدين (خزينة أو ذمم — كلاهما أصل مدين الطبيعة): +total
+      tx.update(debitRef, { balance: FieldValue.increment(total) });
       // الإيراد (دائن الطبيعة): +subtotal
       tx.update(revenueRef, { balance: FieldValue.increment(subtotal) });
       // VAT (خصم، دائن الطبيعة): +totalVat
@@ -1691,6 +1659,11 @@ exports.createInvoice = onCall(async (request) => {
         createdBy: request.auth.uid,
         createdAt: FieldValue.serverTimestamp(),
       });
+      // طريقة الدفع وحالة السداد (نقدي=مدفوعة بالكامل، آجل=بانتظار التحصيل)
+      invoiceDoc.paymentMethod = paymentMethod;
+      invoiceDoc.paymentStatus = paymentMethod === "cash" ? "paid" : "unpaid";
+      invoiceDoc.paidAmount = paymentMethod === "cash" ? total : 0;
+      invoiceDoc.remainingAmount = paymentMethod === "cash" ? 0 : total;
       tx.set(invoiceRef, invoiceDoc);
 
       // ===== زِد العدّادات =====
@@ -1706,6 +1679,7 @@ exports.createInvoice = onCall(async (request) => {
       id: invoiceRef.id,
       invoiceNumber: result.invoiceNumber,
       journalEntryId: journalRef.id,
+      paymentMethod: paymentMethod,
       total: total,
       subtotal: subtotal,
       totalVat: totalVat,
@@ -1715,6 +1689,550 @@ exports.createInvoice = onCall(async (request) => {
     if (err instanceof HttpsError) throw err;
     console.error("createInvoice failed:", err);
     throw new HttpsError("internal", "تعذّر إنشاء الفاتورة، حاول مرة أخرى.");
+  }
+});
+
+// ═══════════════════════════════════════════════════════
+// ===== المالية: التحصيل (سند قبض على فاتورة آجلة) =====
+// ═══════════════════════════════════════════════════════
+
+// ===== إنشاء سند قبض + قيده المحاسبي (مدين الخزينة / دائن الذمم) ذرّيًا =====
+// data: { invoiceId, amount, date, method?, notes? }
+exports.createReceipt = onCall(async (request) => {
+  try {
+    const callerTenantId = await requireModule(request.auth, MODULES.FINANCE);
+
+    const data = request.data || {};
+    const invoiceId = typeof data.invoiceId === "string" ? data.invoiceId.trim() : "";
+    const date = typeof data.date === "string" ? data.date.trim() : "";
+    const amount = Number(data.amount);
+    const method = ["cash", "transfer", "cheque"].includes(data.method) ? data.method : "cash";
+    const notes = typeof data.notes === "string" ? data.notes.trim() : "";
+
+    if (!invoiceId) {
+      throw new HttpsError("invalid-argument", "يجب تحديد الفاتورة.");
+    }
+    if (!isValidDate(date)) {
+      throw new HttpsError("invalid-argument", "تاريخ التحصيل غير صحيح (YYYY-MM-DD).");
+    }
+    if (!Number.isFinite(amount) || amount <= 0) {
+      throw new HttpsError("invalid-argument", "مبلغ التحصيل يجب أن يكون أكبر من صفر.");
+    }
+
+    // اقرأ الفاتورة
+    const invoiceRef = db.collection(COLLECTIONS.INVOICES).doc(invoiceId);
+    const invoiceSnap = await invoiceRef.get();
+    if (!invoiceSnap.exists || invoiceSnap.data().tenantId !== callerTenantId) {
+      throw new HttpsError("invalid-argument", "الفاتورة غير صحيحة.");
+    }
+    const invoice = invoiceSnap.data();
+
+    // التحصيل للفواتير الآجلة فقط (النقدية مدفوعة أصلاً)
+    const payMethod = invoice.paymentMethod || "credit";
+    if (payMethod === "cash") {
+      throw new HttpsError("failed-precondition", "هذه فاتورة نقدية ومدفوعة بالكامل — لا تحتاج تحصيلًا.");
+    }
+
+    // المبالغ الحالية (مع توافق الفواتير القديمة التي لا تحمل الحقول)
+    const currentRemaining = invoice.remainingAmount != null
+      ? Number(invoice.remainingAmount)
+      : Number(invoice.total) || 0;
+    if (currentRemaining <= 0) {
+      throw new HttpsError("failed-precondition", "هذه الفاتورة مسدّدة بالكامل.");
+    }
+    if (amount > currentRemaining + 0.01) {
+      throw new HttpsError("invalid-argument", `مبلغ التحصيل (${amount}) يتجاوز المتبقّي على الفاتورة (${currentRemaining}).`);
+    }
+
+    // حسابات القيد: الخزينة (مدين) + الذمم المدينة (دائن)
+    async function findAccountByCode(code) {
+      const snap = await db.collection(COLLECTIONS.ACCOUNTS)
+        .where("tenantId", "==", callerTenantId)
+        .where("code", "==", code)
+        .limit(1)
+        .get();
+      return snap.empty ? null : snap.docs[0];
+    }
+    const [treasuryDoc, receivableDoc] = await Promise.all([
+      findAccountByCode(TREASURY_ACCOUNT_CODE),
+      findAccountByCode(INVOICE_ACCOUNT_CODES.RECEIVABLE),
+    ]);
+    if (!treasuryDoc) {
+      throw new HttpsError("failed-precondition", `حساب النقد/الخزينة (${TREASURY_ACCOUNT_CODE}) غير موجود في دليل الحسابات.`);
+    }
+    if (!receivableDoc) {
+      throw new HttpsError("failed-precondition", `حساب الذمم المدينة (${INVOICE_ACCOUNT_CODES.RECEIVABLE}) غير موجود في دليل الحسابات.`);
+    }
+
+    const tenantRef = db.collection(COLLECTIONS.TENANTS).doc(callerTenantId);
+    const receiptRef = db.collection(COLLECTIONS.RECEIPTS).doc();
+    const journalRef = db.collection(COLLECTIONS.JOURNAL_ENTRIES).doc();
+
+    // المعاملة الذرّية
+    const result = await db.runTransaction(async (tx) => {
+      const tenantSnap = await tx.get(tenantRef);
+      if (!tenantSnap.exists) {
+        throw new HttpsError("failed-precondition", "الشركة غير موجودة.");
+      }
+      const tData = tenantSnap.data();
+      const nextReceiptNumber = (tData.lastReceiptNumber || 0) + 1;
+      const nextJournalNumber = (tData.lastJournalNumber || 0) + 1;
+
+      // اقرأ الحسابات داخل المعاملة
+      const treasuryRef = treasuryDoc.ref;
+      const receivableRef = receivableDoc.ref;
+      const treasurySnapTx = await tx.get(treasuryRef);
+      const receivableSnapTx = await tx.get(receivableRef);
+      const treasuryData = treasurySnapTx.data();
+      const receivableData = receivableSnapTx.data();
+
+      // أعد قراءة الفاتورة داخل المعاملة (تفادي السباق)
+      const invTx = await tx.get(invoiceRef);
+      const invData = invTx.data();
+      const paidTx = Number(invData.paidAmount) || 0;
+      const remainingTx = invData.remainingAmount != null
+        ? Number(invData.remainingAmount)
+        : Number(invData.total) || 0;
+      if (amount > remainingTx + 0.01) {
+        throw new HttpsError("invalid-argument", "تغيّر المتبقّي على الفاتورة، أعد المحاولة.");
+      }
+
+      // ===== بناء القيد: مدين الخزينة / دائن الذمم =====
+      const journalLines = [
+        {
+          accountId: treasuryRef.id,
+          accountCode: treasuryData.code || null,
+          accountName: treasuryData.name || null,
+          debit: amount,
+          credit: 0,
+          note: `تحصيل فاتورة رقم ${invData.invoiceNumber || ""}`.trim(),
+        },
+        {
+          accountId: receivableRef.id,
+          accountCode: receivableData.code || null,
+          accountName: receivableData.name || null,
+          debit: 0,
+          credit: amount,
+          note: `سداد ${invoice.customerSnapshot ? (invoice.customerSnapshot.name || "") : ""}`.trim(),
+        },
+      ];
+
+      const check = validateJournalLines(journalLines);
+      if (!check.valid) {
+        throw new HttpsError("internal", "خطأ في توازن قيد التحصيل: " + check.error);
+      }
+
+      // ===== اكتب القيد =====
+      const entryDoc = buildJournalEntryDoc({
+        tenantId: callerTenantId,
+        entryNumber: nextJournalNumber,
+        date: date,
+        description: `قيد تحصيل سند رقم ${nextReceiptNumber} — فاتورة ${invData.invoiceNumber || ""}`.trim(),
+        lines: check.cleanLines,
+        totalDebit: check.totalDebit,
+        totalCredit: check.totalCredit,
+        source: "receipt",
+        sourceRef: receiptRef.id,
+        status: JOURNAL_STATUS.POSTED,
+        createdBy: request.auth.uid,
+        createdAt: FieldValue.serverTimestamp(),
+      });
+      entryDoc.postedAt = FieldValue.serverTimestamp();
+      tx.set(journalRef, entryDoc);
+
+      // ===== حدّث الأرصدة: خزينة +amount، ذمم -amount =====
+      tx.update(treasuryRef, { balance: FieldValue.increment(amount) });
+      tx.update(receivableRef, { balance: FieldValue.increment(-amount) });
+
+      // ===== حدّث الفاتورة: المدفوع/المتبقّي/الحالة =====
+      const newPaid = Math.round((paidTx + amount) * 100) / 100;
+      const newRemainingRaw = Math.round((remainingTx - amount) * 100) / 100;
+      const newRemaining = newRemainingRaw < 0 ? 0 : newRemainingRaw;
+      const newStatus = newRemaining <= 0.01 ? "paid" : "partial";
+      tx.update(invoiceRef, {
+        paidAmount: newPaid,
+        remainingAmount: newRemaining,
+        paymentStatus: newStatus,
+      });
+
+      // ===== اكتب سند القبض =====
+      const receiptDoc = buildReceiptDoc({
+        tenantId: callerTenantId,
+        receiptNumber: nextReceiptNumber,
+        date: date,
+        invoiceId: invoiceId,
+        invoiceNumber: invData.invoiceNumber || null,
+        customerId: invData.customerId || null,
+        customerSnapshot: invData.customerSnapshot || null,
+        amount: amount,
+        method: method,
+        journalEntryId: journalRef.id,
+        notes: notes || null,
+        createdBy: request.auth.uid,
+        createdAt: FieldValue.serverTimestamp(),
+      });
+      tx.set(receiptRef, receiptDoc);
+
+      // ===== زِد العدّادات =====
+      tx.update(tenantRef, {
+        lastReceiptNumber: nextReceiptNumber,
+        lastJournalNumber: nextJournalNumber,
+      });
+
+      return {
+        receiptNumber: nextReceiptNumber,
+        newPaid: newPaid,
+        newRemaining: newRemaining,
+        newStatus: newStatus,
+      };
+    });
+
+    return {
+      id: receiptRef.id,
+      receiptNumber: result.receiptNumber,
+      journalEntryId: journalRef.id,
+      amount: amount,
+      paidAmount: result.newPaid,
+      remainingAmount: result.newRemaining,
+      paymentStatus: result.newStatus,
+    };
+  } catch (err) {
+    if (err instanceof HttpsError) throw err;
+    console.error("createReceipt failed:", err);
+    throw new HttpsError("internal", "تعذّر إنشاء سند القبض، حاول مرة أخرى.");
+  }
+});
+
+// ═══════════════════════════════════════════════════════
+// ===== المالية: الإقفال المحاسبي (إقفال الإيرادات والمصروفات) =====
+// ═══════════════════════════════════════════════════════
+
+// أداة مشتركة: تحسب صافي الإيرادات/المصروفات للفترة (من القيود المعتمدة، عدا قيود الإقفال)
+async function computePeriodResult(callerTenantId, fromDate, toDate) {
+  const accSnap = await db.collection(COLLECTIONS.ACCOUNTS).where("tenantId", "==", callerTenantId).get();
+  const accounts = {};
+  accSnap.docs.forEach((d) => { accounts[d.id] = { id: d.id, ...d.data() }; });
+
+  const retained = Object.values(accounts).find((a) => a.code === RETAINED_EARNINGS_CODE) || null;
+
+  const jeSnap = await db.collection(COLLECTIONS.JOURNAL_ENTRIES).where("tenantId", "==", callerTenantId).get();
+  const periodNet = {}; // accountId -> (credit - debit) صافي ضمن الفترة
+  for (const jeDoc of jeSnap.docs) {
+    const je = jeDoc.data();
+    if (je.status && je.status !== JOURNAL_STATUS.POSTED) continue;
+    if (je.source === "closing" || je.source === "closing_reversal") continue;
+    const d = je.date;
+    if (!d || d < fromDate || d > toDate) continue;
+    for (const ln of (je.lines || [])) {
+      const acc = accounts[ln.accountId];
+      if (!acc) continue;
+      if (acc.type === ACCOUNT_TYPES.REVENUE || acc.type === ACCOUNT_TYPES.EXPENSE) {
+        const net = (Number(ln.credit) || 0) - (Number(ln.debit) || 0);
+        periodNet[ln.accountId] = (periodNet[ln.accountId] || 0) + net;
+      }
+    }
+  }
+
+  const r = (n) => Math.round(n * 100) / 100;
+  const revenues = [], expenses = [];
+  let totalRevenue = 0, totalExpense = 0;
+  for (const [id, acc] of Object.entries(accounts)) {
+    const net = periodNet[id] || 0;
+    if (acc.type === ACCOUNT_TYPES.REVENUE) {
+      const amt = r(net);                  // الإيراد: صافيه دائن
+      if (amt !== 0) revenues.push({ accountId: id, code: acc.code, name: acc.name, amount: amt });
+      totalRevenue += net;
+    } else if (acc.type === ACCOUNT_TYPES.EXPENSE) {
+      const amt = r(-net);                 // المصروف: صافيه مدين = -(credit-debit)
+      if (amt !== 0) expenses.push({ accountId: id, code: acc.code, name: acc.name, amount: amt });
+      totalExpense += -net;
+    }
+  }
+  revenues.sort((a, b) => (a.code || "").localeCompare(b.code || ""));
+  expenses.sort((a, b) => (a.code || "").localeCompare(b.code || ""));
+
+  return {
+    accounts: accounts,
+    retained: retained,
+    revenues: revenues,
+    expenses: expenses,
+    periodNet: periodNet,
+    totalRevenue: r(totalRevenue),
+    totalExpense: r(totalExpense),
+    netIncome: r(totalRevenue - totalExpense),
+  };
+}
+
+// ===== معاينة الإقفال (لا تكتب شيئًا) =====
+// data: { fromDate, toDate }
+exports.getClosingPreview = onCall(async (request) => {
+  try {
+    const callerTenantId = await requireModule(request.auth, MODULES.FINANCE);
+    const data = request.data || {};
+    const fromDate = typeof data.fromDate === "string" ? data.fromDate.trim() : "";
+    const toDate = typeof data.toDate === "string" ? data.toDate.trim() : "";
+    if (!isValidDate(fromDate) || !isValidDate(toDate)) {
+      throw new HttpsError("invalid-argument", "التواريخ غير صحيحة (YYYY-MM-DD).");
+    }
+    if (fromDate > toDate) throw new HttpsError("invalid-argument", "بداية الفترة بعد نهايتها.");
+
+    const res = await computePeriodResult(callerTenantId, fromDate, toDate);
+
+    // فحص التداخل مع إقفالات سابقة نشطة
+    const closeSnap = await db.collection(COLLECTIONS.CLOSINGS).where("tenantId", "==", callerTenantId).get();
+    let overlap = null;
+    for (const cDoc of closeSnap.docs) {
+      const c = cDoc.data();
+      if (c.status !== "closed") continue;
+      if (c.fromDate <= toDate && fromDate <= c.toDate) {
+        overlap = { closingNumber: c.closingNumber, fromDate: c.fromDate, toDate: c.toDate };
+        break;
+      }
+    }
+
+    return {
+      fromDate: fromDate,
+      toDate: toDate,
+      revenues: res.revenues,
+      expenses: res.expenses,
+      totalRevenue: res.totalRevenue,
+      totalExpense: res.totalExpense,
+      netIncome: res.netIncome,
+      hasRetainedAccount: !!res.retained,
+      retainedAccount: res.retained ? { code: res.retained.code, name: res.retained.name } : null,
+      overlap: overlap,
+    };
+  } catch (err) {
+    if (err instanceof HttpsError) throw err;
+    console.error("getClosingPreview failed:", err);
+    throw new HttpsError("internal", "تعذّر حساب معاينة الإقفال.");
+  }
+});
+
+// ===== تنفيذ الإقفال (قيد إقفال + ترحيل للأرباح المُبقاة) ذرّيًا =====
+// data: { fromDate, toDate }
+exports.performClosing = onCall(async (request) => {
+  try {
+    const callerTenantId = await requireModule(request.auth, MODULES.FINANCE);
+    const data = request.data || {};
+    const fromDate = typeof data.fromDate === "string" ? data.fromDate.trim() : "";
+    const toDate = typeof data.toDate === "string" ? data.toDate.trim() : "";
+    if (!isValidDate(fromDate) || !isValidDate(toDate)) {
+      throw new HttpsError("invalid-argument", "التواريخ غير صحيحة (YYYY-MM-DD).");
+    }
+    if (fromDate > toDate) throw new HttpsError("invalid-argument", "بداية الفترة بعد نهايتها.");
+
+    const res = await computePeriodResult(callerTenantId, fromDate, toDate);
+    if (!res.retained) {
+      throw new HttpsError("failed-precondition", `حساب الأرباح المُبقاة (${RETAINED_EARNINGS_CODE}) غير موجود في دليل الحسابات.`);
+    }
+
+    // فحص التداخل مع إقفال سابق نشط
+    const closeSnap = await db.collection(COLLECTIONS.CLOSINGS).where("tenantId", "==", callerTenantId).get();
+    for (const cDoc of closeSnap.docs) {
+      const c = cDoc.data();
+      if (c.status === "closed" && c.fromDate <= toDate && fromDate <= c.toDate) {
+        throw new HttpsError("failed-precondition", `الفترة تتداخل مع إقفال سابق رقم ${c.closingNumber} (${c.fromDate} إلى ${c.toDate}). ألغِه أولًا أو اختر فترة مختلفة.`);
+      }
+    }
+
+    // بناء أطراف القيد: إقفال كل إيراد (مدين) وكل مصروف (دائن)
+    const journalLines = [];
+    for (const rev of res.revenues) {
+      journalLines.push({ accountId: rev.accountId, accountCode: rev.code, accountName: rev.name, debit: rev.amount, credit: 0, note: "إقفال إيراد" });
+    }
+    for (const exp of res.expenses) {
+      journalLines.push({ accountId: exp.accountId, accountCode: exp.code, accountName: exp.name, debit: 0, credit: exp.amount, note: "إقفال مصروف" });
+    }
+    if (journalLines.length === 0) {
+      throw new HttpsError("failed-precondition", "لا توجد إيرادات أو مصروفات في هذه الفترة للإقفال.");
+    }
+
+    // طرف الأرباح المُبقاة (الموازن): ربح=دائن، خسارة=مدين
+    const netIncome = res.netIncome;
+    if (netIncome > 0.005) {
+      journalLines.push({ accountId: res.retained.id, accountCode: res.retained.code, accountName: res.retained.name, debit: 0, credit: netIncome, note: "ترحيل صافي الربح" });
+    } else if (netIncome < -0.005) {
+      journalLines.push({ accountId: res.retained.id, accountCode: res.retained.code, accountName: res.retained.name, debit: -netIncome, credit: 0, note: "ترحيل صافي الخسارة" });
+    }
+
+    const check = validateJournalLines(journalLines);
+    if (!check.valid) {
+      throw new HttpsError("internal", "خطأ في توازن قيد الإقفال: " + check.error);
+    }
+
+    const tenantRef = db.collection(COLLECTIONS.TENANTS).doc(callerTenantId);
+    const journalRef = db.collection(COLLECTIONS.JOURNAL_ENTRIES).doc();
+    const closingRef = db.collection(COLLECTIONS.CLOSINGS).doc();
+    const accountIds = [...new Set(check.cleanLines.map((l) => l.accountId))];
+
+    const result = await db.runTransaction(async (tx) => {
+      const tenantSnap = await tx.get(tenantRef);
+      if (!tenantSnap.exists) throw new HttpsError("failed-precondition", "الشركة غير موجودة.");
+      const tData = tenantSnap.data();
+      const nextJournalNumber = (tData.lastJournalNumber || 0) + 1;
+      const nextClosingNumber = (tData.lastClosingNumber || 0) + 1;
+
+      const accRefs = accountIds.map((id) => db.collection(COLLECTIONS.ACCOUNTS).doc(id));
+      const accSnaps = await Promise.all(accRefs.map((ref) => tx.get(ref)));
+      const accMap = {};
+      for (let i = 0; i < accountIds.length; i++) {
+        accMap[accountIds[i]] = { ref: accRefs[i], data: accSnaps[i].data() };
+      }
+
+      const entryDoc = buildJournalEntryDoc({
+        tenantId: callerTenantId,
+        entryNumber: nextJournalNumber,
+        date: toDate,
+        description: `قيد إقفال الفترة ${fromDate} إلى ${toDate}`,
+        lines: check.cleanLines,
+        totalDebit: check.totalDebit,
+        totalCredit: check.totalCredit,
+        source: "closing",
+        sourceRef: closingRef.id,
+        status: JOURNAL_STATUS.POSTED,
+        createdBy: request.auth.uid,
+        createdAt: FieldValue.serverTimestamp(),
+      });
+      entryDoc.postedAt = FieldValue.serverTimestamp();
+      tx.set(journalRef, entryDoc);
+
+      // تحديث الأرصدة (حسب طبيعة كل حساب)
+      for (const ln of check.cleanLines) {
+        const acc = accMap[ln.accountId].data;
+        const normalSide = acc.normalSide || "debit";
+        const delta = normalSide === "debit" ? (ln.debit - ln.credit) : (ln.credit - ln.debit);
+        if (delta !== 0) tx.update(accMap[ln.accountId].ref, { balance: FieldValue.increment(delta) });
+      }
+
+      const closingDoc = buildClosingDoc({
+        tenantId: callerTenantId,
+        closingNumber: nextClosingNumber,
+        fromDate: fromDate,
+        toDate: toDate,
+        totalRevenue: res.totalRevenue,
+        totalExpense: res.totalExpense,
+        netIncome: res.netIncome,
+        journalEntryId: journalRef.id,
+        linesSnapshot: check.cleanLines,
+        status: "closed",
+        createdBy: request.auth.uid,
+        createdAt: FieldValue.serverTimestamp(),
+      });
+      tx.set(closingRef, closingDoc);
+
+      tx.update(tenantRef, { lastJournalNumber: nextJournalNumber, lastClosingNumber: nextClosingNumber });
+
+      return { closingNumber: nextClosingNumber, journalNumber: nextJournalNumber };
+    });
+
+    return {
+      id: closingRef.id,
+      closingNumber: result.closingNumber,
+      journalEntryId: journalRef.id,
+      totalRevenue: res.totalRevenue,
+      totalExpense: res.totalExpense,
+      netIncome: res.netIncome,
+    };
+  } catch (err) {
+    if (err instanceof HttpsError) throw err;
+    console.error("performClosing failed:", err);
+    throw new HttpsError("internal", "تعذّر تنفيذ الإقفال، حاول مرة أخرى.");
+  }
+});
+
+// ===== إلغاء الإقفال (قيد عكسي يعيد الأرصدة) ذرّيًا =====
+// data: { closingId }
+exports.reverseClosing = onCall(async (request) => {
+  try {
+    const callerTenantId = await requireModule(request.auth, MODULES.FINANCE);
+    const data = request.data || {};
+    const closingId = typeof data.closingId === "string" ? data.closingId.trim() : "";
+    if (!closingId) throw new HttpsError("invalid-argument", "يجب تحديد الإقفال.");
+
+    const closingRef = db.collection(COLLECTIONS.CLOSINGS).doc(closingId);
+    const closingSnap = await closingRef.get();
+    if (!closingSnap.exists || closingSnap.data().tenantId !== callerTenantId) {
+      throw new HttpsError("invalid-argument", "الإقفال غير صحيح.");
+    }
+    const closing = closingSnap.data();
+    if (closing.status !== "closed") {
+      throw new HttpsError("failed-precondition", "هذا الإقفال ملغى بالفعل.");
+    }
+
+    const origLines = Array.isArray(closing.linesSnapshot) ? closing.linesSnapshot : [];
+    if (origLines.length === 0) {
+      throw new HttpsError("failed-precondition", "لا توجد بيانات لعكس هذا الإقفال.");
+    }
+
+    // أطراف عكسية (تبديل المدين والدائن)
+    const reverseLines = origLines.map((ln) => ({
+      accountId: ln.accountId,
+      accountCode: ln.accountCode || null,
+      accountName: ln.accountName || null,
+      debit: Number(ln.credit) || 0,
+      credit: Number(ln.debit) || 0,
+      note: "عكس إقفال",
+    }));
+
+    const check = validateJournalLines(reverseLines);
+    if (!check.valid) throw new HttpsError("internal", "خطأ في توازن قيد عكس الإقفال: " + check.error);
+
+    const tenantRef = db.collection(COLLECTIONS.TENANTS).doc(callerTenantId);
+    const journalRef = db.collection(COLLECTIONS.JOURNAL_ENTRIES).doc();
+    const accountIds = [...new Set(check.cleanLines.map((l) => l.accountId))];
+
+    await db.runTransaction(async (tx) => {
+      const tenantSnap = await tx.get(tenantRef);
+      if (!tenantSnap.exists) throw new HttpsError("failed-precondition", "الشركة غير موجودة.");
+      const nextJournalNumber = (tenantSnap.data().lastJournalNumber || 0) + 1;
+
+      const accRefs = accountIds.map((id) => db.collection(COLLECTIONS.ACCOUNTS).doc(id));
+      const accSnaps = await Promise.all(accRefs.map((ref) => tx.get(ref)));
+      const accMap = {};
+      for (let i = 0; i < accountIds.length; i++) {
+        accMap[accountIds[i]] = { ref: accRefs[i], data: accSnaps[i].data() };
+      }
+
+      const entryDoc = buildJournalEntryDoc({
+        tenantId: callerTenantId,
+        entryNumber: nextJournalNumber,
+        date: closing.toDate,
+        description: `عكس إقفال رقم ${closing.closingNumber} (${closing.fromDate} إلى ${closing.toDate})`,
+        lines: check.cleanLines,
+        totalDebit: check.totalDebit,
+        totalCredit: check.totalCredit,
+        source: "closing_reversal",
+        sourceRef: closingId,
+        status: JOURNAL_STATUS.POSTED,
+        createdBy: request.auth.uid,
+        createdAt: FieldValue.serverTimestamp(),
+      });
+      entryDoc.postedAt = FieldValue.serverTimestamp();
+      tx.set(journalRef, entryDoc);
+
+      for (const ln of check.cleanLines) {
+        const acc = accMap[ln.accountId].data;
+        const normalSide = acc.normalSide || "debit";
+        const delta = normalSide === "debit" ? (ln.debit - ln.credit) : (ln.credit - ln.debit);
+        if (delta !== 0) tx.update(accMap[ln.accountId].ref, { balance: FieldValue.increment(delta) });
+      }
+
+      tx.update(closingRef, {
+        status: "reversed",
+        reversedJournalEntryId: journalRef.id,
+        reversedAt: FieldValue.serverTimestamp(),
+        reversedBy: request.auth.uid,
+      });
+
+      tx.update(tenantRef, { lastJournalNumber: nextJournalNumber });
+    });
+
+    return { id: closingId, status: "reversed", reversalJournalEntryId: journalRef.id };
+  } catch (err) {
+    if (err instanceof HttpsError) throw err;
+    console.error("reverseClosing failed:", err);
+    throw new HttpsError("internal", "تعذّر عكس الإقفال، حاول مرة أخرى.");
   }
 });
 

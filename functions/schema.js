@@ -21,6 +21,9 @@ const COLLECTIONS = {
   WORKER_ASSIGNMENTS: "workerAssignments",
   ASSETS: "assets",
   ASSET_EXPENSES: "assetExpenses",
+  FINANCE_APPROVALS: "financeApprovals",
+  RECEIPTS: "receipts",
+  CLOSINGS: "closings",
 };
 
 const ROLES = {
@@ -139,6 +142,7 @@ const PROJECT_STATUS = {
   PLANNED: "planned",
   ACTIVE: "active",
   ON_HOLD: "on_hold",
+  UNDER_REVIEW: "under_review",
   COMPLETED: "completed",
   CANCELLED: "cancelled",
 };
@@ -859,25 +863,20 @@ function validateJournalLines(lines) {
 }
 
 function buildCustomerDoc({
-  tenantId, name, type, customerCode, taxNumber, crNumber, licenseNumber,
-  contactPerson, phone, email, website,
+  tenantId, name, customerCode, taxNumber, crNumber,
+  contactPerson, phone, email,
   buildingNumber, street, district, city, postalCode, additionalNumber,
-  locations, contacts,
   createdBy, createdAt,
 }) {
   return {
     tenantId,
     name: name,
-    type: type === "individual" ? "individual" : "company",
     customerCode: customerCode || null,
     taxNumber: taxNumber || null,
     crNumber: crNumber || null,
-    licenseNumber: licenseNumber || null,
     contactPerson: contactPerson || null,
     phone: phone || null,
     email: email || null,
-    website: website || null,
-    // العنوان المفصّل (ZATCA) — يبقى للتوافق مع الفواتير
     address: {
       buildingNumber: buildingNumber || null,
       street: street || null,
@@ -886,16 +885,11 @@ function buildCustomerDoc({
       postalCode: postalCode || null,
       additionalNumber: additionalNumber || null,
     },
-    // المواقع المتعددة: كل موقع { label, mapLink, address }
-    locations: Array.isArray(locations) ? locations : [],
-    // المخوّلون المتعددون: كل مخوّل { name, phone }
-    contacts: Array.isArray(contacts) ? contacts : [],
     status: "active",
     createdBy: createdBy || null,
     createdAt,
   };
 }
-
 
 function computeInvoiceTotals(rawLines) {
   if (!Array.isArray(rawLines) || rawLines.length === 0) {
@@ -997,6 +991,53 @@ function buildInvoiceDoc({
     status: INVOICE_STATUS.ISSUED,
     journalEntryId: journalEntryId || null,
     notes: notes || null,
+    createdBy: createdBy || null,
+    createdAt,
+  };
+}
+
+// سند قبض: تحصيل دفعة (كاملة أو جزئية) على فاتورة آجلة
+function buildReceiptDoc({
+  tenantId, receiptNumber, date, invoiceId, invoiceNumber,
+  customerId, customerSnapshot, amount, method,
+  journalEntryId, notes, createdBy, createdAt,
+}) {
+  return {
+    tenantId,
+    receiptNumber: receiptNumber || null,
+    date: date,
+    invoiceId: invoiceId || null,
+    invoiceNumber: invoiceNumber || null,
+    customerId: customerId || null,
+    customerSnapshot: customerSnapshot || null,
+    amount: amount || 0,
+    method: method || "cash",
+    journalEntryId: journalEntryId || null,
+    notes: notes || null,
+    createdBy: createdBy || null,
+    createdAt,
+  };
+}
+
+// سجل إقفال محاسبي لفترة: يقفل الإيرادات والمصروفات ويرحّل الصافي للأرباح المُبقاة
+function buildClosingDoc({
+  tenantId, closingNumber, fromDate, toDate,
+  totalRevenue, totalExpense, netIncome,
+  journalEntryId, linesSnapshot, status, createdBy, createdAt,
+}) {
+  return {
+    tenantId,
+    closingNumber: closingNumber || null,
+    fromDate: fromDate,
+    toDate: toDate,
+    totalRevenue: totalRevenue || 0,
+    totalExpense: totalExpense || 0,
+    netIncome: netIncome || 0,
+    journalEntryId: journalEntryId || null,
+    linesSnapshot: Array.isArray(linesSnapshot) ? linesSnapshot : [],
+    status: status || "closed",
+    reversedJournalEntryId: null,
+    reversedAt: null,
     createdBy: createdBy || null,
     createdAt,
   };
@@ -1262,6 +1303,43 @@ function computeAssetSharePerBeneficiary(assetMonthlyTotal, beneficiaryCount) {
   return Math.round(((Number(assetMonthlyTotal) || 0) / n) * 100) / 100;
 }
 
+// ═══════════════════════════════════════════════════════════════
+// ===== الموافقة المالية الشاملة على المشاريع =====
+// ═══════════════════════════════════════════════════════════════
+// المالية تراجع ربحية المشروع الكاملة (عمالة + أصول) وتعتمد/ترفض.
+// على مستويين: شهري (ربحية شهر) + كامل المشروع (إجمالي الفترة).
+// الرفض → حالة المشروع "قيد المراجعة" تعود للمشاريع، مخفية عن العمليات.
+
+const FINANCE_APPROVAL_STATUS = {
+  APPROVED: "approved",
+  REJECTED: "rejected",
+};
+const ALL_FINANCE_APPROVAL_STATUS = Object.values(FINANCE_APPROVAL_STATUS);
+
+const APPROVAL_SCOPE = {
+  MONTH: "month",      // موافقة على ربحية شهر محدّد
+  PROJECT: "project",  // موافقة على المشروع ككل
+};
+const ALL_APPROVAL_SCOPE = Object.values(APPROVAL_SCOPE);
+
+function buildFinanceApprovalDoc({
+  tenantId, projectId, projectName, scope, month,
+  status, rejectionReason, snapshot, reviewedBy, reviewedAt,
+}) {
+  return {
+    tenantId: tenantId,
+    projectId: projectId,
+    projectName: projectName || null,
+    scope: scope === APPROVAL_SCOPE.PROJECT ? APPROVAL_SCOPE.PROJECT : APPROVAL_SCOPE.MONTH,
+    month: scope === APPROVAL_SCOPE.PROJECT ? null : (month || null),  // YYYY-MM للشهري فقط
+    status: ALL_FINANCE_APPROVAL_STATUS.includes(status) ? status : FINANCE_APPROVAL_STATUS.APPROVED,
+    rejectionReason: rejectionReason || null,
+    snapshot: snapshot || null,  // لقطة الربحية وقت المراجعة {revenue, cost, profit, margin}
+    reviewedBy: reviewedBy || null,
+    reviewedAt: reviewedAt,
+  };
+}
+
 module.exports = {
   COLLECTIONS,
   ROLES,
@@ -1330,6 +1408,8 @@ module.exports = {
   buildTaxConfig,
   buildCustomerDoc,
   buildInvoiceDoc,
+  buildReceiptDoc,
+  buildClosingDoc,
   computeInvoiceTotals,
   buildProjectTypeDoc,
   buildProjectDoc,
@@ -1343,6 +1423,11 @@ module.exports = {
   buildAssetExpenseDoc,
   computeAssetMonthlyCost,
   computeAssetSharePerBeneficiary,
+  FINANCE_APPROVAL_STATUS,
+  ALL_FINANCE_APPROVAL_STATUS,
+  APPROVAL_SCOPE,
+  ALL_APPROVAL_SCOPE,
+  buildFinanceApprovalDoc,
   timeToMinutes,
   shiftWindow,
   shiftsOverlap,
