@@ -1,8 +1,10 @@
-import React, { useState } from "react";
+import React, { useState, useEffect } from "react";
 import {
   Crown, Wallet, Users, Settings, Building2, TrendingUp, Megaphone, Scale,
-  Award, CreditCard, Boxes, ChevronDown, Menu, X, Globe, Bell, Search, Package
+  Award, CreditCard, Boxes, ChevronDown, Menu, X, Globe, Bell, Search, Package, LogOut
 } from "lucide-react";
+import { onAuthStateChanged, signInWithEmailAndPassword, signOut } from "firebase/auth";
+import { auth } from "../firebase";
 
 /* ============================================================
    Central — الهيكل الرئيسي (App Shell)
@@ -196,21 +198,89 @@ const STYLES = `
     .sh-lang span,.sh-crumb-dept{display:none}
     .sh-top-actions .sh-top-btn:first-child{display:none}
   }
+
+  /* زر تسجيل الخروج */
+  .sh-logout{width:38px; height:38px; border-radius:9px; border:1px solid var(--line2); background:var(--panel);
+    cursor:pointer; display:grid; place-items:center; color:var(--ink2); flex-shrink:0; transition:all .12s}
+  .sh-logout:hover{background:#fef2f2; border-color:#fecaca; color:#dc2626}
+
+  /* شاشة تسجيل الدخول */
+  .lg-wrap{min-height:100vh; display:grid; place-items:center; padding:20px;
+    background:linear-gradient(135deg,#eef1f7,#e2e8f3);
+    font-family:'IBM Plex Sans Arabic','Segoe UI',Tahoma,sans-serif; direction:rtl}
+  .lg-card{background:#fff; border-radius:20px; box-shadow:0 12px 48px rgba(15,23,42,.12);
+    padding:40px 32px; width:100%; max-width:380px; text-align:center}
+  .lg-logo{width:60px; height:60px; border-radius:16px; background:linear-gradient(135deg,#4f46e5,#7c3aed);
+    display:grid; place-items:center; color:#fff; font-weight:800; font-size:28px; margin:0 auto 18px}
+  .lg-title{font-size:26px; font-weight:800; letter-spacing:-.5px; color:#161b26}
+  .lg-title span{color:#4f46e5}
+  .lg-sub{font-size:13px; color:#94a0b8; margin:4px 0 26px}
+  .lg-input{width:100%; padding:13px 15px; font-size:14px; border:1px solid #dde2ec; border-radius:11px;
+    margin-bottom:12px; font-family:inherit; box-sizing:border-box; outline:none; transition:border-color .12s}
+  .lg-input:focus{border-color:#4f46e5}
+  .lg-btn{width:100%; padding:13px; font-size:15px; font-weight:700; color:#fff; background:#4f46e5;
+    border:none; border-radius:11px; cursor:pointer; margin-top:6px; transition:background .12s; font-family:inherit}
+  .lg-btn:hover{background:#4338ca}
+  .lg-btn:disabled{opacity:.6; cursor:default}
+  .lg-err{background:#fef2f2; color:#dc2626; padding:10px 14px; border-radius:10px; font-size:13px; margin-bottom:16px}
+
+  /* شاشة التحميل */
+  .sh-loading{min-height:100vh; display:flex; flex-direction:column; align-items:center; justify-content:center;
+    gap:16px; background:#f4f6f9; font-family:'IBM Plex Sans Arabic',sans-serif; direction:rtl}
+  .sh-loading-text{font-size:14px; color:#94a0b8}
 `;
 
-export default function CentralShell({ views = {} }) {
-  // 🔑 الواجهة الحالية — هنا نقطة الحفظ عند التحديث (انظر الشرح بالأعلى).
-  // للطريقة (ب) localStorage في نظامك، استبدل السطر التالي بالسطرين المعلّقين بعده:
-  const [activeView, setActiveView] = useState("exec_kpi");
-  // const [activeView, _set] = useState(() => localStorage.getItem("central_view") || "exec_kpi");
-  // const setActiveView = (v) => { localStorage.setItem("central_view", v); _set(v); };
+// إيجاد القسم الذي يحتوي تفرّعًا معيّنًا (لفتحه تلقائيًا)
+function sectionOfView(viewId) {
+  const sec = NAV.find((n) => n.type === "section" && n.children && n.children.some((c) => c.id === viewId));
+  return sec ? sec.id : null;
+}
+// قراءة الواجهة الحالية من رابط المتصفح (#) — تثبت عند تحديث الصفحة
+function viewFromHash() {
+  const h = (window.location.hash || "").replace(/^#/, "");
+  return VIEW_INFO[h] ? h : "exec_kpi";
+}
 
-  const [expanded, setExpanded] = useState({ exec: true });
+export default function CentralShell({ views = {} }) {
+  // ===== المصادقة =====
+  const [user, setUser] = useState(null);
+  const [authLoading, setAuthLoading] = useState(true);
+  useEffect(() => {
+    const unsub = onAuthStateChanged(auth, (u) => { setUser(u); setAuthLoading(false); });
+    return () => unsub();
+  }, []);
+
+  // ===== التنقّل (يثبت عند التحديث عبر #) =====
+  const [activeView, setActiveView] = useState(viewFromHash());
+  useEffect(() => {
+    const onHash = () => setActiveView(viewFromHash());
+    window.addEventListener("hashchange", onHash);
+    return () => window.removeEventListener("hashchange", onHash);
+  }, []);
+
+  const [expanded, setExpanded] = useState(() => {
+    const sec = sectionOfView(viewFromHash());
+    return sec ? { [sec]: true } : { exec: true };
+  });
   const [mobileOpen, setMobileOpen] = useState(false);
 
   const toggleSection = (id) => setExpanded((p) => ({ ...p, [id]: !p[id] }));
-  const openView = (id) => { setActiveView(id); setMobileOpen(false); };
+  const openView = (id) => {
+    if (window.location.hash !== "#" + id) window.location.hash = id;
+    setActiveView(id);
+    const sec = sectionOfView(id);
+    if (sec) setExpanded((p) => ({ ...p, [sec]: true }));
+    setMobileOpen(false);
+  };
+  const handleLogout = async () => {
+    try { await signOut(auth); } catch (e) { /* تجاهل */ }
+  };
 
+  // شاشة تحميل أثناء فحص المصادقة، ثم شاشة الدخول إن لم يكن مسجّلًا الدخول
+  if (authLoading) return <LoadingScreen />;
+  if (!user) return <LoginScreen />;
+
+  const userInitial = ((user.displayName || user.email || "؟").trim().charAt(0) || "؟").toUpperCase();
   const cur = VIEW_INFO[activeView] || {};
   const CurIcon = cur.icon || Package;
 
@@ -292,7 +362,8 @@ export default function CentralShell({ views = {} }) {
             <button className="sh-top-btn"><Search size={17} /></button>
             <button className="sh-top-btn"><Bell size={17} /></button>
             <button className="sh-lang"><Globe size={15} /><span>العربية</span></button>
-            <div className="sh-avatar">ع</div>
+            <div className="sh-avatar" title={user.email || ""}>{userInitial}</div>
+            <button className="sh-logout" onClick={handleLogout} title="تسجيل الخروج"><LogOut size={17} /></button>
           </div>
         </div>
 
@@ -327,6 +398,72 @@ export default function CentralShell({ views = {} }) {
           )}
         </div>
       </div>
+    </div>
+  );
+}
+
+// ═══════════ شاشة تسجيل الدخول ═══════════
+function loginError(code) {
+  const map = {
+    "auth/invalid-email": "البريد الإلكتروني غير صحيح.",
+    "auth/user-not-found": "لا يوجد حساب بهذا البريد.",
+    "auth/wrong-password": "كلمة المرور غير صحيحة.",
+    "auth/invalid-credential": "البريد أو كلمة المرور غير صحيحة.",
+    "auth/too-many-requests": "محاولات كثيرة، انتظر قليلًا ثم أعد المحاولة.",
+    "auth/user-disabled": "هذا الحساب معطّل.",
+    "auth/network-request-failed": "تعذّر الاتصال، تحقّق من الإنترنت.",
+  };
+  return map[code] || "تعذّر تسجيل الدخول، تأكّد من البيانات.";
+}
+
+function LoginScreen() {
+  const [email, setEmail] = useState("");
+  const [password, setPassword] = useState("");
+  const [err, setErr] = useState("");
+  const [loading, setLoading] = useState(false);
+
+  async function submit() {
+    setErr("");
+    if (!email.includes("@")) { setErr("البريد الإلكتروني غير صحيح."); return; }
+    if (password.length < 6) { setErr("كلمة المرور 6 أحرف على الأقل."); return; }
+    setLoading(true);
+    try {
+      await signInWithEmailAndPassword(auth, email.trim(), password);
+      // onAuthStateChanged في CentralShell يتكفّل بعرض النظام
+    } catch (e) {
+      setErr(loginError(e && e.code));
+      setLoading(false);
+    }
+  }
+  const onKey = (e) => { if (e.key === "Enter") submit(); };
+
+  return (
+    <div className="lg-wrap">
+      <style>{STYLES}</style>
+      <div className="lg-card">
+        <div className="lg-logo">C</div>
+        <div className="lg-title">Central<span>.</span></div>
+        <div className="lg-sub">نظام إدارة التوريد</div>
+        {err ? <div className="lg-err">{err}</div> : null}
+        <input className="lg-input" type="email" placeholder="البريد الإلكتروني" value={email}
+               onChange={(e) => setEmail(e.target.value)} onKeyDown={onKey} disabled={loading} dir="ltr" autoFocus />
+        <input className="lg-input" type="password" placeholder="كلمة المرور" value={password}
+               onChange={(e) => setPassword(e.target.value)} onKeyDown={onKey} disabled={loading} dir="ltr" />
+        <button className="lg-btn" onClick={submit} disabled={loading}>
+          {loading ? "جارٍ الدخول..." : "تسجيل الدخول"}
+        </button>
+      </div>
+    </div>
+  );
+}
+
+// ═══════════ شاشة التحميل ═══════════
+function LoadingScreen() {
+  return (
+    <div className="sh-loading">
+      <style>{STYLES}</style>
+      <div className="lg-logo">C</div>
+      <div className="sh-loading-text">جارٍ التحميل...</div>
     </div>
   );
 }
