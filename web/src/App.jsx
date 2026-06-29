@@ -93,6 +93,7 @@ const views = {
   build:         BuildSystemView,
 };
 
+console.log("✅ App.jsx الصحيح يُقرأ — views:", Object.keys(views));
 export default function App() {
   return <CentralShell views={views} />;
 }
