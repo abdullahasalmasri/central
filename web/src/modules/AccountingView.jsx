@@ -27,6 +27,13 @@ const SUBTYPE_LABELS = {
   cogs: "تكلفة مبيعات", operating_expense: "تشغيلي", non_operating_expense: "غير تشغيلي",
 };
 
+// ميزان المراجعة: الأصول والمصروفات طبيعتها مدينة
+const DEBIT_NATURE = ["asset", "expense"];
+const TYPE_LABELS = {
+  asset: "الأصول", liability: "الخصوم", equity: "حقوق الملكية",
+  revenue: "الإيرادات", expense: "المصروفات",
+};
+
 // ═══════════ الحاوية: العنوان + التبويبات + جلب الهوية ═══════════
 export default function AccountingView() {
   const [tab, setTab] = useState("accounts");
@@ -70,6 +77,9 @@ export default function AccountingView() {
         <button style={{ ...styles.tab, ...(tab === "journal" ? styles.tabActive : {}) }} onClick={() => setTab("journal")}>
           📋 القيود
         </button>
+        <button style={{ ...styles.tab, ...(tab === "trial" ? styles.tabActive : {}) }} onClick={() => setTab("trial")}>
+          ⚖️ ميزان المراجعة
+        </button>
       </div>
 
       {identityLoading ? (
@@ -78,8 +88,10 @@ export default function AccountingView() {
         <div style={styles.error}>{identityError}</div>
       ) : tab === "accounts" ? (
         <AccountsPanel tenantId={tenantId} companyName={companyName} />
-      ) : (
+      ) : tab === "journal" ? (
         <JournalPanel tenantId={tenantId} companyName={companyName} />
+      ) : (
+        <TrialBalancePanel tenantId={tenantId} companyName={companyName} />
       )}
     </div>
   );
@@ -576,6 +588,142 @@ function EntryDetail({ entry, onClose }) {
   );
 }
 
+// ═══════════ تبويب ميزان المراجعة ═══════════
+function TrialBalancePanel({ tenantId, companyName }) {
+  const [accounts, setAccounts] = useState([]);
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState("");
+
+  useEffect(() => { loadData(); /* eslint-disable-next-line */ }, []);
+
+  async function loadData() {
+    setLoading(true);
+    setError("");
+    try {
+      const snap = await getDocs(query(collection(db, "accounts"), where("tenantId", "==", tenantId)));
+      const list = snap.docs.map((d) => ({ id: d.id, ...d.data() }));
+      list.sort((a, b) => (a.code || "").localeCompare(b.code || ""));
+      setAccounts(list);
+    } catch (err) {
+      setError("تعذّر تحميل الحسابات.");
+    } finally {
+      setLoading(false);
+    }
+  }
+
+  // تحديد عمود كل حساب (مدين/دائن) حسب طبيعته
+  function rowFor(acc) {
+    const bal = acc.balance || 0;
+    const isDebitNature = DEBIT_NATURE.includes(acc.type);
+    let debit = 0, credit = 0;
+    if (isDebitNature) {
+      if (bal >= 0) debit = bal; else credit = -bal;
+    } else {
+      if (bal >= 0) credit = bal; else debit = -bal;
+    }
+    return { debit, credit };
+  }
+
+  const activeAccounts = accounts.filter((a) => (a.balance || 0) !== 0);
+
+  let totalDebit = 0, totalCredit = 0;
+  const rows = activeAccounts.map((acc) => {
+    const { debit, credit } = rowFor(acc);
+    totalDebit += debit;
+    totalCredit += credit;
+    return { acc, debit, credit };
+  });
+
+  const balanced = Math.round(totalDebit * 100) === Math.round(totalCredit * 100);
+
+  function buildExportRows() {
+    return rows.map((r) => ({
+      code: r.acc.code,
+      name: r.acc.name,
+      type: TYPE_LABELS[r.acc.type] || r.acc.type,
+      debit: r.debit || "",
+      credit: r.credit || "",
+    }));
+  }
+  const exportColumns = [
+    { key: "code", header: "رقم الحساب" },
+    { key: "name", header: "اسم الحساب" },
+    { key: "type", header: "النوع" },
+    { key: "debit", header: "مدين" },
+    { key: "credit", header: "دائن" },
+  ];
+  const exportExcel = () => exportToExcel({ rows: buildExportRows(), columns: exportColumns, fileName: datedFileName("ميزان-المراجعة"), sheetName: "ميزان المراجعة" });
+  const exportPDF = () => exportToPDF({ rows: buildExportRows(), columns: exportColumns, fileName: datedFileName("ميزان-المراجعة"), header: { companyName, title: "ميزان المراجعة", subtitle: "Trial Balance" } });
+
+  if (loading) return <p style={styles.muted}>جارٍ التحميل...</p>;
+
+  return (
+    <div>
+      <div style={styles.toolbar}>
+        <span style={styles.summaryText}>
+          ميزان المراجعة · {activeAccounts.length} حساب متحرّك
+        </span>
+        {rows.length > 0 ? (
+          <div style={styles.toolBtns}>
+            <button style={styles.pdfBtn} onClick={exportPDF}>⬇ PDF</button>
+            <button style={styles.exportBtn} onClick={exportExcel}>⬇ Excel</button>
+          </div>
+        ) : null}
+      </div>
+
+      {error ? <div style={styles.error}>{error}</div> : null}
+
+      {rows.length === 0 ? (
+        <div style={styles.empty}>
+          <p style={styles.muted}>لا توجد حسابات متحرّكة بعد. أنشئ قيودًا لتظهر في ميزان المراجعة.</p>
+        </div>
+      ) : (
+        <div style={styles.panel}>
+          <table style={styles.table}>
+            <thead>
+              <tr>
+                <th style={styles.th}>رقم الحساب</th>
+                <th style={styles.th}>اسم الحساب</th>
+                <th style={styles.thAmount}>مدين</th>
+                <th style={styles.thAmount}>دائن</th>
+              </tr>
+            </thead>
+            <tbody>
+              {rows.map((r) => (
+                <tr key={r.acc.id}>
+                  <td style={styles.tdCode} dir="ltr">{r.acc.code}</td>
+                  <td style={styles.tdName}>{r.acc.name}</td>
+                  <td style={styles.tdAmount} dir="ltr">{r.debit ? r.debit.toLocaleString() : "—"}</td>
+                  <td style={styles.tdAmount} dir="ltr">{r.credit ? r.credit.toLocaleString() : "—"}</td>
+                </tr>
+              ))}
+            </tbody>
+            <tfoot>
+              <tr style={styles.totalRow}>
+                <td style={styles.tdTotal} colSpan={2}>الإجمالي</td>
+                <td style={styles.tdAmountTotal} dir="ltr">{totalDebit.toLocaleString()} ﷼</td>
+                <td style={styles.tdAmountTotal} dir="ltr">{totalCredit.toLocaleString()} ﷼</td>
+              </tr>
+            </tfoot>
+          </table>
+
+          <div style={{ ...styles.balanceIndicator, ...(balanced ? styles.balancedOk : styles.balancedBad) }}>
+            {balanced ? (
+              <>✓ الميزان متوازن — مجموع المدين يساوي مجموع الدائن</>
+            ) : (
+              <>⚠ الميزان غير متوازن — فرق قدره {Math.abs(totalDebit - totalCredit).toLocaleString()} ﷼ (راجع القيود)</>
+            )}
+          </div>
+        </div>
+      )}
+
+      <p style={styles.hint}>
+        ميزان المراجعة يعرض أرصدة الحسابات المتحرّكة. توازن المجموعين دليل سلامة القيود المزدوجة.
+      </p>
+    </div>
+  );
+}
+
 const styles = {
   page: { padding: "26px 30px 40px", minHeight: "100%", background: "#f4f6f9", fontFamily: "'IBM Plex Sans Arabic','Segoe UI',Tahoma,sans-serif", direction: "rtl" },
   pageHead: { marginBottom: 18 },
@@ -662,6 +810,13 @@ const styles = {
   totalRow: { background: "#f8fafc" },
   tdTotal: { padding: "12px", fontSize: 14, fontWeight: 700, borderTop: "2px solid #e2e8f0" },
   tdAmountTotal: { padding: "12px", fontSize: 14, fontWeight: 700, textAlign: "left", borderTop: "2px solid #e2e8f0", color: "#16a34a" },
+
+  panel: { background: "#fff", border: "1px solid #e2e8f0", borderRadius: 12, overflow: "hidden" },
+  empty: { padding: 40, background: "#fff", border: "1px solid #e2e8f0", borderRadius: 12, textAlign: "center" },
+  balanceIndicator: { padding: "14px 18px", fontSize: 14, fontWeight: 600, textAlign: "center" },
+  balancedOk: { background: "#dcfce7", color: "#166534" },
+  balancedBad: { background: "#fef3c7", color: "#92400e" },
+  hint: { marginTop: 16, padding: "12px 16px", background: "#f0fdf4", color: "#15803d", borderRadius: 8, fontSize: 13 },
 
   error: { padding: "10px 12px", background: "#fee2e2", color: "#b91c1c", borderRadius: 8, fontSize: 14, marginBottom: 16 },
   muted: { color: "#94a3b8", fontSize: 14 },

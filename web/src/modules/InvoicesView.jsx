@@ -213,6 +213,7 @@ function InvoiceForm({ customers, revenueAccounts, items, onClose, onSaved }) {
   const [customerId, setCustomerId] = useState("");
   const [revenueAccountId, setRevenueAccountId] = useState(revenueAccounts.length === 1 ? revenueAccounts[0].id : "");
   const [notes, setNotes] = useState("");
+  const [paymentMethod, setPaymentMethod] = useState("credit"); // "credit" آجل (افتراضي) أو "cash" نقدي
   const [lines, setLines] = useState([emptyLine()]);
   const [err, setErr] = useState("");
   const [saving, setSaving] = useState(false);
@@ -297,7 +298,7 @@ function InvoiceForm({ customers, revenueAccounts, items, onClose, onSaved }) {
     setSaving(true);
     try {
       const fn = httpsCallable(functions, "createInvoice");
-      await fn({ date, customerId, revenueAccountId, lines: cleanLines, notes });
+      await fn({ date, customerId, revenueAccountId, lines: cleanLines, notes, paymentMethod });
       onSaved();
     } catch (e) {
       setErr(e.message || "تعذّر إنشاء الفاتورة.");
@@ -333,6 +334,20 @@ function InvoiceForm({ customers, revenueAccounts, items, onClose, onSaved }) {
           <option value="">— اختر حساب الإيراد —</option>
           {revenueAccounts.map((a) => <option key={a.id} value={a.id}>{a.code} - {a.name}</option>)}
         </select>
+
+        <label style={styles.label}>طريقة الدفع *</label>
+        <div style={styles.payRow}>
+          <button type="button" onClick={() => setPaymentMethod("credit")} disabled={saving}
+            style={{ ...styles.payBtn, ...(paymentMethod === "credit" ? styles.payBtnActive : {}) }}>
+            <span style={styles.payTitle}>📆 آجل (على الحساب)</span>
+            <span style={styles.payHint}>القيد على الذمم المدينة — العميل يدفع لاحقًا</span>
+          </button>
+          <button type="button" onClick={() => setPaymentMethod("cash")} disabled={saving}
+            style={{ ...styles.payBtn, ...(paymentMethod === "cash" ? styles.payBtnActive : {}) }}>
+            <span style={styles.payTitle}>💵 نقدي (دفع فوري)</span>
+            <span style={styles.payHint}>القيد على الخزينة مباشرة — مدفوعة بالكامل</span>
+          </button>
+        </div>
 
         <div style={styles.linesTitle}>بنود الفاتورة</div>
         {lines.map((ln, idx) => {
@@ -513,6 +528,12 @@ function InvoiceDetail({ invoice, company, sellerTaxNumber, onClose }) {
 }
 
 const styles = {
+  payRow: { display: "flex", gap: 12, marginBottom: 14 },
+  payBtn: { flex: 1, display: "flex", flexDirection: "column", alignItems: "flex-start", gap: 4, padding: "12px 14px", border: "2px solid #e2e8f0", borderRadius: 10, background: "#fff", cursor: "pointer", textAlign: "right" },
+  payBtnActive: { borderColor: "#059669", background: "#ecfdf5", boxShadow: "0 0 0 1px #059669" },
+  payTitle: { fontSize: 14, fontWeight: 700, color: "#0f172a" },
+  payHint: { fontSize: 11, color: "#64748b", lineHeight: 1.4 },
+
   page: { padding: "26px 30px 40px", minHeight: "100%", background: "#f4f6f9", fontFamily: "'IBM Plex Sans Arabic','Segoe UI',Tahoma,sans-serif", direction: "rtl" },
   pageHead: { marginBottom: 20 },
   pageTitle: { margin: 0, fontSize: 23, fontWeight: 700, color: "#059669", letterSpacing: "-.4px" },

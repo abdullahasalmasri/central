@@ -1,326 +1,425 @@
-import React, { useState } from "react";
-import {
-  Banknote, Users, CheckCircle2, AlertTriangle, CreditCard,
-  Plus, X, Calendar, ChevronDown, Wallet, Clock, TrendingDown
-} from "lucide-react";
+import { useState, useEffect } from "react";
+import { collection, query, where, getDocs, doc, getDoc } from "firebase/firestore";
+import { httpsCallable } from "firebase/functions";
+import { db, auth, functions } from "../firebase";
+import { exportToExcel, exportToPDF, datedFileName } from "../exportUtils";
 
 /* ============================================================
-   التحصيل والائتمان — قسم المالية
-   البيانات تجريبية. دوال backend المطلوبة (جديدة) مكتوبة بجانب كل مجموعة.
+   التحصيل — قسم المالية
+   تعرض الفواتير الآجلة (المتبقّي على كل عميل) وتسجّل سندات القبض.
+   سند القبض (createReceipt) يولّد قيدًا: مدين الخزينة / دائن الذمم المدينة،
+   ويحدّث المدفوع/المتبقّي/الحالة على الفاتورة. يدعم السداد الجزئي.
    ============================================================ */
 
-// 📊 البطاقات — مصدرها: getReceivables (دالة backend جديدة تُبنى)
-const KPIS = [
-  { id: "due",     label: "إجمالي المستحق",       value: "1,847,000", unit: "ر.س", icon: Wallet,       color: "#059669" },
-  { id: "debtors", label: "عملاء مدينون",          value: "23",        sub: "عميل",  icon: Users,        color: "#2563eb" },
-  { id: "collected", label: "محصّل هذا الشهر",     value: "612,000",   unit: "ر.س", icon: CheckCircle2, color: "#16a34a" },
-  { id: "overdue", label: "متأخر +٩٠ يوم",         value: "284,000",   unit: "ر.س", icon: AlertTriangle, color: "#dc2626" },
-];
-
-// ⏳ أعمار الديون — مصدرها: getReceivables (تجميع حسب تاريخ الفاتورة)
-const AGING = [
-  { label: "٠ – ٣٠ يوم",  value: 980000, pct: 53, color: "#16a34a" },
-  { label: "٣١ – ٦٠ يوم", value: 410000, pct: 22, color: "#ca8a04" },
-  { label: "٦١ – ٩٠ يوم", value: 173000, pct: 9,  color: "#ea580c" },
-  { label: "+٩٠ يوم",     value: 284000, pct: 16, color: "#dc2626" },
-];
-
-// 👥 العملاء المدينون — مصدرها: getReceivables + getCustomers + حدود الائتمان
-// status: ok = منتظم · over = تجاوز الائتمان · late = متأخر (>90 يوم)
-const CLIENTS = [
-  { name: "عقد أرامكو — الجبيل",      due: 420000, age: 25,  limit: 500000, status: "ok"   },
-  { name: "مدينة الملك عبدالله",      due: 310000, age: 48,  limit: 300000, status: "over" },
-  { name: "مشروع نيوم — الإسكان",     due: 256000, age: 95,  limit: 400000, status: "late" },
-  { name: "مشروع البحر الأحمر",       due: 198000, age: 12,  limit: 250000, status: "ok"   },
-  { name: "القدية — المرحلة الثانية", due: 167000, age: 67,  limit: 200000, status: "ok"   },
-  { name: "شركة الواحة للمقاولات",    due: 142000, age: 110, limit: 150000, status: "late" },
-  { name: "مجموعة الخليج الصناعية",   due: 98000,  age: 33,  limit: 120000, status: "ok"   },
-];
-
-const STATUS = {
-  ok:   { label: "منتظم",          cls: "ok"   },
-  over: { label: "تجاوز الائتمان",  cls: "over" },
-  late: { label: "متأخر",          cls: "late" },
+const STATUS_LABELS = { unpaid: "آجل", partial: "جزئي", paid: "مسدّد" };
+const STATUS_STYLE = {
+  unpaid: { background: "#fef3c7", color: "#92400e" },
+  partial: { background: "#dbeafe", color: "#1e40af" },
+  paid: { background: "#dcfce7", color: "#166534" },
 };
-
-const fmt = (n) => n.toLocaleString("en-US");
-
-const STYLES = `
-  *{margin:0;padding:0;box-sizing:border-box}
-  .col-root{
-    --bg:#f4f6f9; --panel:#fff; --ink:#161b26; --ink2:#5a6580; --ink3:#94a0b8;
-    --line:#e7ebf1; --line2:#dde2ec;
-    font-family:'IBM Plex Sans Arabic','Segoe UI',Tahoma,sans-serif;
-    direction:rtl; background:var(--bg); color:var(--ink); min-height:100vh;
-    padding:26px 30px; -webkit-font-smoothing:antialiased;
-  }
-  .col-num{font-variant-numeric:tabular-nums; letter-spacing:-.3px}
-
-  .col-head{display:flex; align-items:center; gap:14px; margin-bottom:24px; flex-wrap:wrap}
-  .col-head-ic{width:50px; height:50px; border-radius:13px; display:grid; place-items:center;
-    background:#0596691a; color:#059669; flex-shrink:0}
-  .col-title{font-size:23px; font-weight:700; letter-spacing:-.4px; line-height:1.1}
-  .col-sub{font-size:13px; color:var(--ink2); margin-top:2px}
-  .col-period{margin-right:auto; display:flex; align-items:center; gap:7px; height:42px; padding:0 15px;
-    background:var(--panel); border:1px solid var(--line2); border-radius:11px; cursor:pointer;
-    font-family:inherit; font-size:13.5px; font-weight:600; color:var(--ink)}
-  .col-period svg:first-child{color:#059669}
-
-  /* KPIs */
-  .col-kpis{display:grid; grid-template-columns:repeat(4,1fr); gap:14px; margin-bottom:16px}
-  .col-kpi{background:var(--panel); border:1px solid var(--line); border-radius:15px; padding:17px 18px;
-    position:relative; overflow:hidden}
-  .col-kpi::after{content:""; position:absolute; top:0; right:0; width:3px; height:100%; background:var(--c)}
-  .col-kpi-ic{width:38px; height:38px; border-radius:10px; display:grid; place-items:center;
-    background:color-mix(in srgb,var(--c) 14%,transparent); color:var(--c); margin-bottom:12px}
-  .col-kpi-label{font-size:12.5px; color:var(--ink2); font-weight:500; margin-bottom:5px}
-  .col-kpi-val{font-size:24px; font-weight:700}
-  .col-kpi-val .u{font-size:13px; color:var(--ink3); font-weight:600; margin-right:3px}
-  .col-kpi-val .s{font-size:13px; color:var(--ink3); font-weight:500; margin-right:4px}
-
-  /* AGING */
-  .col-card{background:var(--panel); border:1px solid var(--line); border-radius:16px; padding:20px; margin-bottom:16px}
-  .col-card-head{display:flex; align-items:center; justify-content:space-between; margin-bottom:16px}
-  .col-card-title{font-size:15.5px; font-weight:700}
-  .col-card-hint{font-size:12px; color:var(--ink3); font-weight:500}
-  .col-agebar{display:flex; height:13px; border-radius:7px; overflow:hidden; margin-bottom:16px}
-  .col-agebar i{height:100%}
-  .col-agegrid{display:grid; grid-template-columns:repeat(4,1fr); gap:12px}
-  .col-agecell{padding:13px 15px; border-radius:11px; background:var(--bg); border:1px solid var(--line)}
-  .col-agecell .dot{width:9px; height:9px; border-radius:50%; display:inline-block; margin-left:7px}
-  .col-agecell .al{font-size:12px; color:var(--ink2); font-weight:600}
-  .col-agecell .av{font-size:18px; font-weight:700; margin-top:6px}
-  .col-agecell .ap{font-size:11.5px; color:var(--ink3); font-weight:600; margin-top:1px}
-
-  /* ROW */
-  .col-row{display:grid; grid-template-columns:1.7fr 1fr; gap:16px; align-items:start}
-
-  /* TABLE */
-  .col-tablewrap{overflow-x:auto}
-  table.col-table{width:100%; border-collapse:collapse; min-width:560px}
-  .col-table th{text-align:right; font-size:11.5px; color:var(--ink3); font-weight:700; padding:0 10px 11px;
-    border-bottom:1px solid var(--line); white-space:nowrap}
-  .col-table td{padding:13px 10px; border-bottom:1px solid var(--line); font-size:13px; vertical-align:middle}
-  .col-table tr:last-child td{border-bottom:none}
-  .col-cname{font-weight:600; color:var(--ink); white-space:nowrap}
-  .col-cdue{font-weight:700; font-variant-numeric:tabular-nums; color:var(--ink)}
-  .col-cage{font-variant-numeric:tabular-nums; color:var(--ink2)}
-  .col-climit{font-variant-numeric:tabular-nums; color:var(--ink2); white-space:nowrap}
-  .col-pill{display:inline-flex; align-items:center; gap:5px; font-size:11px; font-weight:700;
-    padding:4px 10px; border-radius:999px; white-space:nowrap}
-  .col-pill.ok{color:#15803d; background:#dcfce7}
-  .col-pill.over{color:#b91c1c; background:#fee2e2}
-  .col-pill.late{color:#9a3412; background:#ffedd5}
-  .col-paybtn{display:inline-flex; align-items:center; gap:5px; font-family:inherit; font-size:12px; font-weight:700;
-    padding:7px 12px; border-radius:9px; border:1px solid #05966933; background:#05966914; color:#059669; cursor:pointer; white-space:nowrap}
-  .col-paybtn:hover{background:#05966922}
-
-  /* ALERTS */
-  .col-alerts{display:flex; flex-direction:column; gap:10px}
-  .col-alert{display:flex; gap:11px; align-items:flex-start; padding:13px 14px; border-radius:12px;
-    background:#fef2f2; border:1px solid #fecaca}
-  .col-alert.warn{background:#fffbeb; border-color:#fde68a}
-  .col-alert-ic{width:30px; height:30px; border-radius:8px; display:grid; place-items:center; flex-shrink:0}
-  .col-alert.over-al .col-alert-ic{background:#fee2e2; color:#dc2626}
-  .col-alert.warn .col-alert-ic{background:#fef3c7; color:#d97706}
-  .col-alert-t{font-size:13px; font-weight:700; margin-bottom:2px}
-  .col-alert-v{font-size:12px; color:var(--ink2); line-height:1.5}
-  .col-empty{text-align:center; padding:24px; color:var(--ink3); font-size:13px}
-
-  /* MODAL */
-  .col-overlay{position:fixed; inset:0; background:rgba(15,23,42,.5); display:grid; place-items:center; z-index:50; padding:20px}
-  .col-modal{background:var(--panel); border-radius:18px; width:100%; max-width:400px; padding:24px; box-shadow:0 20px 60px rgba(0,0,0,.3)}
-  .col-modal-head{display:flex; align-items:center; justify-content:space-between; margin-bottom:5px}
-  .col-modal-title{font-size:18px; font-weight:700}
-  .col-modal-close{width:34px; height:34px; border-radius:9px; border:none; background:var(--bg); cursor:pointer; display:grid; place-items:center; color:var(--ink2)}
-  .col-modal-sub{font-size:13px; color:var(--ink2); margin-bottom:18px}
-  .col-field{margin-bottom:14px}
-  .col-field label{display:block; font-size:12.5px; font-weight:600; color:var(--ink2); margin-bottom:6px}
-  .col-field input{width:100%; height:44px; border:1px solid var(--line2); border-radius:10px; padding:0 13px;
-    font-family:inherit; font-size:14px; color:var(--ink); outline:none}
-  .col-field input:focus{border-color:#059669}
-  .col-modal-actions{display:flex; gap:10px; margin-top:20px}
-  .col-btn{flex:1; height:46px; border-radius:11px; border:none; font-family:inherit; font-size:14px; font-weight:700; cursor:pointer}
-  .col-btn.primary{background:#059669; color:#fff}
-  .col-btn.primary:hover{background:#047857}
-  .col-btn.ghost{background:var(--bg); color:var(--ink2)}
-
-  @media(max-width:1000px){
-    .col-kpis,.col-agegrid{grid-template-columns:repeat(2,1fr)}
-    .col-row{grid-template-columns:1fr}
-  }
-  @media(max-width:560px){
-    .col-root{padding:18px 14px}
-    .col-kpis{grid-template-columns:1fr}
-    .col-title{font-size:19px}
-  }
-`;
+const METHOD_LABELS = { cash: "نقدًا", transfer: "تحويل", cheque: "شيك" };
 
 export default function CollectionsView() {
-  const [payFor, setPayFor] = useState(null);
-  const overLimit = CLIENTS.filter((c) => c.status === "over");
-  const veryLate = CLIENTS.filter((c) => c.status === "late");
+  const [tenantId, setTenantId] = useState("");
+  const [companyName, setCompanyName] = useState("الشركة");
+  const [invoices, setInvoices] = useState([]);
+  const [receipts, setReceipts] = useState([]);
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState("");
+  const [tab, setTab] = useState("due");
+  const [receiptInvoice, setReceiptInvoice] = useState(null);
+
+  // 1) هوية المستخدم (tenantId + اسم المنشأة)
+  useEffect(() => {
+    (async () => {
+      try {
+        const uid = auth.currentUser && auth.currentUser.uid;
+        if (!uid) { setError("لم يتم تسجيل الدخول."); setLoading(false); return; }
+        const userSnap = await getDoc(doc(db, "users", uid));
+        const tid = userSnap.exists() ? userSnap.data().tenantId : null;
+        if (!tid) { setError("تعذّر تحديد المنشأة لهذا المستخدم."); setLoading(false); return; }
+        try {
+          const tSnap = await getDoc(doc(db, "tenants", tid));
+          if (tSnap.exists() && tSnap.data().name) setCompanyName(tSnap.data().name);
+        } catch (e) { /* اختياري */ }
+        setTenantId(tid);
+      } catch (e) {
+        setError("تعذّر تحميل بيانات المستخدم.");
+        setLoading(false);
+      }
+    })();
+  }, []);
+
+  // 2) عند توفّر tenantId، حمّل الفواتير والسندات
+  useEffect(() => {
+    if (tenantId) loadData();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [tenantId]);
+
+  async function loadData() {
+    setLoading(true);
+    setError("");
+    try {
+      const [invSnap, recSnap] = await Promise.all([
+        getDocs(query(collection(db, "invoices"), where("tenantId", "==", tenantId))),
+        getDocs(query(collection(db, "receipts"), where("tenantId", "==", tenantId))),
+      ]);
+      const invList = invSnap.docs.map((d) => ({ id: d.id, ...d.data() }));
+      invList.sort((a, b) => (b.invoiceNumber || 0) - (a.invoiceNumber || 0));
+      setInvoices(invList);
+
+      const recList = recSnap.docs.map((d) => ({ id: d.id, ...d.data() }));
+      recList.sort((a, b) => (b.receiptNumber || 0) - (a.receiptNumber || 0));
+      setReceipts(recList);
+    } catch (err) {
+      setError("تعذّر تحميل البيانات.");
+    } finally {
+      setLoading(false);
+    }
+  }
+
+  // الفواتير الآجلة فقط (النقدية مدفوعة أصلاً). توافق الفواتير القديمة.
+  function invMeta(inv) {
+    const method = inv.paymentMethod || "credit";
+    const total = Number(inv.total) || 0;
+    const paid = Number(inv.paidAmount) || 0;
+    const remaining = inv.remainingAmount != null ? Number(inv.remainingAmount) : total;
+    let status = inv.paymentStatus;
+    if (!status) status = remaining <= 0.01 ? "paid" : (paid > 0 ? "partial" : "unpaid");
+    return { method, total, paid, remaining, status };
+  }
+
+  const creditInvoices = invoices
+    .map((inv) => ({ inv, m: invMeta(inv) }))
+    .filter((x) => x.m.method !== "cash");
+
+  // غير المسددة بالكامل تظهر أولاً
+  const dueList = [...creditInvoices].sort((a, b) => {
+    const aOpen = a.m.remaining > 0.01 ? 0 : 1;
+    const bOpen = b.m.remaining > 0.01 ? 0 : 1;
+    if (aOpen !== bOpen) return aOpen - bOpen;
+    return (b.inv.invoiceNumber || 0) - (a.inv.invoiceNumber || 0);
+  });
+
+  // إجماليات لوحة المؤشرات
+  const totalReceivable = creditInvoices.reduce((s, x) => s + x.m.remaining, 0);
+  const openCount = creditInvoices.filter((x) => x.m.remaining > 0.01).length;
+  const totalCollected = receipts.reduce((s, r) => s + (Number(r.amount) || 0), 0);
+
+  const company = companyName;
+
+  // تصدير سجل السندات
+  function buildReceiptRows() {
+    return receipts.map((r) => ({
+      number: `REC-${r.receiptNumber}`,
+      date: r.date,
+      invoice: r.invoiceNumber ? `INV-${r.invoiceNumber}` : "",
+      customer: r.customerSnapshot ? r.customerSnapshot.name : "",
+      method: METHOD_LABELS[r.method] || r.method,
+      amount: r.amount,
+    }));
+  }
+  const receiptColumns = [
+    { key: "number", header: "رقم السند" },
+    { key: "date", header: "التاريخ" },
+    { key: "invoice", header: "الفاتورة" },
+    { key: "customer", header: "العميل" },
+    { key: "method", header: "طريقة الاستلام" },
+    { key: "amount", header: "المبلغ" },
+  ];
+  const exportExcel = () => exportToExcel({ rows: buildReceiptRows(), columns: receiptColumns, fileName: datedFileName("سندات-القبض"), sheetName: "سندات القبض" });
+  const exportPDF = () => exportToPDF({ rows: buildReceiptRows(), columns: receiptColumns, fileName: datedFileName("سندات-القبض"), header: { companyName: company, title: "سجل سندات القبض", subtitle: "التحصيل" } });
 
   return (
-    <div className="col-root">
-      <style>{STYLES}</style>
+    <div style={styles.page}>
+      <h1 style={styles.pageTitle}>التحصيل</h1>
+      <p style={styles.pageSub}>تسجيل سندات القبض على الفواتير الآجلة ومتابعة المتبقّي على العملاء.</p>
 
-      {/* HEAD */}
-      <div className="col-head">
-        <div className="col-head-ic"><TrendingDown size={25} /></div>
-        <div>
-          <div className="col-title">التحصيل والائتمان</div>
-          <div className="col-sub">متابعة الذمم المدينة وحدود الائتمان · المالية</div>
+      {/* لوحة المؤشرات */}
+      <div style={styles.cards}>
+        <div style={styles.card}>
+          <span style={styles.cardLabel}>إجمالي المتبقّي (ذمم مدينة)</span>
+          <span style={styles.cardValue} dir="ltr">{totalReceivable.toLocaleString()} ﷼</span>
         </div>
-        <button className="col-period">
-          <Calendar size={16} /> هذا الشهر <ChevronDown size={15} />
+        <div style={styles.card}>
+          <span style={styles.cardLabel}>فواتير غير مسددة</span>
+          <span style={styles.cardValue}>{openCount}</span>
+        </div>
+        <div style={styles.card}>
+          <span style={styles.cardLabel}>إجمالي المُحصّل</span>
+          <span style={{ ...styles.cardValue, color: "#16a34a" }} dir="ltr">{totalCollected.toLocaleString()} ﷼</span>
+        </div>
+      </div>
+
+      {/* تبويبات */}
+      <div style={styles.tabs}>
+        <button style={{ ...styles.tab, ...(tab === "due" ? styles.tabActive : {}) }} onClick={() => setTab("due")}>
+          📋 الفواتير الآجلة
+        </button>
+        <button style={{ ...styles.tab, ...(tab === "receipts" ? styles.tabActive : {}) }} onClick={() => setTab("receipts")}>
+          🧾 سجل السندات
         </button>
       </div>
 
-      {/* KPIs */}
-      <div className="col-kpis">
-        {KPIS.map((k) => {
-          const Icon = k.icon;
-          return (
-            <div className="col-kpi" key={k.id} style={{ "--c": k.color }}>
-              <div className="col-kpi-ic"><Icon size={19} /></div>
-              <div className="col-kpi-label">{k.label}</div>
-              <div className="col-kpi-val col-num">
-                {k.value}
-                {k.unit && <span className="u">{k.unit}</span>}
-                {k.sub && <span className="s">{k.sub}</span>}
-              </div>
+      {error ? <div style={styles.error}>{error}</div> : null}
+      {loading ? <p style={styles.muted}>جارٍ التحميل...</p> : (
+        tab === "due" ? (
+          dueList.length === 0 ? (
+            <div style={styles.empty}>
+              <p style={styles.muted}>لا توجد فواتير آجلة. الفواتير النقدية مدفوعة تلقائيًا.</p>
             </div>
-          );
-        })}
-      </div>
-
-      {/* AGING */}
-      <div className="col-card">
-        <div className="col-card-head">
-          <span className="col-card-title">أعمار الديون</span>
-          <span className="col-card-hint">توزيع المستحقات حسب تاريخ الاستحقاق</span>
-        </div>
-        <div className="col-agebar">
-          {AGING.map((a) => (
-            <i key={a.label} style={{ width: `${a.pct}%`, background: a.color }} />
-          ))}
-        </div>
-        <div className="col-agegrid">
-          {AGING.map((a) => (
-            <div className="col-agecell" key={a.label}>
-              <div>
-                <span className="dot" style={{ background: a.color }} />
-                <span className="al">{a.label}</span>
-              </div>
-              <div className="av col-num">{fmt(a.value)}</div>
-              <div className="ap">{a.pct}٪ من المستحق</div>
-            </div>
-          ))}
-        </div>
-      </div>
-
-      {/* ROW: TABLE + ALERTS */}
-      <div className="col-row">
-
-        {/* TABLE */}
-        <div className="col-card" style={{ marginBottom: 0 }}>
-          <div className="col-card-head">
-            <span className="col-card-title">العملاء المدينون</span>
-            <span className="col-card-hint">{CLIENTS.length} عميل</span>
-          </div>
-          <div className="col-tablewrap">
-            <table className="col-table">
-              <thead>
-                <tr>
-                  <th>العميل</th>
-                  <th>المستحق</th>
-                  <th>أقدم دين</th>
-                  <th>حد الائتمان</th>
-                  <th>الحالة</th>
-                  <th></th>
-                </tr>
-              </thead>
-              <tbody>
-                {CLIENTS.map((c, i) => {
-                  const st = STATUS[c.status];
-                  return (
-                    <tr key={i}>
-                      <td className="col-cname">{c.name}</td>
-                      <td className="col-cdue">{fmt(c.due)}</td>
-                      <td className="col-cage">{c.age} يوم</td>
-                      <td className="col-climit">{fmt(c.due)} / {fmt(c.limit)}</td>
-                      <td><span className={`col-pill ${st.cls}`}>{st.label}</span></td>
-                      <td>
-                        <button className="col-paybtn" onClick={() => setPayFor(c)}>
-                          <Plus size={13} /> دفعة
-                        </button>
+          ) : (
+            <div style={styles.panel}>
+              <table style={styles.table}>
+                <thead>
+                  <tr>
+                    <th style={styles.th}>الفاتورة</th>
+                    <th style={styles.th}>العميل</th>
+                    <th style={styles.thAmount}>الإجمالي</th>
+                    <th style={styles.thAmount}>المدفوع</th>
+                    <th style={styles.thAmount}>المتبقّي</th>
+                    <th style={styles.thCenter}>الحالة</th>
+                    <th style={styles.thCenter}>إجراء</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {dueList.map(({ inv, m }) => (
+                    <tr key={inv.id}>
+                      <td style={styles.tdCode} dir="ltr">INV-{inv.invoiceNumber}</td>
+                      <td style={styles.tdName}>{inv.customerSnapshot ? inv.customerSnapshot.name : "—"}</td>
+                      <td style={styles.tdAmount} dir="ltr">{m.total.toLocaleString()}</td>
+                      <td style={styles.tdAmount} dir="ltr">{m.paid.toLocaleString()}</td>
+                      <td style={{ ...styles.tdAmount, fontWeight: 700, color: m.remaining > 0.01 ? "#b45309" : "#16a34a" }} dir="ltr">{m.remaining.toLocaleString()}</td>
+                      <td style={styles.tdCenter}>
+                        <span style={{ ...styles.badge, ...(STATUS_STYLE[m.status] || {}) }}>{STATUS_LABELS[m.status] || m.status}</span>
+                      </td>
+                      <td style={styles.tdCenter}>
+                        {m.remaining > 0.01 ? (
+                          <button style={styles.collectBtn} onClick={() => setReceiptInvoice({ inv, m })}>💰 تحصيل</button>
+                        ) : (
+                          <span style={styles.doneTag}>✓ مكتمل</span>
+                        )}
                       </td>
                     </tr>
-                  );
-                })}
-              </tbody>
-            </table>
-          </div>
-        </div>
-
-        {/* ALERTS */}
-        <div className="col-card" style={{ marginBottom: 0 }}>
-          <div className="col-card-head">
-            <span className="col-card-title">تنبيهات الائتمان</span>
-            <CreditCard size={17} style={{ color: "#94a0b8" }} />
-          </div>
-          <div className="col-alerts">
-            {overLimit.map((c, i) => (
-              <div className="col-alert over-al" key={"o" + i}>
-                <div className="col-alert-ic"><AlertTriangle size={16} /></div>
-                <div>
-                  <div className="col-alert-t">{c.name}</div>
-                  <div className="col-alert-v">تجاوز حد الائتمان — مستحق {fmt(c.due)} مقابل حد {fmt(c.limit)}</div>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          )
+        ) : (
+          <>
+            <div style={styles.toolbar}>
+              <span style={styles.summaryText}>{receipts.length} سند قبض</span>
+              {receipts.length > 0 ? (
+                <div style={styles.toolBtns}>
+                  <button style={styles.pdfBtn} onClick={exportPDF}>⬇ PDF</button>
+                  <button style={styles.exportBtn} onClick={exportExcel}>⬇ Excel</button>
                 </div>
+              ) : null}
+            </div>
+            {receipts.length === 0 ? (
+              <div style={styles.empty}>
+                <p style={styles.muted}>لا توجد سندات قبض بعد. حصّل فاتورة آجلة ليظهر سندها هنا.</p>
               </div>
-            ))}
-            {veryLate.map((c, i) => (
-              <div className="col-alert warn" key={"l" + i}>
-                <div className="col-alert-ic"><Clock size={16} /></div>
-                <div>
-                  <div className="col-alert-t">{c.name}</div>
-                  <div className="col-alert-v">دين متأخر {c.age} يوم — يحتاج متابعة تحصيل</div>
-                </div>
+            ) : (
+              <div style={styles.panel}>
+                <table style={styles.table}>
+                  <thead>
+                    <tr>
+                      <th style={styles.th}>السند</th>
+                      <th style={styles.th}>التاريخ</th>
+                      <th style={styles.th}>الفاتورة</th>
+                      <th style={styles.th}>العميل</th>
+                      <th style={styles.thCenter}>الطريقة</th>
+                      <th style={styles.thAmount}>المبلغ</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {receipts.map((r) => (
+                      <tr key={r.id}>
+                        <td style={styles.tdCode} dir="ltr">REC-{r.receiptNumber}</td>
+                        <td style={styles.tdName} dir="ltr">{r.date}</td>
+                        <td style={styles.tdCode} dir="ltr">{r.invoiceNumber ? `INV-${r.invoiceNumber}` : "—"}</td>
+                        <td style={styles.tdName}>{r.customerSnapshot ? r.customerSnapshot.name : "—"}</td>
+                        <td style={styles.tdCenter}>{METHOD_LABELS[r.method] || r.method}</td>
+                        <td style={{ ...styles.tdAmount, fontWeight: 700, color: "#16a34a" }} dir="ltr">{(Number(r.amount) || 0).toLocaleString()}</td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
               </div>
-            ))}
-            {overLimit.length === 0 && veryLate.length === 0 && (
-              <div className="col-empty">لا تنبيهات — كل العملاء ضمن الحدود ✓</div>
             )}
-          </div>
-        </div>
-
-      </div>
-
-      {/* PAYMENT MODAL */}
-      {payFor && (
-        <div className="col-overlay" onClick={() => setPayFor(null)}>
-          <div className="col-modal" onClick={(e) => e.stopPropagation()}>
-            <div className="col-modal-head">
-              <span className="col-modal-title">تسجيل دفعة</span>
-              <button className="col-modal-close" onClick={() => setPayFor(null)}><X size={18} /></button>
-            </div>
-            <div className="col-modal-sub">{payFor.name} · المستحق الحالي {fmt(payFor.due)} ر.س</div>
-            <div className="col-field">
-              <label>مبلغ الدفعة (ر.س)</label>
-              <input type="number" placeholder="0" autoFocus />
-            </div>
-            <div className="col-field">
-              <label>تاريخ الدفعة</label>
-              <input type="date" />
-            </div>
-            <div className="col-modal-actions">
-              <button className="col-btn ghost" onClick={() => setPayFor(null)}>إلغاء</button>
-              <button className="col-btn primary" onClick={() => setPayFor(null)}>تسجيل الدفعة</button>
-            </div>
-          </div>
-        </div>
+          </>
+        )
       )}
+
+      {receiptInvoice ? (
+        <ReceiptForm
+          invoice={receiptInvoice.inv}
+          meta={receiptInvoice.m}
+          onClose={() => setReceiptInvoice(null)}
+          onSaved={() => { setReceiptInvoice(null); loadData(); }}
+        />
+      ) : null}
     </div>
   );
 }
+
+// ═══════════ مودال تسجيل سند قبض ═══════════
+function ReceiptForm({ invoice, meta, onClose, onSaved }) {
+  const today = new Date().toISOString().slice(0, 10);
+  const [amount, setAmount] = useState(String(meta.remaining));
+  const [date, setDate] = useState(today);
+  const [method, setMethod] = useState("cash");
+  const [notes, setNotes] = useState("");
+  const [err, setErr] = useState("");
+  const [saving, setSaving] = useState(false);
+
+  const amountNum = Number(amount) || 0;
+  const willRemain = Math.round((meta.remaining - amountNum) * 100) / 100;
+
+  async function save() {
+    setErr("");
+    if (!(amountNum > 0)) { setErr("أدخل مبلغًا أكبر من صفر."); return; }
+    if (amountNum > meta.remaining + 0.01) { setErr(`المبلغ يتجاوز المتبقّي (${meta.remaining.toLocaleString()} ﷼).`); return; }
+
+    setSaving(true);
+    try {
+      const fn = httpsCallable(functions, "createReceipt");
+      await fn({ invoiceId: invoice.id, amount: amountNum, date, method, notes });
+      onSaved();
+    } catch (e) {
+      setErr(e.message || "تعذّر تسجيل السند.");
+    } finally {
+      setSaving(false);
+    }
+  }
+
+  return (
+    <div style={styles.overlay} onClick={onClose}>
+      <div style={styles.modal} onClick={(e) => e.stopPropagation()}>
+        <div style={styles.modalHead}>
+          <h2 style={styles.modalTitle}>سند قبض — INV-{invoice.invoiceNumber}</h2>
+          <button style={styles.close} onClick={onClose}>✕</button>
+        </div>
+
+        <div style={styles.invoiceSummary}>
+          <div style={styles.sumRow}><span>العميل</span><span style={styles.sumStrong}>{invoice.customerSnapshot ? invoice.customerSnapshot.name : "—"}</span></div>
+          <div style={styles.sumRow}><span>إجمالي الفاتورة</span><span dir="ltr">{meta.total.toLocaleString()} ﷼</span></div>
+          <div style={styles.sumRow}><span>المدفوع سابقًا</span><span dir="ltr">{meta.paid.toLocaleString()} ﷼</span></div>
+          <div style={{ ...styles.sumRow, ...styles.sumRemaining }}><span>المتبقّي</span><span dir="ltr">{meta.remaining.toLocaleString()} ﷼</span></div>
+        </div>
+
+        {err ? <div style={styles.error}>{err}</div> : null}
+
+        <div style={styles.row}>
+          <div style={{ flex: 1 }}>
+            <label style={styles.label}>المبلغ المحصّل *</label>
+            <input style={styles.input} type="number" min="0" value={amount} onChange={(e) => setAmount(e.target.value)} disabled={saving} dir="ltr" />
+            <div style={styles.quickRow}>
+              <button type="button" style={styles.quickBtn} onClick={() => setAmount(String(meta.remaining))} disabled={saving}>المبلغ كامل</button>
+              <button type="button" style={styles.quickBtn} onClick={() => setAmount(String(Math.round((meta.remaining / 2) * 100) / 100))} disabled={saving}>النصف</button>
+            </div>
+          </div>
+          <div style={{ flex: 1 }}>
+            <label style={styles.label}>تاريخ التحصيل *</label>
+            <input style={styles.input} type="date" value={date} onChange={(e) => setDate(e.target.value)} disabled={saving} dir="ltr" />
+          </div>
+        </div>
+
+        <label style={styles.label}>طريقة الاستلام</label>
+        <div style={styles.methodRow}>
+          {["cash", "transfer", "cheque"].map((m) => (
+            <button key={m} type="button" onClick={() => setMethod(m)} disabled={saving}
+              style={{ ...styles.methodBtn, ...(method === m ? styles.methodBtnActive : {}) }}>
+              {METHOD_LABELS[m]}
+            </button>
+          ))}
+        </div>
+
+        <label style={styles.label}>ملاحظات (اختياري)</label>
+        <input style={styles.input} value={notes} onChange={(e) => setNotes(e.target.value)} placeholder="رقم التحويل، اسم البنك..." disabled={saving} />
+
+        {amountNum > 0 && amountNum <= meta.remaining + 0.01 ? (
+          <div style={styles.preview}>
+            بعد هذا السند: المتبقّي = <strong dir="ltr">{(willRemain < 0 ? 0 : willRemain).toLocaleString()} ﷼</strong>
+            {willRemain <= 0.01 ? " — الفاتورة تُسدَّد بالكامل ✓" : " — سداد جزئي"}
+          </div>
+        ) : null}
+
+        <div style={styles.modalActions}>
+          <button style={styles.cancelBtn} onClick={onClose} disabled={saving}>إلغاء</button>
+          <button style={styles.saveBtn} onClick={save} disabled={saving}>
+            {saving ? "جارٍ الحفظ..." : "تسجيل السند"}
+          </button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+const styles = {
+  page: { padding: "26px 30px 40px", minHeight: "100%", background: "#f4f6f9", fontFamily: "'IBM Plex Sans Arabic', system-ui, sans-serif", direction: "rtl" },
+  pageTitle: { fontSize: 24, fontWeight: 800, color: "#059669", margin: "0 0 4px" },
+  pageSub: { fontSize: 14, color: "#64748b", margin: "0 0 22px" },
+
+  cards: { display: "flex", gap: 14, marginBottom: 22, flexWrap: "wrap" },
+  card: { flex: 1, minWidth: 180, display: "flex", flexDirection: "column", gap: 6, padding: "16px 18px", background: "#fff", border: "1px solid #e2e8f0", borderRadius: 12 },
+  cardLabel: { fontSize: 13, color: "#64748b" },
+  cardValue: { fontSize: 22, fontWeight: 800, color: "#0f172a", fontFamily: "monospace" },
+
+  tabs: { display: "flex", gap: 8, marginBottom: 18, borderBottom: "2px solid #e2e8f0" },
+  tab: { padding: "10px 18px", fontSize: 14, fontWeight: 600, color: "#64748b", background: "none", border: "none", borderBottom: "3px solid transparent", cursor: "pointer", marginBottom: -2 },
+  tabActive: { color: "#059669", borderBottomColor: "#059669" },
+
+  panel: { background: "#fff", border: "1px solid #e2e8f0", borderRadius: 12, overflow: "hidden" },
+  table: { width: "100%", borderCollapse: "collapse" },
+  th: { textAlign: "right", padding: "12px 14px", fontSize: 13, color: "#64748b", borderBottom: "2px solid #e2e8f0", background: "#f8fafc" },
+  thAmount: { textAlign: "left", padding: "12px 14px", fontSize: 13, color: "#64748b", borderBottom: "2px solid #e2e8f0", background: "#f8fafc" },
+  thCenter: { textAlign: "center", padding: "12px 14px", fontSize: 13, color: "#64748b", borderBottom: "2px solid #e2e8f0", background: "#f8fafc" },
+  tdCode: { padding: "11px 14px", fontSize: 14, fontWeight: 600, color: "#475569", fontFamily: "monospace", borderBottom: "1px solid #f1f5f9" },
+  tdName: { padding: "11px 14px", fontSize: 14, borderBottom: "1px solid #f1f5f9" },
+  tdAmount: { padding: "11px 14px", fontSize: 14, textAlign: "left", borderBottom: "1px solid #f1f5f9", fontFamily: "monospace" },
+  tdCenter: { padding: "11px 14px", fontSize: 14, textAlign: "center", borderBottom: "1px solid #f1f5f9" },
+
+  badge: { display: "inline-block", padding: "3px 12px", borderRadius: 20, fontSize: 12, fontWeight: 700 },
+  collectBtn: { padding: "7px 16px", fontSize: 13, fontWeight: 700, color: "#fff", background: "#059669", border: "none", borderRadius: 8, cursor: "pointer" },
+  doneTag: { fontSize: 13, color: "#16a34a", fontWeight: 600 },
+
+  toolbar: { display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 16, flexWrap: "wrap", gap: 10 },
+  summaryText: { fontSize: 14, color: "#15803d", fontWeight: 600 },
+  toolBtns: { display: "flex", gap: 8 },
+  pdfBtn: { padding: "9px 14px", fontSize: 13, fontWeight: 600, color: "#b91c1c", background: "#fee2e2", border: "none", borderRadius: 8, cursor: "pointer" },
+  exportBtn: { padding: "9px 14px", fontSize: 13, fontWeight: 600, color: "#15803d", background: "#dcfce7", border: "none", borderRadius: 8, cursor: "pointer" },
+
+  empty: { padding: 40, background: "#fff", border: "1px solid #e2e8f0", borderRadius: 12, textAlign: "center" },
+  muted: { color: "#94a3b8", fontSize: 14 },
+  error: { padding: "10px 12px", background: "#fee2e2", color: "#b91c1c", borderRadius: 8, fontSize: 14, marginBottom: 16 },
+
+  overlay: { position: "fixed", inset: 0, background: "rgba(15,23,42,.5)", display: "flex", alignItems: "center", justifyContent: "center", zIndex: 1000, padding: 16 },
+  modal: { background: "#fff", borderRadius: 16, width: "100%", maxWidth: 480, maxHeight: "90vh", overflowY: "auto", padding: 24, direction: "rtl", fontFamily: "'IBM Plex Sans Arabic', system-ui, sans-serif" },
+  modalHead: { display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 18 },
+  modalTitle: { fontSize: 18, fontWeight: 800, color: "#0f172a", margin: 0 },
+  close: { fontSize: 20, color: "#94a3b8", background: "none", border: "none", cursor: "pointer" },
+
+  invoiceSummary: { background: "#f8fafc", border: "1px solid #e2e8f0", borderRadius: 10, padding: "12px 16px", marginBottom: 18 },
+  sumRow: { display: "flex", justifyContent: "space-between", fontSize: 14, color: "#475569", padding: "4px 0", fontFamily: "monospace" },
+  sumStrong: { fontWeight: 700, color: "#0f172a" },
+  sumRemaining: { borderTop: "1px dashed #cbd5e1", marginTop: 6, paddingTop: 8, fontWeight: 800, color: "#b45309", fontSize: 16 },
+
+  row: { display: "flex", gap: 12, marginBottom: 4 },
+  label: { display: "block", fontSize: 13, fontWeight: 600, color: "#334155", margin: "12px 0 6px" },
+  input: { width: "100%", padding: "10px 12px", fontSize: 14, border: "1px solid #cbd5e1", borderRadius: 8, boxSizing: "border-box", fontFamily: "inherit" },
+  quickRow: { display: "flex", gap: 6, marginTop: 6 },
+  quickBtn: { flex: 1, padding: "6px 8px", fontSize: 12, fontWeight: 600, color: "#059669", background: "#ecfdf5", border: "1px solid #a7f3d0", borderRadius: 6, cursor: "pointer" },
+
+  methodRow: { display: "flex", gap: 8 },
+  methodBtn: { flex: 1, padding: "9px 8px", fontSize: 13, fontWeight: 600, color: "#475569", background: "#fff", border: "2px solid #e2e8f0", borderRadius: 8, cursor: "pointer" },
+  methodBtnActive: { borderColor: "#059669", background: "#ecfdf5", color: "#059669" },
+
+  preview: { marginTop: 14, padding: "10px 14px", background: "#f0fdf4", color: "#15803d", borderRadius: 8, fontSize: 13 },
+
+  modalActions: { display: "flex", gap: 10, marginTop: 22 },
+  cancelBtn: { flex: 1, padding: "11px", fontSize: 14, fontWeight: 600, color: "#475569", background: "#f1f5f9", border: "none", borderRadius: 8, cursor: "pointer" },
+  saveBtn: { flex: 2, padding: "11px", fontSize: 14, fontWeight: 700, color: "#fff", background: "#059669", border: "none", borderRadius: 8, cursor: "pointer" },
+};
