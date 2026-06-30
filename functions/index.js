@@ -75,6 +75,8 @@ const {
   ALL_AUDIT_STATUS,
   buildFindingDoc,
   buildRatingDoc,
+  buildImprovementDoc,
+  ALL_IMPROVEMENT_STATUS,
   ALL_FINDING_SEVERITY,
   ALL_FINDING_STATUS,
   ALL_DISPUTE_TYPE,
@@ -8572,6 +8574,172 @@ exports.getNPSData = onCall(async (request) => {
     if (err instanceof HttpsError) throw err;
     console.error("getNPSData failed:", err);
     throw new HttpsError("internal", "تعذّر تحميل بيانات رضا العملاء.");
+  }
+});
+
+// ═══════════════════════════════════════════════════════
+// ===== التميز والجودة: تحسين العمليات =====
+// ═══════════════════════════════════════════════════════
+
+// إنشاء مبادرة تحسين
+exports.createImprovement = onCall(async (request) => {
+  try {
+    const callerTenantId = await requireModule(request.auth, MODULES.QUALITY);
+    const data = request.data || {};
+    const name = typeof data.name === "string" ? data.name.trim() : "";
+    if (name.length < 2) throw new HttpsError("invalid-argument", "اسم المبادرة مطلوب (حرفان على الأقل).");
+
+    const tenantRef = db.collection(COLLECTIONS.TENANTS).doc(callerTenantId);
+    const impRef = db.collection(COLLECTIONS.IMPROVEMENTS).doc();
+    const result = await db.runTransaction(async (tx) => {
+      const tenantSnap = await tx.get(tenantRef);
+      if (!tenantSnap.exists) throw new HttpsError("failed-precondition", "الشركة غير موجودة.");
+      const nextNumber = (tenantSnap.data().lastImprovementNumber || 0) + 1;
+      const impDoc = buildImprovementDoc({
+        tenantId: callerTenantId,
+        improvementNumber: nextNumber,
+        name: name,
+        department: typeof data.department === "string" ? data.department.trim() : null,
+        progress: data.progress,
+        status: data.status,
+        savings: Number(data.savings) || 0,
+        timeSavedHours: Number(data.timeSavedHours) || 0,
+        beforeMetric: typeof data.beforeMetric === "string" ? data.beforeMetric.trim() : null,
+        afterMetric: typeof data.afterMetric === "string" ? data.afterMetric.trim() : null,
+        notes: typeof data.notes === "string" ? data.notes.trim() : null,
+        createdBy: request.auth.uid,
+        createdAt: FieldValue.serverTimestamp(),
+      });
+      tx.set(impRef, impDoc);
+      tx.update(tenantRef, { lastImprovementNumber: nextNumber });
+      return { improvementNumber: nextNumber };
+    });
+    return { id: impRef.id, improvementNumber: result.improvementNumber };
+  } catch (err) {
+    if (err instanceof HttpsError) throw err;
+    console.error("createImprovement failed:", err);
+    throw new HttpsError("internal", "تعذّر إنشاء المبادرة.");
+  }
+});
+
+// تعديل مبادرة تحسين
+exports.updateImprovement = onCall(async (request) => {
+  try {
+    const callerTenantId = await requireModule(request.auth, MODULES.QUALITY);
+    const data = request.data || {};
+    const improvementId = typeof data.improvementId === "string" ? data.improvementId.trim() : "";
+    if (!improvementId) throw new HttpsError("invalid-argument", "يجب تحديد المبادرة.");
+
+    const ref = db.collection(COLLECTIONS.IMPROVEMENTS).doc(improvementId);
+    const doc = await ref.get();
+    if (!doc.exists || doc.data().tenantId !== callerTenantId) throw new HttpsError("invalid-argument", "المبادرة غير موجودة.");
+
+    const update = {};
+    if (typeof data.name === "string") {
+      const n = data.name.trim();
+      if (n.length < 2) throw new HttpsError("invalid-argument", "اسم المبادرة قصير.");
+      update.name = n;
+    }
+    if (typeof data.department === "string") update.department = data.department.trim() || null;
+    if (typeof data.status === "string") {
+      if (!ALL_IMPROVEMENT_STATUS.includes(data.status)) throw new HttpsError("invalid-argument", "حالة غير صحيحة.");
+      update.status = data.status;
+    }
+    if (data.progress !== undefined) {
+      let p = Number(data.progress);
+      if (!Number.isFinite(p)) throw new HttpsError("invalid-argument", "نسبة التقدّم غير صحيحة.");
+      if (p < 0) p = 0; if (p > 100) p = 100;
+      update.progress = Math.round(p);
+    }
+    ["savings", "timeSavedHours"].forEach((k) => {
+      if (data[k] !== undefined) {
+        const v = Number(data[k]);
+        if (!(v >= 0)) throw new HttpsError("invalid-argument", `قيمة غير صحيحة (${k}).`);
+        update[k] = v;
+      }
+    });
+    if (typeof data.beforeMetric === "string") update.beforeMetric = data.beforeMetric.trim() || null;
+    if (typeof data.afterMetric === "string") update.afterMetric = data.afterMetric.trim() || null;
+    if (typeof data.notes === "string") update.notes = data.notes.trim() || null;
+
+    if (Object.keys(update).length === 0) throw new HttpsError("invalid-argument", "لا تغييرات.");
+    update.updatedBy = request.auth.uid;
+    update.updatedAt = FieldValue.serverTimestamp();
+    await ref.update(update);
+    return { id: improvementId, updated: true };
+  } catch (err) {
+    if (err instanceof HttpsError) throw err;
+    console.error("updateImprovement failed:", err);
+    throw new HttpsError("internal", "تعذّر تعديل المبادرة.");
+  }
+});
+
+// حذف مبادرة تحسين
+exports.deleteImprovement = onCall(async (request) => {
+  try {
+    const callerTenantId = await requireModule(request.auth, MODULES.QUALITY);
+    const data = request.data || {};
+    const improvementId = typeof data.improvementId === "string" ? data.improvementId.trim() : "";
+    if (!improvementId) throw new HttpsError("invalid-argument", "يجب تحديد المبادرة.");
+    const ref = db.collection(COLLECTIONS.IMPROVEMENTS).doc(improvementId);
+    const doc = await ref.get();
+    if (!doc.exists || doc.data().tenantId !== callerTenantId) throw new HttpsError("invalid-argument", "المبادرة غير موجودة.");
+    await ref.delete();
+    return { id: improvementId, deleted: true };
+  } catch (err) {
+    if (err instanceof HttpsError) throw err;
+    console.error("deleteImprovement failed:", err);
+    throw new HttpsError("internal", "تعذّر حذف المبادرة.");
+  }
+});
+
+// بيانات تحسين العمليات: المبادرات + التجميع + الملخّص
+exports.getImprovementData = onCall(async (request) => {
+  try {
+    const callerTenantId = await requireModule(request.auth, MODULES.QUALITY);
+    const round2 = (n) => Math.round((Number(n) || 0) * 100) / 100;
+
+    const snap = await db.collection(COLLECTIONS.IMPROVEMENTS).where("tenantId", "==", callerTenantId).get();
+    const improvements = snap.docs.map((d) => ({ id: d.id, ...d.data() }));
+    improvements.sort((a, b) => (b.improvementNumber || 0) - (a.improvementNumber || 0));
+
+    const active = improvements.filter((i) => i.status === "active");
+    const done = improvements.filter((i) => i.status === "done");
+    const planned = improvements.filter((i) => i.status === "planned");
+
+    const totalSavings = round2(improvements.reduce((s, i) => s + (Number(i.savings) || 0), 0));
+    const totalTimeSaved = round2(improvements.reduce((s, i) => s + (Number(i.timeSavedHours) || 0), 0));
+    const activeProgressList = active.map((i) => Number(i.progress) || 0);
+    const avgProgress = activeProgressList.length > 0 ? Math.round(activeProgressList.reduce((s, v) => s + v, 0) / activeProgressList.length) : 0;
+
+    // مؤشرات الكفاءة (المبادرات التي لها قبل/بعد)
+    const efficiency = improvements
+      .filter((i) => i.beforeMetric && i.afterMetric)
+      .map((i) => ({ name: i.name, before: i.beforeMetric, after: i.afterMetric }));
+
+    // التجميع حسب القسم
+    const deptMap = {};
+    improvements.forEach((i) => { if (i.department) deptMap[i.department] = (deptMap[i.department] || 0) + 1; });
+    const byDept = Object.entries(deptMap).map(([name, value]) => ({ name, value })).sort((a, b) => b.value - a.value);
+
+    return {
+      improvements,
+      efficiency,
+      byDept,
+      summary: {
+        activeCount: active.length,
+        doneCount: done.length,
+        plannedCount: planned.length,
+        totalCount: improvements.length,
+        totalSavings: totalSavings,
+        totalTimeSaved: totalTimeSaved,
+        avgProgress: avgProgress,
+      },
+    };
+  } catch (err) {
+    if (err instanceof HttpsError) throw err;
+    console.error("getImprovementData failed:", err);
+    throw new HttpsError("internal", "تعذّر تحميل بيانات التحسين.");
   }
 });
 

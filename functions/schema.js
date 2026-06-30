@@ -52,6 +52,7 @@ const COLLECTIONS = {
   AUDITS: "audits",
   FINDINGS: "findings",
   RATINGS: "ratings",
+  IMPROVEMENTS: "improvements",
 };
 
 const ROLES = {
@@ -2315,6 +2316,38 @@ function buildRatingDoc({
   };
 }
 
+// --- مبادرات تحسين العمليات ---
+const IMPROVEMENT_STATUS = {
+  PLANNED: "planned", // مخطّطة
+  ACTIVE: "active",   // نشطة
+  DONE: "done",       // مكتملة
+};
+const ALL_IMPROVEMENT_STATUS = Object.values(IMPROVEMENT_STATUS);
+
+// بناء وثيقة مبادرة تحسين
+function buildImprovementDoc({
+  tenantId, improvementNumber, name, department, progress, status, savings,
+  timeSavedHours, beforeMetric, afterMetric, notes, createdBy, createdAt,
+}) {
+  let prog = Number(progress) || 0;
+  if (prog < 0) prog = 0; if (prog > 100) prog = 100;
+  return {
+    tenantId: tenantId,
+    improvementNumber: Number(improvementNumber) || 0,
+    name: (name || "").trim(),
+    department: (department || "").trim() || null,
+    progress: Math.round(prog),                  // 0-100
+    status: ALL_IMPROVEMENT_STATUS.includes(status) ? status : IMPROVEMENT_STATUS.ACTIVE,
+    savings: Number(savings) || 0,               // الوفورات (ر.س)
+    timeSavedHours: Number(timeSavedHours) || 0, // الوقت الموفّر (ساعات)
+    beforeMetric: (beforeMetric || "").trim() || null, // المؤشر قبل
+    afterMetric: (afterMetric || "").trim() || null,   // المؤشر بعد
+    notes: notes || null,
+    createdBy: createdBy || null,
+    createdAt: createdAt,
+  };
+}
+
 module.exports = {
   COLLECTIONS,
   ROLES,
@@ -2424,6 +2457,9 @@ module.exports = {
   ALL_AUDIT_STATUS,
   buildFindingDoc,
   buildRatingDoc,
+  buildImprovementDoc,
+  IMPROVEMENT_STATUS,
+  ALL_IMPROVEMENT_STATUS,
   FINDING_SEVERITY,
   ALL_FINDING_SEVERITY,
   FINDING_STATUS,
