@@ -1,7 +1,7 @@
 import React, { useState, useEffect } from "react";
 import {
   Crown, Wallet, Users, Settings, Building2, TrendingUp, Megaphone, Scale,
-  Award, CreditCard, Boxes, ChevronDown, Menu, X, Globe, Bell, Search, Package, LogOut
+  Award, CreditCard, Boxes, ChevronDown, Menu, X, Globe, Bell, Search, Package, LogOut, ArrowRight
 } from "lucide-react";
 import { onAuthStateChanged, signInWithEmailAndPassword, signOut } from "firebase/auth";
 import { auth } from "../firebase";
@@ -161,6 +161,9 @@ const STYLES = `
   .sh-burger{display:none; width:38px; height:38px; border-radius:9px; border:1px solid var(--line2); background:var(--panel);
     cursor:pointer; place-items:center; color:var(--ink2); flex-shrink:0}
   .sh-crumb{display:flex; align-items:center; gap:8px; min-width:0}
+  .sh-back{display:grid; width:38px; height:38px; border-radius:9px; border:1px solid var(--line2); background:var(--panel);
+    cursor:pointer; place-items:center; color:var(--ink2); flex-shrink:0; transition:all .15s}
+  .sh-back:hover{background:color-mix(in srgb,var(--ink2) 8%,transparent); color:var(--ink)}
   .sh-crumb-dept{font-size:12.5px; color:var(--ink3); font-weight:500; white-space:nowrap}
   .sh-crumb-sep{color:var(--ink3); flex-shrink:0}
   .sh-crumb-cur{font-size:15px; font-weight:700; white-space:nowrap; overflow:hidden; text-overflow:ellipsis}
@@ -272,14 +275,25 @@ export default function CentralShell({ views = {} }) {
     return sec ? { [sec]: true } : { exec: true };
   });
   const [mobileOpen, setMobileOpen] = useState(false);
+  const [navStack, setNavStack] = useState([]); // سجلّ الصفحات السابقة (لزر العودة)
 
   const toggleSection = (id) => setExpanded((p) => ({ ...p, [id]: !p[id] }));
   const openView = (id) => {
+    setNavStack((prev) => (id !== activeView ? [...prev, activeView] : prev)); // احفظ الحالية قبل الانتقال
     if (window.location.hash !== "#" + id) window.location.hash = id;
     setActiveView(id);
     const sec = sectionOfView(id);
     if (sec) setExpanded((p) => ({ ...p, [sec]: true }));
     setMobileOpen(false);
+  };
+  const goBack = () => {
+    if (navStack.length === 0) return;
+    const prev = navStack[navStack.length - 1];
+    setNavStack((s) => s.slice(0, -1)); // احذف آخر صفحة من السجل
+    if (window.location.hash !== "#" + prev) window.location.hash = prev;
+    setActiveView(prev);
+    const sec = sectionOfView(prev);
+    if (sec) setExpanded((p) => ({ ...p, [sec]: true }));
   };
   const handleLogout = async () => {
     try { await signOut(auth); } catch (e) { /* تجاهل */ }
@@ -362,6 +376,9 @@ export default function CentralShell({ views = {} }) {
       <div className="sh-main">
         <div className="sh-topbar">
           <button className="sh-burger" onClick={() => setMobileOpen(true)}><Menu size={19} /></button>
+          {navStack.length > 0 ? (
+            <button className="sh-back" onClick={goBack} title="رجوع"><ArrowRight size={18} /></button>
+          ) : null}
           <div className="sh-crumb">
             <span className="sh-crumb-dept">{cur.deptName}</span>
             <ChevronDown size={14} className="sh-crumb-sep" style={{ transform: "rotate(90deg)" }} />
