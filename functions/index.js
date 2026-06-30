@@ -164,6 +164,18 @@ async function requireModule(auth, moduleName) {
   throw new HttpsError("permission-denied", "غير مخوّل لهذا الإجراء.");
 }
 
+// التحقق أن المستدعي هو مالك المنصة (super-admin) — لمنصة المالك فقط
+async function requirePlatformOwner(authCtx) {
+  if (!authCtx || !authCtx.uid) {
+    throw new HttpsError("unauthenticated", "يجب تسجيل الدخول أولاً.");
+  }
+  const ownerDoc = await db.collection(COLLECTIONS.PLATFORM_OWNERS).doc(authCtx.uid).get();
+  if (!ownerDoc.exists) {
+    throw new HttpsError("permission-denied", "هذه المنصة مخصّصة لمالك النظام فقط.");
+  }
+  return authCtx.uid;
+}
+
 async function wouldCreateCycle(employeeUid, managerUid) {
   let cursor = managerUid;
   let guard = 0;
@@ -11304,5 +11316,148 @@ exports.generateZatcaInvoice = onCall(async (request) => {
     if (err instanceof HttpsError) throw err;
     console.error("generateZatcaInvoice failed:", err);
     throw new HttpsError("internal", "تعذّر توليد فاتورة ZATCA.");
+  }
+});
+
+// ═══════════════════════════════════════════════════════
+// ===== منصة المالك (Platform Owner) =====
+// ═══════════════════════════════════════════════════════
+
+// التحقق إن كان المستخدم الحالي مالك منصة (للواجهة — توجيه للوحة المالك)
+exports.checkPlatformOwner = onCall(async (request) => {
+  try {
+    if (!request.auth || !request.auth.uid) return { isOwner: false };
+    const ownerDoc = await db.collection(COLLECTIONS.PLATFORM_OWNERS).doc(request.auth.uid).get();
+    return { isOwner: ownerDoc.exists };
+  } catch (err) {
+    console.error("checkPlatformOwner failed:", err);
+    return { isOwner: false };
+  }
+});
+
+// لوحة العملاء: كل الشركات (tenants) + حالاتهم + إحصاءات + الملخّص
+exports.getAllTenants = onCall(async (request) => {
+  try {
+    await requirePlatformOwner(request.auth);
+    const round2 = (n) => Math.round((Number(n) || 0) * 100) / 100;
+    const toMs = (ts) => (ts && ts.toMillis ? ts.toMillis() : null);
+
+    const [tenantSnap, userSnap] = await Promise.all([
+      db.collection(COLLECTIONS.TENANTS).get(),
+      db.collection(COLLECTIONS.USERS).get(),
+    ]);
+
+    // عدّ المستخدمين لكل شركة
+    const userCountByTenant = {};
+    userSnap.docs.forEach((d) => {
+      const tid = d.data().tenantId;
+      if (tid) userCountByTenant[tid] = (userCountByTenant[tid] || 0) + 1;
+    });
+
+    const tenants = tenantSnap.docs.map((d) => {
+      const t = d.data();
+      return {
+        id: d.id,
+        name: t.name || "—",
+        subscriptionStatus: t.subscriptionStatus || "pending",
+        plan: t.plan || "free",
+        maxUsers: Number(t.maxUsers) || 0,
+        userCount: userCountByTenant[d.id] || 0,
+        subscriptionAmount: Number(t.subscriptionAmount) || 0,
+        contactEmail: t.contactEmail || null,
+        contactPhone: t.contactPhone || null,
+        createdAt: toMs(t.createdAt),
+        activatedAt: toMs(t.activatedAt),
+        suspendedAt: toMs(t.suspendedAt),
+      };
+    });
+    tenants.sort((a, b) => (b.createdAt || 0) - (a.createdAt || 0));
+
+    // الملخّص
+    const active = tenants.filter((t) => t.subscriptionStatus === "active");
+    const suspended = tenants.filter((t) => t.subscriptionStatus === "suspended");
+    const pending = tenants.filter((t) => t.subscriptionStatus === "pending");
+    const monthlyRevenue = round2(active.reduce((s, t) => s + (Number(t.subscriptionAmount) || 0), 0));
+
+    return {
+      tenants,
+      summary: {
+        totalTenants: tenants.length,
+        activeCount: active.length,
+        suspendedCount: suspended.length,
+        pendingCount: pending.length,
+        monthlyRevenue: monthlyRevenue,
+        totalUsers: Object.values(userCountByTenant).reduce((s, n) => s + n, 0),
+      },
+    };
+  } catch (err) {
+    if (err instanceof HttpsError) throw err;
+    console.error("getAllTenants failed:", err);
+    throw new HttpsError("internal", "تعذّر تحميل قائمة العملاء.");
+  }
+});
+
+// تفعيل / إيقاف / تعليق اشتراك عميل
+exports.setTenantStatus = onCall(async (request) => {
+  try {
+    await requirePlatformOwner(request.auth);
+    const data = request.data || {};
+    const tenantId = typeof data.tenantId === "string" ? data.tenantId.trim() : "";
+    if (!tenantId) throw new HttpsError("invalid-argument", "يجب تحديد العميل.");
+    const status = data.status;
+    if (!["active", "suspended", "pending"].includes(status)) {
+      throw new HttpsError("invalid-argument", "حالة غير صحيحة.");
+    }
+
+    const ref = db.collection(COLLECTIONS.TENANTS).doc(tenantId);
+    const doc = await ref.get();
+    if (!doc.exists) throw new HttpsError("invalid-argument", "العميل غير موجود.");
+
+    const update = { subscriptionStatus: status };
+    if (status === "active") update.activatedAt = FieldValue.serverTimestamp();
+    if (status === "suspended") update.suspendedAt = FieldValue.serverTimestamp();
+    await ref.update(update);
+    return { id: tenantId, status: status };
+  } catch (err) {
+    if (err instanceof HttpsError) throw err;
+    console.error("setTenantStatus failed:", err);
+    throw new HttpsError("internal", "تعذّر تغيير حالة العميل.");
+  }
+});
+
+// تحديث بيانات اشتراك العميل (المبلغ، التواصل، الحد الأقصى)
+exports.updateTenantSubscription = onCall(async (request) => {
+  try {
+    await requirePlatformOwner(request.auth);
+    const data = request.data || {};
+    const tenantId = typeof data.tenantId === "string" ? data.tenantId.trim() : "";
+    if (!tenantId) throw new HttpsError("invalid-argument", "يجب تحديد العميل.");
+
+    const ref = db.collection(COLLECTIONS.TENANTS).doc(tenantId);
+    const doc = await ref.get();
+    if (!doc.exists) throw new HttpsError("invalid-argument", "العميل غير موجود.");
+
+    const update = {};
+    if (data.subscriptionAmount !== undefined) {
+      const amt = Number(data.subscriptionAmount);
+      if (!(amt >= 0)) throw new HttpsError("invalid-argument", "المبلغ غير صحيح.");
+      update.subscriptionAmount = amt;
+    }
+    if (data.maxUsers !== undefined) {
+      const mx = Number(data.maxUsers);
+      if (!(mx >= 0)) throw new HttpsError("invalid-argument", "الحد الأقصى غير صحيح.");
+      update.maxUsers = mx;
+    }
+    if (typeof data.plan === "string") update.plan = data.plan.trim() || "free";
+    if (typeof data.contactEmail === "string") update.contactEmail = data.contactEmail.trim() || null;
+    if (typeof data.contactPhone === "string") update.contactPhone = data.contactPhone.trim() || null;
+
+    if (Object.keys(update).length === 0) throw new HttpsError("invalid-argument", "لا تغييرات.");
+    await ref.update(update);
+    return { id: tenantId, updated: true };
+  } catch (err) {
+    if (err instanceof HttpsError) throw err;
+    console.error("updateTenantSubscription failed:", err);
+    throw new HttpsError("internal", "تعذّر تحديث الاشتراك.");
   }
 });

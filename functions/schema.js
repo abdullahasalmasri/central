@@ -3,6 +3,7 @@
 const COLLECTIONS = {
   TENANTS: "tenants",
   USERS: "users",
+  PLATFORM_OWNERS: "platformOwners",
   SHIFTS: "shifts",
   SCHEDULES: "schedules",
   RECORDS: "records",

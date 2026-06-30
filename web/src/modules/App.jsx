@@ -1,5 +1,6 @@
-import React from "react";
+import React, { useState, useEffect } from "react";
 import CentralShell from "./CentralShell";
+import OwnerShell from "./OwnerShell";
 
 /* ============================================================
    App.jsx — الملف الرئيسي الذي يوصّل الهيكل (Shell) بكل الواجهات.
@@ -123,5 +124,16 @@ const views = {
 };
 
 export default function App() {
+  // التوجيه: #owner → منصة المالك (واجهة منفصلة، نفس Firebase)؛ غير ذلك → Central
+  const [isOwnerRoute, setIsOwnerRoute] = useState(
+    typeof window !== "undefined" && window.location.hash.startsWith("#owner")
+  );
+  useEffect(() => {
+    const onHash = () => setIsOwnerRoute(window.location.hash.startsWith("#owner"));
+    window.addEventListener("hashchange", onHash);
+    return () => window.removeEventListener("hashchange", onHash);
+  }, []);
+
+  if (isOwnerRoute) return <OwnerShell />;
   return <CentralShell views={views} />;
 }
