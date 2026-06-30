@@ -42,6 +42,7 @@ const COLLECTIONS = {
   QUALITY_INSPECTIONS: "qualityInspections",
   PROJECT_BUDGETS: "projectBudgets",
   DEALS: "deals",
+  QUOTES: "quotes",
 };
 
 const ROLES = {
@@ -1943,6 +1944,52 @@ function buildDealDoc({
   };
 }
 
+// ===== المبيعات: عروض الأسعار =====
+const QUOTE_VAT_RATE = 15; // ضريبة القيمة المضافة القياسية
+
+const QUOTE_STATUS = {
+  DRAFT: "draft",       // مسودّة
+  SENT: "sent",         // مُرسل للعميل
+  ACCEPTED: "accepted", // مقبول
+  REJECTED: "rejected", // مرفوض
+  EXPIRED: "expired",   // منتهي الصلاحية
+};
+const ALL_QUOTE_STATUS = Object.values(QUOTE_STATUS);
+
+// حساب إجماليات عرض السعر (مبلغ واحد + ضريبة 15%)
+function computeQuoteTotals(amount, vatRate) {
+  const base = Number(amount) || 0;
+  const rate = Number.isFinite(Number(vatRate)) ? Number(vatRate) : QUOTE_VAT_RATE;
+  const r = (n) => Math.round(n * 100) / 100;
+  const vatAmount = r(base * (rate / 100));
+  return { amount: r(base), vatRate: rate, vatAmount: vatAmount, totalWithVat: r(base + vatAmount) };
+}
+
+// بناء وثيقة عرض سعر (يصدر برقم تلقائي + طابع زمني)
+function buildQuoteDoc({
+  tenantId, quoteNumber, dealId, customerName, description,
+  amount, vatRate, vatAmount, totalWithVat, validUntil, status, notes,
+  issuedAt, createdBy, createdAt,
+}) {
+  return {
+    tenantId: tenantId,
+    quoteNumber: Number(quoteNumber) || 0,     // الرقم التلقائي
+    dealId: dealId || null,                     // مرتبط بصفقة (اختياري)
+    customerName: (customerName || "").trim() || null,
+    description: (description || "").trim(),     // الوصف العام للعرض
+    amount: Number(amount) || 0,                // المبلغ قبل الضريبة
+    vatRate: Number(vatRate) || 0,              // نسبة الضريبة
+    vatAmount: Number(vatAmount) || 0,          // قيمة الضريبة
+    totalWithVat: Number(totalWithVat) || 0,    // الإجمالي شامل الضريبة
+    validUntil: validUntil || null,             // صالح حتى
+    status: ALL_QUOTE_STATUS.includes(status) ? status : QUOTE_STATUS.DRAFT,
+    notes: notes || null,
+    issuedAt: issuedAt || null,                 // تاريخ ووقت الإصدار (serverTimestamp)
+    createdBy: createdBy || null,
+    createdAt: createdAt,
+  };
+}
+
 module.exports = {
   COLLECTIONS,
   ROLES,
@@ -2034,6 +2081,11 @@ module.exports = {
   buildInspectionDoc,
   buildBudgetDoc,
   buildDealDoc,
+  buildQuoteDoc,
+  computeQuoteTotals,
+  QUOTE_STATUS,
+  ALL_QUOTE_STATUS,
+  QUOTE_VAT_RATE,
   DEAL_STAGES,
   ALL_DEAL_STAGES,
   DEAL_STATUS,

@@ -65,6 +65,7 @@ const NAV = [
   ]},
   { type: "section", id: "sales", name: "المبيعات والتسويق", icon: Megaphone, color: "#db2777", children: [
     { id: "sal_dir",  name: "المبيعات المباشرة", file: "SalesView.jsx" },
+    { id: "sal_quote", name: "عروض الأسعار",      file: "QuotesView.jsx" },
     { id: "sal_mkt",  name: "التسويق والتواصل",  file: "MarketingView.jsx" },
     { id: "sal_serv", name: "خدمة العملاء",      file: "CustomerServiceView.jsx" },
   ]},

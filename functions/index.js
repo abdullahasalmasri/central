@@ -58,6 +58,11 @@ const {
   buildInspectionDoc,
   buildBudgetDoc,
   buildDealDoc,
+  buildQuoteDoc,
+  computeQuoteTotals,
+  QUOTE_STATUS,
+  ALL_QUOTE_STATUS,
+  QUOTE_VAT_RATE,
   DEAL_STAGES,
   ALL_DEAL_STAGES,
   DEAL_STATUS,
@@ -6992,6 +6997,164 @@ exports.getSalesData = onCall(async (request) => {
     if (err instanceof HttpsError) throw err;
     console.error("getSalesData failed:", err);
     throw new HttpsError("internal", "تعذّر تحميل بيانات المبيعات.");
+  }
+});
+
+// ═══════════════════════════════════════════════════════
+// ===== عروض الأسعار =====
+// ═══════════════════════════════════════════════════════
+
+// إنشاء عرض سعر (رقم تلقائي + تاريخ ووقت الإصدار)
+exports.createQuote = onCall(async (request) => {
+  try {
+    const callerTenantId = await requireModule(request.auth, MODULES.SALES);
+    const data = request.data || {};
+    const description = typeof data.description === "string" ? data.description.trim() : "";
+    if (description.length < 2) throw new HttpsError("invalid-argument", "وصف العرض مطلوب (حرفان على الأقل).");
+    const amount = Number(data.amount) || 0;
+    if (amount <= 0) throw new HttpsError("invalid-argument", "المبلغ يجب أن يكون أكبر من صفر.");
+
+    // التحقق من الصفقة المرتبطة (اختياري)
+    let dealId = null;
+    if (typeof data.dealId === "string" && data.dealId.trim()) {
+      const dealSnap = await db.collection(COLLECTIONS.DEALS).doc(data.dealId.trim()).get();
+      if (!dealSnap.exists || dealSnap.data().tenantId !== callerTenantId) {
+        throw new HttpsError("invalid-argument", "الصفقة المرتبطة غير موجودة.");
+      }
+      dealId = data.dealId.trim();
+    }
+
+    const vatRate = data.vatRate !== undefined ? Number(data.vatRate) : QUOTE_VAT_RATE;
+    const totals = computeQuoteTotals(amount, vatRate);
+
+    const tenantRef = db.collection(COLLECTIONS.TENANTS).doc(callerTenantId);
+    const quoteRef = db.collection(COLLECTIONS.QUOTES).doc();
+    const result = await db.runTransaction(async (tx) => {
+      const tenantSnap = await tx.get(tenantRef);
+      if (!tenantSnap.exists) throw new HttpsError("failed-precondition", "الشركة غير موجودة.");
+      const nextNumber = (tenantSnap.data().lastQuoteNumber || 0) + 1;
+      const quoteDoc = buildQuoteDoc({
+        tenantId: callerTenantId,
+        quoteNumber: nextNumber,
+        dealId: dealId,
+        customerName: typeof data.customerName === "string" ? data.customerName.trim() : null,
+        description: description,
+        amount: totals.amount,
+        vatRate: totals.vatRate,
+        vatAmount: totals.vatAmount,
+        totalWithVat: totals.totalWithVat,
+        validUntil: typeof data.validUntil === "string" && isValidDate(data.validUntil) ? data.validUntil : null,
+        status: QUOTE_STATUS.DRAFT,
+        notes: typeof data.notes === "string" ? data.notes.trim() : null,
+        issuedAt: FieldValue.serverTimestamp(),
+        createdBy: request.auth.uid,
+        createdAt: FieldValue.serverTimestamp(),
+      });
+      tx.set(quoteRef, quoteDoc);
+      tx.update(tenantRef, { lastQuoteNumber: nextNumber });
+      return { quoteNumber: nextNumber };
+    });
+    return { id: quoteRef.id, quoteNumber: result.quoteNumber };
+  } catch (err) {
+    if (err instanceof HttpsError) throw err;
+    console.error("createQuote failed:", err);
+    throw new HttpsError("internal", "تعذّر إنشاء عرض السعر.");
+  }
+});
+
+// تعديل عرض سعر
+exports.updateQuote = onCall(async (request) => {
+  try {
+    const callerTenantId = await requireModule(request.auth, MODULES.SALES);
+    const data = request.data || {};
+    const quoteId = typeof data.quoteId === "string" ? data.quoteId.trim() : "";
+    if (!quoteId) throw new HttpsError("invalid-argument", "يجب تحديد العرض.");
+
+    const ref = db.collection(COLLECTIONS.QUOTES).doc(quoteId);
+    const doc = await ref.get();
+    if (!doc.exists || doc.data().tenantId !== callerTenantId) throw new HttpsError("invalid-argument", "العرض غير موجود.");
+
+    const update = {};
+    if (typeof data.description === "string") {
+      const d = data.description.trim();
+      if (d.length < 2) throw new HttpsError("invalid-argument", "وصف العرض قصير.");
+      update.description = d;
+    }
+    if (typeof data.customerName === "string") update.customerName = data.customerName.trim() || null;
+    // إعادة حساب الضريبة عند تغيير المبلغ أو النسبة
+    if (data.amount !== undefined || data.vatRate !== undefined) {
+      const newAmount = data.amount !== undefined ? Number(data.amount) : doc.data().amount;
+      const newRate = data.vatRate !== undefined ? Number(data.vatRate) : doc.data().vatRate;
+      if (!(newAmount > 0)) throw new HttpsError("invalid-argument", "المبلغ يجب أن يكون أكبر من صفر.");
+      const totals = computeQuoteTotals(newAmount, newRate);
+      update.amount = totals.amount;
+      update.vatRate = totals.vatRate;
+      update.vatAmount = totals.vatAmount;
+      update.totalWithVat = totals.totalWithVat;
+    }
+    if (typeof data.status === "string") {
+      if (!ALL_QUOTE_STATUS.includes(data.status)) throw new HttpsError("invalid-argument", "حالة غير صحيحة.");
+      update.status = data.status;
+    }
+    if (typeof data.validUntil === "string") update.validUntil = isValidDate(data.validUntil) ? data.validUntil : null;
+    if (typeof data.notes === "string") update.notes = data.notes.trim() || null;
+
+    if (Object.keys(update).length === 0) throw new HttpsError("invalid-argument", "لا تغييرات.");
+    update.updatedBy = request.auth.uid;
+    update.updatedAt = FieldValue.serverTimestamp();
+    await ref.update(update);
+    return { id: quoteId, updated: true };
+  } catch (err) {
+    if (err instanceof HttpsError) throw err;
+    console.error("updateQuote failed:", err);
+    throw new HttpsError("internal", "تعذّر تعديل العرض.");
+  }
+});
+
+// حذف عرض سعر
+exports.deleteQuote = onCall(async (request) => {
+  try {
+    const callerTenantId = await requireModule(request.auth, MODULES.SALES);
+    const data = request.data || {};
+    const quoteId = typeof data.quoteId === "string" ? data.quoteId.trim() : "";
+    if (!quoteId) throw new HttpsError("invalid-argument", "يجب تحديد العرض.");
+    const ref = db.collection(COLLECTIONS.QUOTES).doc(quoteId);
+    const doc = await ref.get();
+    if (!doc.exists || doc.data().tenantId !== callerTenantId) throw new HttpsError("invalid-argument", "العرض غير موجود.");
+    await ref.delete();
+    return { id: quoteId, deleted: true };
+  } catch (err) {
+    if (err instanceof HttpsError) throw err;
+    console.error("deleteQuote failed:", err);
+    throw new HttpsError("internal", "تعذّر حذف العرض.");
+  }
+});
+
+// قائمة عروض الأسعار + ملخّص
+exports.getQuotes = onCall(async (request) => {
+  try {
+    const callerTenantId = await requireModule(request.auth, MODULES.SALES);
+    const round2 = (n) => Math.round((Number(n) || 0) * 100) / 100;
+    const snap = await db.collection(COLLECTIONS.QUOTES).where("tenantId", "==", callerTenantId).get();
+    const quotes = snap.docs.map((d) => {
+      const q = d.data();
+      const issued = q.issuedAt && q.issuedAt.toMillis ? q.issuedAt.toMillis() : null;
+      return { id: d.id, ...q, issuedAt: issued };
+    });
+    quotes.sort((a, b) => (b.quoteNumber || 0) - (a.quoteNumber || 0));
+
+    const accepted = quotes.filter((q) => q.status === "accepted");
+    const summary = {
+      total: quotes.length,
+      totalValue: round2(quotes.reduce((s, q) => s + (Number(q.totalWithVat) || 0), 0)),
+      acceptedCount: accepted.length,
+      acceptedValue: round2(accepted.reduce((s, q) => s + (Number(q.totalWithVat) || 0), 0)),
+    };
+    return { quotes, summary };
+  } catch (err) {
+    if (err instanceof HttpsError) throw err;
+    console.error("getQuotes failed:", err);
+    throw new HttpsError("internal", "تعذّر تحميل عروض الأسعار.");
   }
 });
 
