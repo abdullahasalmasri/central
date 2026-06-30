@@ -58,6 +58,8 @@ const COLLECTIONS = {
   SALES_ORDERS: "salesOrders",
   CASHIER_SESSIONS: "cashierSessions",
   SALES_RETURNS: "salesReturns",
+  SAFETY_INCIDENTS: "safetyIncidents",
+  SAFETY_INSPECTIONS: "safetyInspections",
 };
 
 const ROLES = {
@@ -2502,6 +2504,73 @@ function buildSalesReturnDoc({
   };
 }
 
+// ═══════════════════════════════════════════════════════
+// ===== الجودة والسلامة المهنية =====
+// ═══════════════════════════════════════════════════════
+
+// --- حوادث السلامة ---
+const INCIDENT_SEVERITY = {
+  NEARMISS: "nearmiss", // شبه حادث
+  MINOR: "minor",       // بسيطة
+  MODERATE: "moderate", // متوسطة
+  MAJOR: "major",       // خطيرة
+};
+const ALL_INCIDENT_SEVERITY = Object.values(INCIDENT_SEVERITY);
+
+const INCIDENT_STATUS = {
+  OPEN: "open",         // مفتوحة
+  REVIEW: "review",     // قيد المراجعة
+  CLOSED: "closed",     // مغلقة
+};
+const ALL_INCIDENT_STATUS = Object.values(INCIDENT_STATUS);
+
+// بناء وثيقة حادث سلامة
+function buildIncidentDoc({
+  tenantId, incidentNumber, type, site, severity, status, incidentDate,
+  description, correctiveAction, reportedBy, createdBy, createdAt,
+}) {
+  return {
+    tenantId: tenantId,
+    incidentNumber: Number(incidentNumber) || 0,
+    type: (type || "").trim(),                  // نوع الحادث
+    site: (site || "").trim() || null,          // الموقع
+    severity: ALL_INCIDENT_SEVERITY.includes(severity) ? severity : INCIDENT_SEVERITY.MINOR,
+    status: ALL_INCIDENT_STATUS.includes(status) ? status : INCIDENT_STATUS.OPEN,
+    incidentDate: incidentDate || null,
+    description: (description || "").trim() || null,
+    correctiveAction: (correctiveAction || "").trim() || null, // الإجراء التصحيحي
+    reportedBy: reportedBy || null,
+    createdBy: createdBy || null,
+    createdAt: createdAt,
+  };
+}
+
+// --- جولات التفتيش ---
+const INSPECTION_RESULT = {
+  PASS: "pass",     // مطابق
+  NOTES: "notes",   // ملاحظات
+  ACTION: "action", // يحتاج إجراء
+};
+const ALL_INSPECTION_RESULT = Object.values(INSPECTION_RESULT);
+
+// بناء وثيقة جولة تفتيش
+function buildSafetyInspectionDoc({
+  tenantId, inspectionNumber, site, inspectionDate, result, inspector, notes,
+  createdBy, createdAt,
+}) {
+  return {
+    tenantId: tenantId,
+    inspectionNumber: Number(inspectionNumber) || 0,
+    site: (site || "").trim() || null,
+    inspectionDate: inspectionDate || null,
+    result: ALL_INSPECTION_RESULT.includes(result) ? result : INSPECTION_RESULT.PASS,
+    inspector: (inspector || "").trim() || null, // المفتّش
+    notes: (notes || "").trim() || null,
+    createdBy: createdBy || null,
+    createdAt: createdAt,
+  };
+}
+
 module.exports = {
   COLLECTIONS,
   ROLES,
@@ -2619,6 +2688,14 @@ module.exports = {
   SESSION_STATUS,
   ALL_SESSION_STATUS,
   buildSalesReturnDoc,
+  buildIncidentDoc,
+  INCIDENT_SEVERITY,
+  ALL_INCIDENT_SEVERITY,
+  INCIDENT_STATUS,
+  ALL_INCIDENT_STATUS,
+  buildSafetyInspectionDoc,
+  INSPECTION_RESULT,
+  ALL_INSPECTION_RESULT,
   PAYMENT_METHOD,
   ALL_PAYMENT_METHOD,
   POS_VAT_RATE,

@@ -82,6 +82,11 @@ const {
   buildCashierSessionDoc,
   SESSION_STATUS,
   buildSalesReturnDoc,
+  buildIncidentDoc,
+  ALL_INCIDENT_SEVERITY,
+  ALL_INCIDENT_STATUS,
+  buildSafetyInspectionDoc,
+  ALL_INSPECTION_RESULT,
   ALL_PAYMENT_METHOD,
   PAYMENT_METHOD,
   POS_VAT_RATE,
@@ -9484,6 +9489,233 @@ exports.getCashierData = onCall(async (request) => {
     if (err instanceof HttpsError) throw err;
     console.error("getCashierData failed:", err);
     throw new HttpsError("internal", "تعذّر تحميل بيانات الكاشير.");
+  }
+});
+
+// ═══════════════════════════════════════════════════════
+// ===== الجودة والسلامة المهنية =====
+// ═══════════════════════════════════════════════════════
+
+// --- حوادث السلامة ---
+
+// تسجيل حادث
+exports.createIncident = onCall(async (request) => {
+  try {
+    const callerTenantId = await requireModule(request.auth, MODULES.OPERATIONS);
+    const data = request.data || {};
+    const type = typeof data.type === "string" ? data.type.trim() : "";
+    if (type.length < 2) throw new HttpsError("invalid-argument", "نوع الحادث مطلوب (حرفان على الأقل).");
+
+    const tenantRef = db.collection(COLLECTIONS.TENANTS).doc(callerTenantId);
+    const incRef = db.collection(COLLECTIONS.SAFETY_INCIDENTS).doc();
+    const result = await db.runTransaction(async (tx) => {
+      const tenantSnap = await tx.get(tenantRef);
+      if (!tenantSnap.exists) throw new HttpsError("failed-precondition", "الشركة غير موجودة.");
+      const nextNumber = (tenantSnap.data().lastIncidentNumber || 0) + 1;
+      tx.set(incRef, buildIncidentDoc({
+        tenantId: callerTenantId,
+        incidentNumber: nextNumber,
+        type: type,
+        site: typeof data.site === "string" ? data.site.trim() : null,
+        severity: data.severity,
+        status: data.status,
+        incidentDate: typeof data.incidentDate === "string" && isValidDate(data.incidentDate) ? data.incidentDate : new Date().toISOString().slice(0, 10),
+        description: typeof data.description === "string" ? data.description.trim() : null,
+        correctiveAction: typeof data.correctiveAction === "string" ? data.correctiveAction.trim() : null,
+        reportedBy: typeof data.reportedBy === "string" ? data.reportedBy.trim() : null,
+        createdBy: request.auth.uid,
+        createdAt: FieldValue.serverTimestamp(),
+      }));
+      tx.update(tenantRef, { lastIncidentNumber: nextNumber });
+      return { incidentNumber: nextNumber };
+    });
+    return { id: incRef.id, incidentNumber: result.incidentNumber };
+  } catch (err) {
+    if (err instanceof HttpsError) throw err;
+    console.error("createIncident failed:", err);
+    throw new HttpsError("internal", "تعذّر تسجيل الحادث.");
+  }
+});
+
+// تعديل حادث
+exports.updateIncident = onCall(async (request) => {
+  try {
+    const callerTenantId = await requireModule(request.auth, MODULES.OPERATIONS);
+    const data = request.data || {};
+    const incidentId = typeof data.incidentId === "string" ? data.incidentId.trim() : "";
+    if (!incidentId) throw new HttpsError("invalid-argument", "يجب تحديد الحادث.");
+
+    const ref = db.collection(COLLECTIONS.SAFETY_INCIDENTS).doc(incidentId);
+    const doc = await ref.get();
+    if (!doc.exists || doc.data().tenantId !== callerTenantId) throw new HttpsError("invalid-argument", "الحادث غير موجود.");
+
+    const update = {};
+    if (typeof data.type === "string") {
+      const t = data.type.trim();
+      if (t.length < 2) throw new HttpsError("invalid-argument", "نوع الحادث قصير.");
+      update.type = t;
+    }
+    if (typeof data.site === "string") update.site = data.site.trim() || null;
+    if (typeof data.severity === "string") {
+      if (!ALL_INCIDENT_SEVERITY.includes(data.severity)) throw new HttpsError("invalid-argument", "خطورة غير صحيحة.");
+      update.severity = data.severity;
+    }
+    if (typeof data.status === "string") {
+      if (!ALL_INCIDENT_STATUS.includes(data.status)) throw new HttpsError("invalid-argument", "حالة غير صحيحة.");
+      update.status = data.status;
+    }
+    if (typeof data.incidentDate === "string") update.incidentDate = isValidDate(data.incidentDate) ? data.incidentDate : null;
+    if (typeof data.description === "string") update.description = data.description.trim() || null;
+    if (typeof data.correctiveAction === "string") update.correctiveAction = data.correctiveAction.trim() || null;
+    if (typeof data.reportedBy === "string") update.reportedBy = data.reportedBy.trim() || null;
+
+    if (Object.keys(update).length === 0) throw new HttpsError("invalid-argument", "لا تغييرات.");
+    update.updatedBy = request.auth.uid;
+    update.updatedAt = FieldValue.serverTimestamp();
+    await ref.update(update);
+    return { id: incidentId, updated: true };
+  } catch (err) {
+    if (err instanceof HttpsError) throw err;
+    console.error("updateIncident failed:", err);
+    throw new HttpsError("internal", "تعذّر تعديل الحادث.");
+  }
+});
+
+// حذف حادث
+exports.deleteIncident = onCall(async (request) => {
+  try {
+    const callerTenantId = await requireModule(request.auth, MODULES.OPERATIONS);
+    const data = request.data || {};
+    const incidentId = typeof data.incidentId === "string" ? data.incidentId.trim() : "";
+    if (!incidentId) throw new HttpsError("invalid-argument", "يجب تحديد الحادث.");
+    const ref = db.collection(COLLECTIONS.SAFETY_INCIDENTS).doc(incidentId);
+    const doc = await ref.get();
+    if (!doc.exists || doc.data().tenantId !== callerTenantId) throw new HttpsError("invalid-argument", "الحادث غير موجود.");
+    await ref.delete();
+    return { id: incidentId, deleted: true };
+  } catch (err) {
+    if (err instanceof HttpsError) throw err;
+    console.error("deleteIncident failed:", err);
+    throw new HttpsError("internal", "تعذّر حذف الحادث.");
+  }
+});
+
+// --- جولات التفتيش ---
+
+// تسجيل جولة تفتيش
+exports.createSafetyInspection = onCall(async (request) => {
+  try {
+    const callerTenantId = await requireModule(request.auth, MODULES.OPERATIONS);
+    const data = request.data || {};
+    const site = typeof data.site === "string" ? data.site.trim() : "";
+    if (site.length < 2) throw new HttpsError("invalid-argument", "الموقع مطلوب (حرفان على الأقل).");
+
+    const tenantRef = db.collection(COLLECTIONS.TENANTS).doc(callerTenantId);
+    const inspRef = db.collection(COLLECTIONS.SAFETY_INSPECTIONS).doc();
+    const result = await db.runTransaction(async (tx) => {
+      const tenantSnap = await tx.get(tenantRef);
+      if (!tenantSnap.exists) throw new HttpsError("failed-precondition", "الشركة غير موجودة.");
+      const nextNumber = (tenantSnap.data().lastSafetyInspectionNumber || 0) + 1;
+      tx.set(inspRef, buildSafetyInspectionDoc({
+        tenantId: callerTenantId,
+        inspectionNumber: nextNumber,
+        site: site,
+        inspectionDate: typeof data.inspectionDate === "string" && isValidDate(data.inspectionDate) ? data.inspectionDate : new Date().toISOString().slice(0, 10),
+        result: data.result,
+        inspector: typeof data.inspector === "string" ? data.inspector.trim() : null,
+        notes: typeof data.notes === "string" ? data.notes.trim() : null,
+        createdBy: request.auth.uid,
+        createdAt: FieldValue.serverTimestamp(),
+      }));
+      tx.update(tenantRef, { lastSafetyInspectionNumber: nextNumber });
+      return { inspectionNumber: nextNumber };
+    });
+    return { id: inspRef.id, inspectionNumber: result.inspectionNumber };
+  } catch (err) {
+    if (err instanceof HttpsError) throw err;
+    console.error("createSafetyInspection failed:", err);
+    throw new HttpsError("internal", "تعذّر تسجيل الجولة.");
+  }
+});
+
+// حذف جولة تفتيش
+exports.deleteSafetyInspection = onCall(async (request) => {
+  try {
+    const callerTenantId = await requireModule(request.auth, MODULES.OPERATIONS);
+    const data = request.data || {};
+    const inspectionId = typeof data.inspectionId === "string" ? data.inspectionId.trim() : "";
+    if (!inspectionId) throw new HttpsError("invalid-argument", "يجب تحديد الجولة.");
+    const ref = db.collection(COLLECTIONS.SAFETY_INSPECTIONS).doc(inspectionId);
+    const doc = await ref.get();
+    if (!doc.exists || doc.data().tenantId !== callerTenantId) throw new HttpsError("invalid-argument", "الجولة غير موجودة.");
+    await ref.delete();
+    return { id: inspectionId, deleted: true };
+  } catch (err) {
+    if (err instanceof HttpsError) throw err;
+    console.error("deleteSafetyInspection failed:", err);
+    throw new HttpsError("internal", "تعذّر حذف الجولة.");
+  }
+});
+
+// بيانات الجودة والسلامة: الحوادث + التفتيش + الملخّص
+exports.getSafetyData = onCall(async (request) => {
+  try {
+    const callerTenantId = await requireModule(request.auth, MODULES.OPERATIONS);
+    const round2 = (n) => Math.round((Number(n) || 0) * 100) / 100;
+    const todayStr = new Date().toISOString().slice(0, 10);
+    const thisMonth = todayStr.slice(0, 7);
+    const daysBetween = (a, b) => Math.round((new Date(b) - new Date(a)) / (1000 * 60 * 60 * 24));
+
+    const [incSnap, inspSnap] = await Promise.all([
+      db.collection(COLLECTIONS.SAFETY_INCIDENTS).where("tenantId", "==", callerTenantId).get(),
+      db.collection(COLLECTIONS.SAFETY_INSPECTIONS).where("tenantId", "==", callerTenantId).get(),
+    ]);
+
+    const incidents = incSnap.docs.map((d) => ({ id: d.id, ...d.data() }));
+    incidents.sort((a, b) => {
+      const ad = a.incidentDate || ""; const bd = b.incidentDate || "";
+      if (ad !== bd) return bd.localeCompare(ad);
+      return (b.incidentNumber || 0) - (a.incidentNumber || 0);
+    });
+
+    const inspections = inspSnap.docs.map((d) => ({ id: d.id, ...d.data() }));
+    inspections.sort((a, b) => {
+      const ad = a.inspectionDate || ""; const bd = b.inspectionDate || "";
+      if (ad !== bd) return bd.localeCompare(ad);
+      return (b.inspectionNumber || 0) - (a.inspectionNumber || 0);
+    });
+
+    // الملخّص
+    const datedIncidents = incidents.filter((i) => i.incidentDate).map((i) => i.incidentDate).sort();
+    const lastIncidentDate = datedIncidents.length > 0 ? datedIncidents[datedIncidents.length - 1] : null;
+    const daysWithoutIncident = lastIncidentDate ? Math.max(0, daysBetween(lastIncidentDate, todayStr)) : null;
+    const incidentsThisMonth = incidents.filter((i) => (i.incidentDate || "").slice(0, 7) === thisMonth).length;
+    const openIncidents = incidents.filter((i) => i.status === "open" || i.status === "review").length;
+
+    const passCount = inspections.filter((i) => i.result === "pass").length;
+    const passRate = inspections.length > 0 ? round2((passCount / inspections.length) * 100) : null;
+
+    // تجميع الحوادث بالخطورة
+    const sevMap = { nearmiss: 0, minor: 0, moderate: 0, major: 0 };
+    incidents.forEach((i) => { const sv = i.severity || "minor"; sevMap[sv] = (sevMap[sv] || 0) + 1; });
+
+    return {
+      incidents,
+      inspections,
+      summary: {
+        daysWithoutIncident,
+        totalIncidents: incidents.length,
+        incidentsThisMonth,
+        openIncidents,
+        passRate,
+        totalInspections: inspections.length,
+        severityBreakdown: sevMap,
+      },
+    };
+  } catch (err) {
+    if (err instanceof HttpsError) throw err;
+    console.error("getSafetyData failed:", err);
+    throw new HttpsError("internal", "تعذّر تحميل بيانات السلامة.");
   }
 });
 

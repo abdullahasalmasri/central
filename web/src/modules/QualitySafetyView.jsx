@@ -1,320 +1,349 @@
-import React from "react";
-import {
-  ShieldCheck, AlertTriangle, HardHat, Star, ClipboardCheck,
-  Calendar, ChevronDown, TrendingDown, MapPin
-} from "lucide-react";
+import { useState, useEffect } from "react";
+import { doc, getDoc } from "firebase/firestore";
+import { httpsCallable } from "firebase/functions";
+import { db, auth, functions } from "../firebase";
 
 /* ============================================================
-   الجودة والسلامة — قسم العمليات (السلامة المهنية وجودة الخدمة الميدانية)
-   البيانات تجريبية. دوال backend المطلوبة (جديدة) مكتوبة بجانب كل مجموعة.
+   الجودة والسلامة — قسم العمليات
+   حوادث السلامة المهنية + جولات التفتيش الميدانية.
+   getSafetyData / createIncident / updateIncident / deleteIncident /
+   createSafetyInspection / deleteSafetyInspection.
    ============================================================ */
 
-// 📊 البطاقات — مصدرها: getSafetySummary (دالة backend جديدة)
-const KPIS = [
-  { id: "days", label: "أيام بلا حوادث",   value: "47",  sub: "يوم",  icon: ShieldCheck,   color: "#16a34a" },
-  { id: "inc",  label: "حوادث هذا الشهر",  value: "2",   sub: "حادث", icon: AlertTriangle, color: "#ea580c" },
-  { id: "ppe",  label: "الالتزام بالوقاية", value: "94", suffix: "%", icon: HardHat,       color: "#2563eb" },
-  { id: "qual", label: "تقييم الجودة",     value: "4.6", sub: "من ٥", icon: Star,          color: "#ca8a04" },
-];
-
-// 📋 سجل حوادث السلامة — مصدرها: getSafetyIncidents
-// severity: minor=بسيطة · moderate=متوسطة · warning=تحذيرية | status: closed=مغلقة · review=قيد المراجعة
-const INCIDENTS = [
-  { type: "انزلاق في الموقع",       site: "مشروع نيوم",        date: "١٢ يونيو", severity: "minor",    status: "closed" },
-  { type: "إصابة يد طفيفة",         site: "مشروع البحر الأحمر", date: "٨ يونيو",  severity: "moderate", status: "closed" },
-  { type: "شبه حادث (Near-miss)",  site: "مشروع القدية",      date: "٢٠ يونيو", severity: "warning",  status: "review" },
-  { type: "عطل معدّة",             site: "موقع الجبيل",       date: "٥ يونيو",  severity: "minor",    status: "closed" },
-];
-const TRIR = "1.2"; // معدل التكرار
-
-// 🦺 الالتزام بمعدات الوقاية — مصدرها: getSafetySummary
-const PPE = [
-  { name: "الخوذة",          value: 98 },
-  { name: "السترة العاكسة", value: 95 },
-  { name: "الأحذية الواقية", value: 92 },
-  { name: "القفازات",        value: 90 },
-];
-
-// 🔍 جولات التفتيش — مصدرها: getInspections
-// result: pass=مطابق · notes=ملاحظات · action=يحتاج إجراء
-const INSPECTIONS = [
-  { site: "مشروع نيوم",        date: "٢٢ يونيو", result: "pass"   },
-  { site: "مشروع البحر الأحمر", date: "٢٠ يونيو", result: "notes"  },
-  { site: "موقع الجبيل",       date: "١٨ يونيو", result: "pass"   },
-  { site: "مشروع القدية",      date: "١٥ يونيو", result: "action" },
-];
-
-// ⭐ جودة الخدمة — مصدرها: getServiceQuality
-const QUALITY = {
-  avg: 4.6,
-  sites: [
-    { name: "مشروع نيوم",        score: 4.8 },
-    { name: "مشروع البحر الأحمر", score: 4.5 },
-    { name: "مشروع القدية",      score: 4.4 },
-  ],
+const SEVERITY = {
+  nearmiss: { label: "شبه حادث", color: "#64748b", bg: "#f1f5f9" },
+  minor: { label: "بسيطة", color: "#2563eb", bg: "#dbeafe" },
+  moderate: { label: "متوسطة", color: "#ea580c", bg: "#ffedd5" },
+  major: { label: "خطيرة", color: "#dc2626", bg: "#fee2e2" },
 };
-
-const SEV = {
-  minor:    { label: "بسيطة",   cls: "minor"    },
-  moderate: { label: "متوسطة",  cls: "moderate" },
-  warning:  { label: "تحذيرية", cls: "warning"  },
+const SEV_ORDER = ["nearmiss", "minor", "moderate", "major"];
+const INC_STATUS = {
+  open: { label: "مفتوحة", color: "#dc2626", bg: "#fee2e2" },
+  review: { label: "قيد المراجعة", color: "#ea580c", bg: "#ffedd5" },
+  closed: { label: "مغلقة", color: "#16a34a", bg: "#dcfce7" },
 };
-const RES = {
-  pass:   { label: "مطابق",       cls: "pass"   },
-  notes:  { label: "ملاحظات",     cls: "notes"  },
-  action: { label: "يحتاج إجراء", cls: "action" },
+const INC_STATUS_ORDER = ["open", "review", "closed"];
+const RESULT = {
+  pass: { label: "مطابق ✓", color: "#16a34a", bg: "#dcfce7" },
+  notes: { label: "ملاحظات", color: "#ea580c", bg: "#ffedd5" },
+  action: { label: "يحتاج إجراء", color: "#dc2626", bg: "#fee2e2" },
 };
+const RESULT_ORDER = ["pass", "notes", "action"];
 
-const STYLES = `
-  *{margin:0;padding:0;box-sizing:border-box}
-  .qs-root{
-    --bg:#f4f6f9; --panel:#fff; --ink:#161b26; --ink2:#5a6580; --ink3:#94a0b8;
-    --line:#e7ebf1; --line2:#dde2ec;
-    font-family:'IBM Plex Sans Arabic','Segoe UI',Tahoma,sans-serif;
-    direction:rtl; background:var(--bg); color:var(--ink); min-height:100vh;
-    padding:26px 30px; -webkit-font-smoothing:antialiased;
+export default function QualitySafetyView() {
+  const [tenantId, setTenantId] = useState("");
+  const [tab, setTab] = useState("incidents");
+  const [data, setData] = useState(null);
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState("");
+  const [modal, setModal] = useState(null);
+
+  useEffect(() => {
+    (async () => {
+      try {
+        const uid = auth.currentUser && auth.currentUser.uid;
+        if (!uid) { setError("لم يتم تسجيل الدخول."); setLoading(false); return; }
+        const userSnap = await getDoc(doc(db, "users", uid));
+        const tid = userSnap.exists() ? userSnap.data().tenantId : null;
+        if (!tid) { setError("تعذّر تحديد المنشأة."); setLoading(false); return; }
+        setTenantId(tid);
+      } catch (e) {
+        setError("تعذّر تحميل بيانات المستخدم."); setLoading(false);
+      }
+    })();
+  }, []);
+
+  useEffect(() => {
+    if (tenantId) loadData();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [tenantId]);
+
+  async function loadData() {
+    setLoading(true);
+    setError("");
+    try {
+      const res = await httpsCallable(functions, "getSafetyData")({});
+      setData(res.data);
+    } catch (e) {
+      setError(e.message || "تعذّر تحميل البيانات.");
+      setData(null);
+    } finally {
+      setLoading(false);
+    }
   }
-  .qs-num{font-variant-numeric:tabular-nums; letter-spacing:-.3px}
 
-  .qs-head{display:flex; align-items:center; gap:14px; margin-bottom:24px; flex-wrap:wrap}
-  .qs-head-ic{width:50px; height:50px; border-radius:13px; display:grid; place-items:center;
-    background:#ea580c1a; color:#ea580c; flex-shrink:0}
-  .qs-title{font-size:23px; font-weight:700; letter-spacing:-.4px; line-height:1.1}
-  .qs-sub{font-size:13px; color:var(--ink2); margin-top:2px}
-  .qs-period{margin-right:auto; display:flex; align-items:center; gap:7px; height:42px; padding:0 15px;
-    background:var(--panel); border:1px solid var(--line2); border-radius:11px; cursor:pointer;
-    font-family:inherit; font-size:13.5px; font-weight:600; color:var(--ink)}
-  .qs-period svg:first-child{color:#ea580c}
+  const s = data ? data.summary : { daysWithoutIncident: null, totalIncidents: 0, incidentsThisMonth: 0, openIncidents: 0, passRate: null, totalInspections: 0, severityBreakdown: {} };
+  const incidents = data ? data.incidents : [];
+  const inspections = data ? data.inspections : [];
 
-  .qs-kpis{display:grid; grid-template-columns:repeat(4,1fr); gap:14px; margin-bottom:16px}
-  .qs-kpi{background:var(--panel); border:1px solid var(--line); border-radius:15px; padding:17px 18px;
-    position:relative; overflow:hidden}
-  .qs-kpi::after{content:""; position:absolute; top:0; right:0; width:3px; height:100%; background:var(--c)}
-  .qs-kpi-ic{width:38px; height:38px; border-radius:10px; display:grid; place-items:center;
-    background:color-mix(in srgb,var(--c) 14%,transparent); color:var(--c); margin-bottom:12px}
-  .qs-kpi-label{font-size:12.5px; color:var(--ink2); font-weight:500; margin-bottom:5px}
-  .qs-kpi-val{font-size:24px; font-weight:700}
-  .qs-kpi-val .x{font-size:15px; color:var(--ink3); font-weight:600}
-  .qs-kpi-val .s{font-size:13px; color:var(--ink3); font-weight:500; margin-right:4px}
-
-  .qs-row{display:grid; gap:16px; margin-bottom:16px; align-items:start}
-  .qs-row.a{grid-template-columns:1.6fr 1fr}
-  .qs-row.b{grid-template-columns:1.4fr 1fr}
-  .qs-card{background:var(--panel); border:1px solid var(--line); border-radius:16px; padding:20px}
-  .qs-card-head{display:flex; align-items:center; justify-content:space-between; margin-bottom:18px}
-  .qs-card-title{font-size:15.5px; font-weight:700}
-  .qs-card-hint{font-size:12px; color:var(--ink3); font-weight:500}
-
-  /* INCIDENTS TABLE */
-  .qs-tablewrap{overflow-x:auto}
-  table.qs-table{width:100%; border-collapse:collapse; min-width:520px}
-  .qs-table th{text-align:right; font-size:11.5px; color:var(--ink3); font-weight:700; padding:0 12px 11px;
-    border-bottom:1px solid var(--line); white-space:nowrap}
-  .qs-table td{padding:13px 12px; border-bottom:1px solid var(--line); font-size:13px; vertical-align:middle}
-  .qs-table tr:last-child td{border-bottom:none}
-  .qs-inc-type{font-weight:600; color:var(--ink); white-space:nowrap}
-  .qs-inc-site{color:var(--ink2); white-space:nowrap}
-  .qs-inc-date{color:var(--ink3); font-size:12px; white-space:nowrap}
-  .qs-spill{display:inline-block; font-size:11px; font-weight:700; padding:4px 10px; border-radius:999px; white-space:nowrap}
-  .qs-spill.minor{background:#fef9c3; color:#92740a}
-  .qs-spill.moderate{background:#ffedd5; color:#9a3412}
-  .qs-spill.warning{background:#dbeafe; color:#1d4ed8}
-  .qs-st{font-size:11px; font-weight:700}
-  .qs-st.closed{color:#15803d} .qs-st.review{color:#9a3412}
-
-  /* PPE */
-  .qs-ppe{display:flex; flex-direction:column; gap:13px}
-  .qs-ppe-top{display:flex; justify-content:space-between; font-size:12.5px; margin-bottom:6px}
-  .qs-ppe-name{color:var(--ink2); font-weight:600}
-  .qs-ppe-val{font-weight:700; font-variant-numeric:tabular-nums}
-  .qs-ppe-bar{height:7px; background:#eef1f6; border-radius:999px; overflow:hidden}
-  .qs-ppe-bar i{display:block; height:100%; border-radius:999px; background:linear-gradient(90deg,#2563eb,#60a5fa)}
-
-  /* INSPECTIONS */
-  .qs-insps{display:flex; flex-direction:column; gap:9px}
-  .qs-insp{display:flex; align-items:center; gap:12px; padding:12px 13px; border-radius:12px; background:var(--bg); border:1px solid var(--line)}
-  .qs-insp-ic{width:34px; height:34px; border-radius:9px; background:#ea580c14; color:#ea580c; display:grid; place-items:center; flex-shrink:0}
-  .qs-insp-info{flex:1; min-width:0}
-  .qs-insp-site{font-size:13px; font-weight:600}
-  .qs-insp-date{font-size:11.5px; color:var(--ink3); margin-top:1px}
-  .qs-rpill{font-size:11px; font-weight:700; padding:4px 10px; border-radius:999px; flex-shrink:0; white-space:nowrap}
-  .qs-rpill.pass{background:#dcfce7; color:#15803d}
-  .qs-rpill.notes{background:#fef9c3; color:#92740a}
-  .qs-rpill.action{background:#fee2e2; color:#b91c1c}
-
-  /* QUALITY */
-  .qs-qavg{display:flex; align-items:center; gap:13px; padding-bottom:16px; margin-bottom:16px; border-bottom:1px solid var(--line)}
-  .qs-qavg-big{font-size:40px; font-weight:800; line-height:1; color:#ca8a04}
-  .qs-stars{display:flex; gap:2px}
-  .qs-qavg-cap{font-size:12px; color:var(--ink3); margin-top:3px}
-  .qs-qsites{display:flex; flex-direction:column; gap:11px}
-  .qs-qsite{display:flex; align-items:center; justify-content:space-between}
-  .qs-qsite-name{display:flex; align-items:center; gap:7px; font-size:12.5px; font-weight:600}
-  .qs-qsite-name svg{color:#ea580c}
-  .qs-qsite-score{display:flex; align-items:center; gap:5px; font-size:13px; font-weight:700; font-variant-numeric:tabular-nums}
-  .qs-qsite-score svg{color:#ca8a04}
-
-  @media(max-width:1000px){
-    .qs-kpis{grid-template-columns:repeat(2,1fr)}
-    .qs-row.a,.qs-row.b{grid-template-columns:1fr}
-  }
-  @media(max-width:560px){
-    .qs-root{padding:18px 14px}
-    .qs-kpis{grid-template-columns:1fr}
-    .qs-title{font-size:19px}
-  }
-`;
-
-function Stars({ score, size = 14 }) {
   return (
-    <span className="qs-stars">
-      {[1, 2, 3, 4, 5].map((n) => (
-        <Star key={n} size={size} fill={n <= Math.round(score) ? "#ca8a04" : "none"}
-              color={n <= Math.round(score) ? "#ca8a04" : "#d4d9e3"} />
-      ))}
-    </span>
+    <div style={styles.page}>
+      <div style={styles.topRow}>
+        <div>
+          <h1 style={styles.pageTitle}>الجودة والسلامة</h1>
+          <p style={styles.pageSub}>السلامة المهنية وجولات التفتيش الميدانية.</p>
+        </div>
+      </div>
+
+      {error ? <div style={styles.error}>{error}</div> : null}
+
+      {loading ? <p style={styles.muted}>جارٍ التحميل...</p> : !data ? (
+        <div style={styles.warnBox}>تعذّر تحميل البيانات.</div>
+      ) : (
+        <>
+          {/* KPIs */}
+          <div style={styles.kpiGrid}>
+            <div style={styles.kpiCard}><span style={styles.kpiLabel}>أيام بلا حوادث</span><span style={{ ...styles.kpiValue, color: "#16a34a" }}>{s.daysWithoutIncident != null ? s.daysWithoutIncident : "—"}</span></div>
+            <div style={styles.kpiCard}><span style={styles.kpiLabel}>حوادث هذا الشهر</span><span style={{ ...styles.kpiValue, color: s.incidentsThisMonth > 0 ? "#ea580c" : "#16a34a" }}>{s.incidentsThisMonth}</span></div>
+            <div style={styles.kpiCard}><span style={styles.kpiLabel}>حوادث مفتوحة</span><span style={{ ...styles.kpiValue, color: s.openIncidents > 0 ? "#dc2626" : "#16a34a" }}>{s.openIncidents}</span></div>
+            <div style={styles.kpiCard}><span style={styles.kpiLabel}>مطابقة التفتيش</span><span style={{ ...styles.kpiValue, color: "#2563eb" }} dir="ltr">{s.passRate != null ? `${s.passRate}%` : "—"}</span></div>
+          </div>
+
+          {/* تبويب */}
+          <div style={styles.tabs}>
+            <button style={tab === "incidents" ? styles.tabActive : styles.tab} onClick={() => setTab("incidents")}>⚠️ الحوادث</button>
+            <button style={tab === "inspections" ? styles.tabActive : styles.tab} onClick={() => setTab("inspections")}>🔍 جولات التفتيش</button>
+          </div>
+
+          {tab === "incidents" ? (
+            <div style={styles.section}>
+              <div style={styles.secHead}>
+                <h3 style={styles.sectionTitle}>سجل الحوادث ({incidents.length})</h3>
+                <button style={styles.addBtn} onClick={() => setModal({ newIncident: true })}>+ تسجيل حادث</button>
+              </div>
+              {incidents.length === 0 ? <p style={styles.muted}>لا توجد حوادث مسجّلة. 🎉</p> : (
+                <div style={styles.list}>
+                  {incidents.map((i) => {
+                    const sev = SEVERITY[i.severity] || SEVERITY.minor;
+                    const st = INC_STATUS[i.status] || INC_STATUS.open;
+                    return (
+                      <div key={i.id} style={styles.incCard}>
+                        <div style={styles.iTop}>
+                          <div style={{ flex: 1, minWidth: 0 }}>
+                            <div style={styles.iTypeRow}>
+                              <span style={styles.iNum}>#{String(i.incidentNumber).padStart(4, "0")}</span>
+                              <span style={styles.iType}>{i.type}</span>
+                            </div>
+                            <div style={styles.iMeta}>
+                              {i.site ? <span style={styles.iChip}>📍 {i.site}</span> : null}
+                              {i.incidentDate ? <span style={styles.iChip} dir="ltr">📅 {i.incidentDate}</span> : null}
+                            </div>
+                          </div>
+                          <div style={styles.iBadges}>
+                            <span style={{ ...styles.chip, color: sev.color, background: sev.bg }}>{sev.label}</span>
+                            <span style={{ ...styles.chip, color: st.color, background: st.bg }}>{st.label}</span>
+                          </div>
+                        </div>
+                        {i.description ? <div style={styles.iDesc}>{i.description}</div> : null}
+                        {i.correctiveAction ? <div style={styles.iAction}><span style={styles.iActionLabel}>الإجراء التصحيحي:</span> {i.correctiveAction}</div> : null}
+                        <div style={styles.iActions}>
+                          <button style={styles.editBtn} onClick={() => setModal({ editIncident: i })}>✏️ تعديل</button>
+                          <DeleteBtn fn="deleteIncident" idKey="incidentId" id={i.id} label={`حادث #${String(i.incidentNumber).padStart(4, "0")}`} onDone={loadData} />
+                        </div>
+                      </div>
+                    );
+                  })}
+                </div>
+              )}
+            </div>
+          ) : (
+            <div style={styles.section}>
+              <div style={styles.secHead}>
+                <h3 style={styles.sectionTitle}>جولات التفتيش ({inspections.length})</h3>
+                <button style={styles.addBtn} onClick={() => setModal({ newInspection: true })}>+ جولة جديدة</button>
+              </div>
+              {inspections.length === 0 ? <p style={styles.muted}>لا توجد جولات مسجّلة.</p> : (
+                <div style={styles.list}>
+                  {inspections.map((ins) => {
+                    const r = RESULT[ins.result] || RESULT.pass;
+                    return (
+                      <div key={ins.id} style={styles.inspRow}>
+                        <span style={styles.inspNum}>#{String(ins.inspectionNumber).padStart(4, "0")}</span>
+                        <div style={styles.inspBody}>
+                          <span style={styles.inspSite}>📍 {ins.site}</span>
+                          <span style={styles.inspMeta}>{ins.inspectionDate ? <span dir="ltr">{ins.inspectionDate}</span> : null}{ins.inspector ? ` · ${ins.inspector}` : ""}</span>
+                          {ins.notes ? <span style={styles.inspNotes}>{ins.notes}</span> : null}
+                        </div>
+                        <span style={{ ...styles.chip, color: r.color, background: r.bg }}>{r.label}</span>
+                        <DeleteBtn fn="deleteSafetyInspection" idKey="inspectionId" id={ins.id} label={`جولة #${String(ins.inspectionNumber).padStart(4, "0")}`} onDone={loadData} />
+                      </div>
+                    );
+                  })}
+                </div>
+              )}
+            </div>
+          )}
+        </>
+      )}
+
+      {modal && modal.newIncident ? <IncidentModal onClose={() => setModal(null)} onSaved={() => { setModal(null); loadData(); }} /> : null}
+      {modal && modal.editIncident ? <IncidentModal incident={modal.editIncident} onClose={() => setModal(null)} onSaved={() => { setModal(null); loadData(); }} /> : null}
+      {modal && modal.newInspection ? <InspectionModal onClose={() => setModal(null)} onSaved={() => { setModal(null); loadData(); }} /> : null}
+    </div>
   );
 }
 
-export default function QualitySafetyView() {
+function DeleteBtn({ fn, idKey, id, label, onDone }) {
+  const [busy, setBusy] = useState(false);
+  async function del() {
+    if (!window.confirm(`حذف ${label}؟`)) return;
+    setBusy(true);
+    try {
+      await httpsCallable(functions, fn)({ [idKey]: id });
+      onDone();
+    } catch (e) { alert(e.message || "تعذّر الحذف."); setBusy(false); }
+  }
+  return <button style={styles.delBtn} onClick={del} disabled={busy}>{busy ? "..." : "🗑"}</button>;
+}
+
+function IncidentModal({ incident, onClose, onSaved }) {
+  const isEdit = !!incident;
+  const inc = incident || {};
+  const today = new Date().toISOString().slice(0, 10);
+  const [f, setF] = useState({
+    type: inc.type || "", site: inc.site || "", severity: inc.severity || "minor",
+    status: inc.status || "open", incidentDate: inc.incidentDate || today,
+    description: inc.description || "", correctiveAction: inc.correctiveAction || "", reportedBy: inc.reportedBy || "",
+  });
+  const [err, setErr] = useState(""); const [saving, setSaving] = useState(false);
+  const set = (k, v) => setF((p) => ({ ...p, [k]: v }));
+  async function save() {
+    setErr("");
+    if (f.type.trim().length < 2) { setErr("نوع الحادث مطلوب."); return; }
+    setSaving(true);
+    try {
+      const payload = { type: f.type.trim(), site: f.site.trim(), severity: f.severity, status: f.status, incidentDate: f.incidentDate, description: f.description.trim(), correctiveAction: f.correctiveAction.trim(), reportedBy: f.reportedBy.trim() };
+      if (isEdit) await httpsCallable(functions, "updateIncident")({ incidentId: incident.id, ...payload });
+      else await httpsCallable(functions, "createIncident")(payload);
+      onSaved();
+    } catch (e) { setErr(e.message || "تعذّر الحفظ."); setSaving(false); }
+  }
   return (
-    <div className="qs-root">
-      <style>{STYLES}</style>
-
-      {/* HEAD */}
-      <div className="qs-head">
-        <div className="qs-head-ic"><ShieldCheck size={24} /></div>
-        <div>
-          <div className="qs-title">الجودة والسلامة</div>
-          <div className="qs-sub">السلامة المهنية وجودة الخدمة الميدانية · العمليات</div>
+    <div style={styles.overlay} onClick={onClose}>
+      <div style={styles.modal} onClick={(e) => e.stopPropagation()}>
+        <div style={styles.modalHead}><h2 style={styles.modalTitle}>{isEdit ? "تعديل الحادث" : "تسجيل حادث"}</h2><button style={styles.close} onClick={onClose}>✕</button></div>
+        {err ? <div style={styles.error}>{err}</div> : null}
+        <div style={styles.field}><label style={styles.label}>نوع الحادث *</label><input style={styles.input} value={f.type} onChange={(e) => set("type", e.target.value)} disabled={saving} placeholder="انزلاق / إصابة / عطل معدّة" /></div>
+        <div style={styles.row}>
+          <div style={{ flex: 1 }}><div style={styles.field}><label style={styles.label}>الموقع</label><input style={styles.input} value={f.site} onChange={(e) => set("site", e.target.value)} disabled={saving} placeholder="اسم المشروع/الموقع" /></div></div>
+          <div style={{ flex: 1 }}><div style={styles.field}><label style={styles.label}>التاريخ</label><input style={styles.input} type="date" value={f.incidentDate} onChange={(e) => set("incidentDate", e.target.value)} disabled={saving} dir="ltr" /></div></div>
         </div>
-        <button className="qs-period">
-          <Calendar size={16} /> هذا الشهر <ChevronDown size={15} />
-        </button>
-      </div>
-
-      {/* KPIs */}
-      <div className="qs-kpis">
-        {KPIS.map((k) => {
-          const Icon = k.icon;
-          return (
-            <div className="qs-kpi" key={k.id} style={{ "--c": k.color }}>
-              <div className="qs-kpi-ic"><Icon size={19} /></div>
-              <div className="qs-kpi-label">{k.label}</div>
-              <div className="qs-kpi-val qs-num">
-                {k.value}
-                {k.suffix && <span className="x">{k.suffix}</span>}
-                {k.sub && <span className="s">{k.sub}</span>}
-              </div>
-            </div>
-          );
-        })}
-      </div>
-
-      {/* ROW A: INCIDENTS + PPE */}
-      <div className="qs-row a">
-
-        <div className="qs-card" style={{ marginBottom: 0 }}>
-          <div className="qs-card-head">
-            <span className="qs-card-title">سجل حوادث السلامة</span>
-            <span className="qs-card-hint">معدل التكرار (TRIR) {TRIR}</span>
-          </div>
-          <div className="qs-tablewrap">
-            <table className="qs-table">
-              <thead>
-                <tr>
-                  <th>النوع</th>
-                  <th>الموقع</th>
-                  <th>التاريخ</th>
-                  <th>الخطورة</th>
-                  <th>الحالة</th>
-                </tr>
-              </thead>
-              <tbody>
-                {INCIDENTS.map((c, i) => {
-                  const sv = SEV[c.severity];
-                  return (
-                    <tr key={i}>
-                      <td className="qs-inc-type">{c.type}</td>
-                      <td className="qs-inc-site">{c.site}</td>
-                      <td className="qs-inc-date">{c.date}</td>
-                      <td><span className={`qs-spill ${sv.cls}`}>{sv.label}</span></td>
-                      <td><span className={`qs-st ${c.status}`}>{c.status === "closed" ? "مغلقة" : "قيد المراجعة"}</span></td>
-                    </tr>
-                  );
-                })}
-              </tbody>
-            </table>
-          </div>
+        <div style={styles.row}>
+          <div style={{ flex: 1 }}><div style={styles.field}><label style={styles.label}>الخطورة</label>
+            <select style={styles.input} value={f.severity} onChange={(e) => set("severity", e.target.value)} disabled={saving}>{SEV_ORDER.map((sv) => <option key={sv} value={sv}>{SEVERITY[sv].label}</option>)}</select>
+          </div></div>
+          <div style={{ flex: 1 }}><div style={styles.field}><label style={styles.label}>الحالة</label>
+            <select style={styles.input} value={f.status} onChange={(e) => set("status", e.target.value)} disabled={saving}>{INC_STATUS_ORDER.map((st) => <option key={st} value={st}>{INC_STATUS[st].label}</option>)}</select>
+          </div></div>
         </div>
-
-        <div className="qs-card" style={{ marginBottom: 0 }}>
-          <div className="qs-card-head">
-            <span className="qs-card-title">الالتزام بمعدات الوقاية</span>
-            <HardHat size={17} style={{ color: "#94a0b8" }} />
-          </div>
-          <div className="qs-ppe">
-            {PPE.map((p) => (
-              <div key={p.name}>
-                <div className="qs-ppe-top">
-                  <span className="qs-ppe-name">{p.name}</span>
-                  <span className="qs-ppe-val qs-num">{p.value}٪</span>
-                </div>
-                <div className="qs-ppe-bar"><i style={{ width: `${p.value}%` }} /></div>
-              </div>
-            ))}
-          </div>
+        <div style={styles.field}><label style={styles.label}>الوصف</label><textarea style={styles.textarea} value={f.description} onChange={(e) => set("description", e.target.value)} disabled={saving} rows={2} /></div>
+        <div style={styles.field}><label style={styles.label}>الإجراء التصحيحي</label><textarea style={styles.textarea} value={f.correctiveAction} onChange={(e) => set("correctiveAction", e.target.value)} disabled={saving} rows={2} placeholder="ما تم لمنع تكرار الحادث" /></div>
+        <div style={styles.field}><label style={styles.label}>المُبلِّغ</label><input style={styles.input} value={f.reportedBy} onChange={(e) => set("reportedBy", e.target.value)} disabled={saving} /></div>
+        <div style={styles.modalActions}>
+          <button style={styles.cancelBtn} onClick={onClose} disabled={saving}>إلغاء</button>
+          <button style={styles.saveBtn} onClick={save} disabled={saving}>{saving ? "جارٍ الحفظ..." : isEdit ? "حفظ" : "تسجيل"}</button>
         </div>
-
-      </div>
-
-      {/* ROW B: INSPECTIONS + QUALITY */}
-      <div className="qs-row b">
-
-        <div className="qs-card" style={{ marginBottom: 0 }}>
-          <div className="qs-card-head">
-            <span className="qs-card-title">جولات التفتيش الميدانية</span>
-            <ClipboardCheck size={17} style={{ color: "#94a0b8" }} />
-          </div>
-          <div className="qs-insps">
-            {INSPECTIONS.map((it, i) => {
-              const r = RES[it.result];
-              return (
-                <div className="qs-insp" key={i}>
-                  <div className="qs-insp-ic"><ClipboardCheck size={16} /></div>
-                  <div className="qs-insp-info">
-                    <div className="qs-insp-site">{it.site}</div>
-                    <div className="qs-insp-date">{it.date}</div>
-                  </div>
-                  <span className={`qs-rpill ${r.cls}`}>{r.label}</span>
-                </div>
-              );
-            })}
-          </div>
-        </div>
-
-        <div className="qs-card" style={{ marginBottom: 0 }}>
-          <div className="qs-card-head">
-            <span className="qs-card-title">جودة الخدمة</span>
-          </div>
-          <div className="qs-qavg">
-            <span className="qs-qavg-big qs-num">{QUALITY.avg}</span>
-            <div>
-              <Stars score={QUALITY.avg} size={16} />
-              <div className="qs-qavg-cap">متوسط تقييم المواقع</div>
-            </div>
-          </div>
-          <div className="qs-qsites">
-            {QUALITY.sites.map((s) => (
-              <div className="qs-qsite" key={s.name}>
-                <span className="qs-qsite-name"><MapPin size={13} />{s.name}</span>
-                <span className="qs-qsite-score"><Star size={13} fill="#ca8a04" />{s.score}</span>
-              </div>
-            ))}
-          </div>
-        </div>
-
       </div>
     </div>
   );
 }
+
+function InspectionModal({ onClose, onSaved }) {
+  const today = new Date().toISOString().slice(0, 10);
+  const [f, setF] = useState({ site: "", inspectionDate: today, result: "pass", inspector: "", notes: "" });
+  const [err, setErr] = useState(""); const [saving, setSaving] = useState(false);
+  const set = (k, v) => setF((p) => ({ ...p, [k]: v }));
+  async function save() {
+    setErr("");
+    if (f.site.trim().length < 2) { setErr("الموقع مطلوب."); return; }
+    setSaving(true);
+    try {
+      await httpsCallable(functions, "createSafetyInspection")({ site: f.site.trim(), inspectionDate: f.inspectionDate, result: f.result, inspector: f.inspector.trim(), notes: f.notes.trim() });
+      onSaved();
+    } catch (e) { setErr(e.message || "تعذّر الحفظ."); setSaving(false); }
+  }
+  return (
+    <div style={styles.overlay} onClick={onClose}>
+      <div style={styles.modal} onClick={(e) => e.stopPropagation()}>
+        <div style={styles.modalHead}><h2 style={styles.modalTitle}>جولة تفتيش جديدة</h2><button style={styles.close} onClick={onClose}>✕</button></div>
+        {err ? <div style={styles.error}>{err}</div> : null}
+        <div style={styles.field}><label style={styles.label}>الموقع *</label><input style={styles.input} value={f.site} onChange={(e) => set("site", e.target.value)} disabled={saving} placeholder="اسم المشروع/الموقع" /></div>
+        <div style={styles.row}>
+          <div style={{ flex: 1 }}><div style={styles.field}><label style={styles.label}>التاريخ</label><input style={styles.input} type="date" value={f.inspectionDate} onChange={(e) => set("inspectionDate", e.target.value)} disabled={saving} dir="ltr" /></div></div>
+          <div style={{ flex: 1 }}><div style={styles.field}><label style={styles.label}>النتيجة</label>
+            <select style={styles.input} value={f.result} onChange={(e) => set("result", e.target.value)} disabled={saving}>{RESULT_ORDER.map((r) => <option key={r} value={r}>{RESULT[r].label}</option>)}</select>
+          </div></div>
+        </div>
+        <div style={styles.field}><label style={styles.label}>المفتّش</label><input style={styles.input} value={f.inspector} onChange={(e) => set("inspector", e.target.value)} disabled={saving} /></div>
+        <div style={styles.field}><label style={styles.label}>ملاحظات</label><textarea style={styles.textarea} value={f.notes} onChange={(e) => set("notes", e.target.value)} disabled={saving} rows={2} /></div>
+        <div style={styles.modalActions}>
+          <button style={styles.cancelBtn} onClick={onClose} disabled={saving}>إلغاء</button>
+          <button style={styles.saveBtn} onClick={save} disabled={saving}>{saving ? "جارٍ الحفظ..." : "تسجيل"}</button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+const styles = {
+  page: { padding: "26px 30px 40px", minHeight: "100%", background: "#f4f6f9", fontFamily: "'IBM Plex Sans Arabic', system-ui, sans-serif", direction: "rtl" },
+  topRow: { marginBottom: 18 },
+  pageTitle: { fontSize: 24, fontWeight: 800, color: "#ea580c", margin: "0 0 4px" },
+  pageSub: { fontSize: 14, color: "#64748b", margin: 0 },
+
+  error: { padding: "10px 12px", background: "#fee2e2", color: "#b91c1c", borderRadius: 8, fontSize: 14, marginBottom: 16 },
+  warnBox: { padding: "12px 16px", background: "#fffbeb", border: "1px solid #fde68a", borderRadius: 10, fontSize: 14, color: "#92400e", marginBottom: 16 },
+  muted: { color: "#94a3b8", fontSize: 14, margin: 0 },
+
+  kpiGrid: { display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(170px, 1fr))", gap: 12, marginBottom: 18 },
+  kpiCard: { background: "#fff", border: "1px solid #e2e8f0", borderRadius: 12, padding: "16px 20px", display: "flex", flexDirection: "column", gap: 8 },
+  kpiLabel: { fontSize: 13, color: "#64748b", fontWeight: 600 },
+  kpiValue: { fontSize: 26, fontWeight: 800, color: "#0f172a", fontFamily: "monospace" },
+
+  tabs: { display: "flex", gap: 8, marginBottom: 18, borderBottom: "2px solid #e2e8f0" },
+  tab: { padding: "10px 18px", fontSize: 14, fontWeight: 700, color: "#64748b", background: "none", border: "none", borderBottom: "2px solid transparent", marginBottom: -2, cursor: "pointer" },
+  tabActive: { padding: "10px 18px", fontSize: 14, fontWeight: 700, color: "#ea580c", background: "none", border: "none", borderBottom: "2px solid #ea580c", marginBottom: -2, cursor: "pointer" },
+
+  section: { background: "#fff", border: "1px solid #e2e8f0", borderRadius: 12, padding: "20px 22px" },
+  secHead: { display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 16 },
+  sectionTitle: { fontSize: 16, fontWeight: 800, color: "#0f172a", margin: 0 },
+  addBtn: { padding: "9px 18px", fontSize: 14, fontWeight: 700, color: "#fff", background: "#ea580c", border: "none", borderRadius: 8, cursor: "pointer" },
+  list: { display: "flex", flexDirection: "column", gap: 12 },
+
+  incCard: { border: "1px solid #e2e8f0", borderRadius: 10, padding: "14px 16px" },
+  iTop: { display: "flex", justifyContent: "space-between", alignItems: "flex-start", gap: 10, marginBottom: 10 },
+  iTypeRow: { display: "flex", alignItems: "center", gap: 8, flexWrap: "wrap", marginBottom: 6 },
+  iNum: { fontSize: 12, fontWeight: 800, color: "#94a3b8", fontFamily: "monospace" },
+  iType: { fontSize: 15, fontWeight: 700, color: "#0f172a" },
+  iMeta: { display: "flex", gap: 8, flexWrap: "wrap" },
+  iChip: { fontSize: 12, color: "#475569", background: "#f8fafc", border: "1px solid #e2e8f0", borderRadius: 8, padding: "3px 10px" },
+  iBadges: { display: "flex", flexDirection: "column", gap: 6, alignItems: "flex-end" },
+  chip: { fontSize: 12, fontWeight: 700, borderRadius: 6, padding: "3px 12px", whiteSpace: "nowrap" },
+  iDesc: { fontSize: 13, color: "#334155", background: "#f8fafc", borderRadius: 8, padding: "10px 12px", marginBottom: 10, lineHeight: 1.5 },
+  iAction: { fontSize: 13, color: "#334155", background: "#fff7ed", borderRadius: 8, padding: "10px 12px", marginBottom: 10, lineHeight: 1.5, borderRight: "3px solid #ea580c" },
+  iActionLabel: { fontWeight: 700, color: "#c2410c" },
+  iActions: { display: "flex", gap: 8 },
+  editBtn: { padding: "7px 14px", fontSize: 13, fontWeight: 600, color: "#475569", background: "#f1f5f9", border: "none", borderRadius: 7, cursor: "pointer" },
+  delBtn: { padding: "7px 11px", fontSize: 13, background: "#fef2f2", border: "none", borderRadius: 7, cursor: "pointer", flexShrink: 0 },
+
+  inspRow: { display: "flex", alignItems: "center", gap: 12, padding: "12px 14px", border: "1px solid #e2e8f0", borderRadius: 10 },
+  inspNum: { fontSize: 12, fontWeight: 800, color: "#94a3b8", fontFamily: "monospace", flexShrink: 0 },
+  inspBody: { flex: 1, minWidth: 0, display: "flex", flexDirection: "column", gap: 3 },
+  inspSite: { fontSize: 14, fontWeight: 700, color: "#0f172a" },
+  inspMeta: { fontSize: 12, color: "#94a3b8" },
+  inspNotes: { fontSize: 12, color: "#64748b" },
+
+  overlay: { position: "fixed", inset: 0, background: "rgba(15,23,42,.5)", display: "flex", alignItems: "center", justifyContent: "center", zIndex: 1000, padding: 16 },
+  modal: { background: "#fff", borderRadius: 16, width: "100%", maxWidth: 500, maxHeight: "92vh", overflowY: "auto", padding: 24, direction: "rtl", fontFamily: "'IBM Plex Sans Arabic', system-ui, sans-serif" },
+  modalHead: { display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 16 },
+  modalTitle: { fontSize: 17, fontWeight: 800, color: "#0f172a", margin: 0 },
+  close: { fontSize: 20, color: "#94a3b8", background: "none", border: "none", cursor: "pointer" },
+  field: { display: "flex", flexDirection: "column", marginBottom: 12 },
+  label: { display: "block", fontSize: 13, fontWeight: 600, color: "#334155", margin: "0 0 6px" },
+  input: { width: "100%", padding: "10px 12px", fontSize: 14, border: "1px solid #cbd5e1", borderRadius: 8, boxSizing: "border-box", fontFamily: "inherit" },
+  textarea: { width: "100%", padding: "10px 12px", fontSize: 14, border: "1px solid #cbd5e1", borderRadius: 8, boxSizing: "border-box", fontFamily: "inherit", resize: "vertical" },
+  row: { display: "flex", gap: 12 },
+  modalActions: { display: "flex", gap: 10, marginTop: 8 },
+  cancelBtn: { flex: 1, padding: "11px", fontSize: 14, fontWeight: 600, color: "#475569", background: "#f1f5f9", border: "none", borderRadius: 8, cursor: "pointer" },
+  saveBtn: { flex: 2, padding: "11px", fontSize: 14, fontWeight: 700, color: "#fff", background: "#ea580c", border: "none", borderRadius: 8, cursor: "pointer" },
+};
