@@ -22,6 +22,7 @@ import TreasuryView             from "./TreasuryView";
 import FPAView                  from "./FPAView";
 import ProcurementView          from "./ProcurementView";
 import POSView                  from "./POSView";                 // fin_pos (نقاط البيع)
+import CashierView              from "./CashierView";             // fin_cash (الكاشير)
 import PayrollView              from "./PayrollView";
 import RecruitmentView          from "./RecruitmentView";
 import TrainingView             from "./TrainingView";
@@ -69,6 +70,7 @@ const views = {
   fin_fpa:       FPAView,
   fin_proc:      ProcurementView,
   fin_pos:       POSView,
+  fin_cash:      CashierView,
 
   // الموارد البشرية
   hr_emp:        StaffView,

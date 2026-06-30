@@ -79,6 +79,9 @@ const {
   buildProductDoc,
   buildStockMovementDoc,
   buildSalesOrderDoc,
+  buildCashierSessionDoc,
+  SESSION_STATUS,
+  buildSalesReturnDoc,
   ALL_PAYMENT_METHOD,
   PAYMENT_METHOD,
   POS_VAT_RATE,
@@ -9028,6 +9031,14 @@ exports.createSale = onCall(async (request) => {
       cashierName = userDoc.exists ? (userDoc.data().name || null) : null;
     } catch (e) { cashierName = null; }
 
+    // الجلسة المفتوحة (لربط البيع بها تلقائيًا)
+    let openSessionId = null;
+    try {
+      const sessSnap = await db.collection(COLLECTIONS.CASHIER_SESSIONS)
+        .where("tenantId", "==", callerTenantId).where("status", "==", "open").limit(1).get();
+      openSessionId = sessSnap.empty ? null : sessSnap.docs[0].id;
+    } catch (e) { openSessionId = null; }
+
     const tenantRef = db.collection(COLLECTIONS.TENANTS).doc(callerTenantId);
     const orderRef = db.collection(COLLECTIONS.SALES_ORDERS).doc();
 
@@ -9078,6 +9089,7 @@ exports.createSale = onCall(async (request) => {
       tx.set(orderRef, buildSalesOrderDoc({
         tenantId: callerTenantId,
         orderNumber: nextNumber,
+        sessionId: openSessionId,
         items: lineItems,
         subtotal: subtotal,
         discount: discount,
@@ -9172,6 +9184,306 @@ exports.getPOSData = onCall(async (request) => {
     if (err instanceof HttpsError) throw err;
     console.error("getPOSData failed:", err);
     throw new HttpsError("internal", "تعذّر تحميل بيانات نقاط البيع.");
+  }
+});
+
+// ═══════════════════════════════════════════════════════
+// ===== الكاشير: جلسات الوردية والمرتجعات =====
+// ═══════════════════════════════════════════════════════
+
+// فتح جلسة (وردية)
+exports.openSession = onCall(async (request) => {
+  try {
+    const callerTenantId = await requireModule(request.auth, MODULES.POS);
+    const data = request.data || {};
+    const openingBalance = Number(data.openingBalance) || 0;
+    if (openingBalance < 0) throw new HttpsError("invalid-argument", "رصيد البداية غير صحيح.");
+
+    // منع جلستين مفتوحتين
+    const existing = await db.collection(COLLECTIONS.CASHIER_SESSIONS)
+      .where("tenantId", "==", callerTenantId).where("status", "==", "open").limit(1).get();
+    if (!existing.empty) throw new HttpsError("failed-precondition", "توجد جلسة مفتوحة بالفعل. أغلقها أولًا.");
+
+    let cashierName = null;
+    try {
+      const userDoc = await db.collection(COLLECTIONS.USERS).doc(request.auth.uid).get();
+      cashierName = userDoc.exists ? (userDoc.data().name || null) : null;
+    } catch (e) { cashierName = null; }
+
+    const tenantRef = db.collection(COLLECTIONS.TENANTS).doc(callerTenantId);
+    const sessionRef = db.collection(COLLECTIONS.CASHIER_SESSIONS).doc();
+    const result = await db.runTransaction(async (tx) => {
+      const tenantSnap = await tx.get(tenantRef);
+      if (!tenantSnap.exists) throw new HttpsError("failed-precondition", "الشركة غير موجودة.");
+      const nextNumber = (tenantSnap.data().lastSessionNumber || 0) + 1;
+      tx.set(sessionRef, buildCashierSessionDoc({
+        tenantId: callerTenantId,
+        sessionNumber: nextNumber,
+        openingBalance: openingBalance,
+        cashierName: cashierName,
+        openedBy: request.auth.uid,
+        openedAt: FieldValue.serverTimestamp(),
+      }));
+      tx.update(tenantRef, { lastSessionNumber: nextNumber });
+      return { sessionNumber: nextNumber };
+    });
+    return { id: sessionRef.id, sessionNumber: result.sessionNumber };
+  } catch (err) {
+    if (err instanceof HttpsError) throw err;
+    console.error("openSession failed:", err);
+    throw new HttpsError("internal", "تعذّر فتح الجلسة.");
+  }
+});
+
+// إغلاق جلسة + التسوية
+exports.closeSession = onCall(async (request) => {
+  try {
+    const callerTenantId = await requireModule(request.auth, MODULES.POS);
+    const data = request.data || {};
+    const sessionId = typeof data.sessionId === "string" ? data.sessionId.trim() : "";
+    if (!sessionId) throw new HttpsError("invalid-argument", "يجب تحديد الجلسة.");
+    const countedCash = Number(data.countedCash);
+    if (!Number.isFinite(countedCash) || countedCash < 0) throw new HttpsError("invalid-argument", "المبلغ المعدود غير صحيح.");
+    const round2 = (n) => Math.round((Number(n) || 0) * 100) / 100;
+
+    const ref = db.collection(COLLECTIONS.CASHIER_SESSIONS).doc(sessionId);
+    const doc = await ref.get();
+    if (!doc.exists || doc.data().tenantId !== callerTenantId) throw new HttpsError("invalid-argument", "الجلسة غير موجودة.");
+    if (doc.data().status !== "open") throw new HttpsError("failed-precondition", "الجلسة مغلقة بالفعل.");
+    const session = doc.data();
+
+    // مبيعات ومرتجعات الجلسة
+    const [orderSnap, returnSnap] = await Promise.all([
+      db.collection(COLLECTIONS.SALES_ORDERS).where("tenantId", "==", callerTenantId).where("sessionId", "==", sessionId).get(),
+      db.collection(COLLECTIONS.SALES_RETURNS).where("tenantId", "==", callerTenantId).where("sessionId", "==", sessionId).get(),
+    ]);
+
+    let salesTotal = 0, cashTotal = 0, cardTotal = 0, transferTotal = 0;
+    orderSnap.docs.forEach((d) => {
+      const o = d.data();
+      const t = Number(o.total) || 0;
+      salesTotal = round2(salesTotal + t);
+      if (o.paymentMethod === "cash") cashTotal = round2(cashTotal + t);
+      else if (o.paymentMethod === "card") cardTotal = round2(cardTotal + t);
+      else if (o.paymentMethod === "transfer") transferTotal = round2(transferTotal + t);
+    });
+    let returnsTotal = 0;
+    returnSnap.docs.forEach((d) => { returnsTotal = round2(returnsTotal + (Number(d.data().total) || 0)); });
+
+    // المتوقّع نقدًا = رصيد البداية + المبيعات النقدية − المرتجعات (تُرجَع نقدًا)
+    const expectedCash = round2((Number(session.openingBalance) || 0) + cashTotal - returnsTotal);
+    const difference = round2(countedCash - expectedCash);
+
+    await ref.update({
+      status: "closed",
+      closedAt: FieldValue.serverTimestamp(),
+      closedBy: request.auth.uid,
+      countedCash: round2(countedCash),
+      expectedCash: expectedCash,
+      difference: difference,
+      salesCount: orderSnap.size,
+      salesTotal: salesTotal,
+      cashTotal: cashTotal,
+      cardTotal: cardTotal,
+      transferTotal: transferTotal,
+      returnsTotal: returnsTotal,
+      closingNotes: typeof data.closingNotes === "string" ? data.closingNotes.trim() || null : null,
+    });
+    return { id: sessionId, expectedCash, countedCash: round2(countedCash), difference, salesTotal, salesCount: orderSnap.size };
+  } catch (err) {
+    if (err instanceof HttpsError) throw err;
+    console.error("closeSession failed:", err);
+    throw new HttpsError("internal", "تعذّر إغلاق الجلسة.");
+  }
+});
+
+// إنشاء مرتجع (يُرجع المخزون)
+// data: { items:[{productId, qty}], reason, originalOrderNumber }
+exports.createReturn = onCall(async (request) => {
+  try {
+    const callerTenantId = await requireModule(request.auth, MODULES.POS);
+    const data = request.data || {};
+    const round2 = (n) => Math.round((Number(n) || 0) * 100) / 100;
+
+    const rawItems = Array.isArray(data.items) ? data.items : [];
+    if (rawItems.length === 0) throw new HttpsError("invalid-argument", "لا توجد أصناف للإرجاع.");
+    if (rawItems.length > 100) throw new HttpsError("invalid-argument", "عدد الأصناف كبير جدًا.");
+
+    const qtyByProduct = {};
+    for (const it of rawItems) {
+      const pid = typeof it.productId === "string" ? it.productId.trim() : "";
+      const qty = Number(it.qty);
+      if (!pid) throw new HttpsError("invalid-argument", "صنف غير صالح.");
+      if (!Number.isFinite(qty) || qty <= 0) throw new HttpsError("invalid-argument", "كمية غير صحيحة.");
+      qtyByProduct[pid] = (qtyByProduct[pid] || 0) + qty;
+    }
+    const productIds = Object.keys(qtyByProduct);
+
+    let cashierName = null;
+    try {
+      const userDoc = await db.collection(COLLECTIONS.USERS).doc(request.auth.uid).get();
+      cashierName = userDoc.exists ? (userDoc.data().name || null) : null;
+    } catch (e) { cashierName = null; }
+
+    let openSessionId = null;
+    try {
+      const sessSnap = await db.collection(COLLECTIONS.CASHIER_SESSIONS)
+        .where("tenantId", "==", callerTenantId).where("status", "==", "open").limit(1).get();
+      openSessionId = sessSnap.empty ? null : sessSnap.docs[0].id;
+    } catch (e) { openSessionId = null; }
+
+    const tenantRef = db.collection(COLLECTIONS.TENANTS).doc(callerTenantId);
+    const returnRef = db.collection(COLLECTIONS.SALES_RETURNS).doc();
+
+    const result = await db.runTransaction(async (tx) => {
+      const tenantSnap = await tx.get(tenantRef);
+      if (!tenantSnap.exists) throw new HttpsError("failed-precondition", "الشركة غير موجودة.");
+
+      const productRefs = productIds.map((id) => db.collection(COLLECTIONS.PRODUCTS).doc(id));
+      const productSnaps = await Promise.all(productRefs.map((r) => tx.get(r)));
+
+      const lineItems = [];
+      let total = 0;
+      const stockUpdates = [];
+
+      for (let i = 0; i < productIds.length; i++) {
+        const snap = productSnaps[i];
+        const pid = productIds[i];
+        const qty = qtyByProduct[pid];
+        if (!snap.exists || snap.data().tenantId !== callerTenantId) throw new HttpsError("invalid-argument", "أحد الأصناف غير موجود.");
+        const p = snap.data();
+        const unitPrice = Number(p.salePrice) || 0;
+        const lineTotal = round2(unitPrice * qty);
+        total = round2(total + lineTotal);
+        lineItems.push({ productId: pid, name: p.name, qty: qty, unitPrice: unitPrice, lineTotal: lineTotal, isService: !!p.isService });
+        // إرجاع للمخزون (المنتجات فقط)
+        if (!p.isService) {
+          const current = Number(p.quantity) || 0;
+          stockUpdates.push({ ref: productRefs[i], newQty: round2(current + qty), name: p.name, qty: qty });
+        }
+      }
+
+      const nextNumber = (tenantSnap.data().lastReturnNumber || 0) + 1;
+      tx.set(returnRef, buildSalesReturnDoc({
+        tenantId: callerTenantId,
+        returnNumber: nextNumber,
+        sessionId: openSessionId,
+        originalOrderNumber: data.originalOrderNumber != null ? Number(data.originalOrderNumber) : null,
+        items: lineItems,
+        total: total,
+        reason: typeof data.reason === "string" ? data.reason.trim() : null,
+        cashierName: cashierName,
+        createdBy: request.auth.uid,
+        createdAt: FieldValue.serverTimestamp(),
+      }));
+      tx.update(tenantRef, { lastReturnNumber: nextNumber });
+
+      for (const su of stockUpdates) {
+        tx.update(su.ref, { quantity: su.newQty, updatedAt: FieldValue.serverTimestamp() });
+        const mvRef = db.collection(COLLECTIONS.STOCK_MOVEMENTS).doc();
+        tx.set(mvRef, buildStockMovementDoc({
+          tenantId: callerTenantId,
+          productId: su.ref.id,
+          productName: su.name,
+          type: STOCK_MOVEMENT_TYPE.IN,
+          quantity: su.qty,
+          balanceAfter: su.newQty,
+          reason: `مرتجع #${nextNumber}`,
+          source: "return",
+          note: null,
+          createdBy: request.auth.uid,
+          createdAt: FieldValue.serverTimestamp(),
+        }));
+      }
+      return { returnNumber: nextNumber, total: total };
+    });
+    return { id: returnRef.id, ...result };
+  } catch (err) {
+    if (err instanceof HttpsError) throw err;
+    console.error("createReturn failed:", err);
+    throw new HttpsError("internal", "تعذّر تسجيل المرتجع.");
+  }
+});
+
+// بيانات الكاشير: الجلسة المفتوحة (+ مبيعاتها الحيّة) + الفواتير + المرتجعات + الجلسات السابقة
+exports.getCashierData = onCall(async (request) => {
+  try {
+    const callerTenantId = await requireModule(request.auth, MODULES.POS);
+    const round2 = (n) => Math.round((Number(n) || 0) * 100) / 100;
+    const toMs = (ts) => (ts && ts.toMillis ? ts.toMillis() : null);
+
+    const [sessionSnap, orderSnap, returnSnap, productSnap] = await Promise.all([
+      db.collection(COLLECTIONS.CASHIER_SESSIONS).where("tenantId", "==", callerTenantId).get(),
+      db.collection(COLLECTIONS.SALES_ORDERS).where("tenantId", "==", callerTenantId).get(),
+      db.collection(COLLECTIONS.SALES_RETURNS).where("tenantId", "==", callerTenantId).get(),
+      db.collection(COLLECTIONS.PRODUCTS).where("tenantId", "==", callerTenantId).get(),
+    ]);
+
+    const products = productSnap.docs
+      .map((d) => {
+        const p = d.data();
+        return { id: d.id, name: p.name, salePrice: Number(p.salePrice) || 0, quantity: Number(p.quantity) || 0, isService: !!p.isService, active: p.active !== false };
+      })
+      .filter((p) => p.active)
+      .sort((a, b) => (a.name || "").localeCompare(b.name || ""));
+
+    const sessions = sessionSnap.docs.map((d) => {
+      const s = d.data();
+      return { id: d.id, ...s, openedAt: toMs(s.openedAt), closedAt: toMs(s.closedAt) };
+    });
+    sessions.sort((a, b) => (b.sessionNumber || 0) - (a.sessionNumber || 0));
+    const activeSession = sessions.find((s) => s.status === "open") || null;
+
+    const orders = orderSnap.docs.map((d) => {
+      const o = d.data();
+      return { id: d.id, ...o, createdAt: toMs(o.createdAt) };
+    });
+    orders.sort((a, b) => (b.orderNumber || 0) - (a.orderNumber || 0));
+
+    const returns = returnSnap.docs.map((d) => {
+      const r = d.data();
+      return { id: d.id, ...r, createdAt: toMs(r.createdAt) };
+    });
+    returns.sort((a, b) => (b.returnNumber || 0) - (a.returnNumber || 0));
+
+    // ملخّص الجلسة المفتوحة (حيّ)
+    let activeSummary = null;
+    if (activeSession) {
+      const sessOrders = orders.filter((o) => o.sessionId === activeSession.id);
+      const sessReturns = returns.filter((r) => r.sessionId === activeSession.id);
+      let salesTotal = 0, cashTotal = 0, cardTotal = 0, transferTotal = 0;
+      sessOrders.forEach((o) => {
+        const t = Number(o.total) || 0;
+        salesTotal = round2(salesTotal + t);
+        if (o.paymentMethod === "cash") cashTotal = round2(cashTotal + t);
+        else if (o.paymentMethod === "card") cardTotal = round2(cardTotal + t);
+        else if (o.paymentMethod === "transfer") transferTotal = round2(transferTotal + t);
+      });
+      const returnsTotal = round2(sessReturns.reduce((s, r) => s + (Number(r.total) || 0), 0));
+      activeSummary = {
+        salesCount: sessOrders.length,
+        salesTotal,
+        cashTotal,
+        cardTotal,
+        transferTotal,
+        returnsTotal,
+        returnsCount: sessReturns.length,
+        expectedCash: round2((Number(activeSession.openingBalance) || 0) + cashTotal - returnsTotal),
+      };
+    }
+
+    return {
+      activeSession,
+      activeSummary,
+      products,
+      recentOrders: orders.slice(0, 30),
+      returns: returns.slice(0, 20),
+      pastSessions: sessions.filter((s) => s.status === "closed").slice(0, 10),
+    };
+  } catch (err) {
+    if (err instanceof HttpsError) throw err;
+    console.error("getCashierData failed:", err);
+    throw new HttpsError("internal", "تعذّر تحميل بيانات الكاشير.");
   }
 });
 

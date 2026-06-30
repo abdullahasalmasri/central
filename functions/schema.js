@@ -56,6 +56,8 @@ const COLLECTIONS = {
   PRODUCTS: "products",
   STOCK_MOVEMENTS: "stockMovements",
   SALES_ORDERS: "salesOrders",
+  CASHIER_SESSIONS: "cashierSessions",
+  SALES_RETURNS: "salesReturns",
 };
 
 const ROLES = {
@@ -2420,12 +2422,13 @@ const POS_VAT_RATE = 15; // ضريبة القيمة المضافة
 
 // بناء وثيقة أمر بيع
 function buildSalesOrderDoc({
-  tenantId, orderNumber, items, subtotal, discount, vatRate, vatAmount, total,
+  tenantId, orderNumber, sessionId, items, subtotal, discount, vatRate, vatAmount, total,
   paymentMethod, amountPaid, change, customerName, cashierName, createdBy, createdAt,
 }) {
   return {
     tenantId: tenantId,
     orderNumber: Number(orderNumber) || 0,
+    sessionId: sessionId || null,             // جلسة الكاشير المرتبطة
     items: Array.isArray(items) ? items : [], // [{productId, name, qty, unitPrice, lineTotal, isService}]
     subtotal: Number(subtotal) || 0,
     discount: Number(discount) || 0,
@@ -2436,6 +2439,63 @@ function buildSalesOrderDoc({
     amountPaid: Number(amountPaid) || 0,
     change: Number(change) || 0,
     customerName: (customerName || "").trim() || null,
+    cashierName: cashierName || null,
+    createdBy: createdBy || null,
+    createdAt: createdAt,
+  };
+}
+
+// ═══════════════════════════════════════════════════════
+// ===== الكاشير: جلسات الوردية والمرتجعات =====
+// ═══════════════════════════════════════════════════════
+
+const SESSION_STATUS = {
+  OPEN: "open",     // مفتوحة
+  CLOSED: "closed", // مغلقة
+};
+const ALL_SESSION_STATUS = Object.values(SESSION_STATUS);
+
+// بناء وثيقة جلسة كاشير (وردية)
+function buildCashierSessionDoc({
+  tenantId, sessionNumber, openingBalance, cashierName, openedBy, openedAt,
+}) {
+  return {
+    tenantId: tenantId,
+    sessionNumber: Number(sessionNumber) || 0,
+    openingBalance: Number(openingBalance) || 0, // رصيد بداية الدرج
+    status: SESSION_STATUS.OPEN,
+    cashierName: cashierName || null,
+    openedBy: openedBy || null,
+    openedAt: openedAt,
+    // تُملأ عند الإغلاق:
+    closedAt: null,
+    closedBy: null,
+    countedCash: null,     // النقد المعدود فعليًا
+    expectedCash: null,    // المتوقّع = الرصيد + مبيعات نقدية − مرتجعات نقدية
+    difference: null,      // الفرق (زيادة/عجز)
+    salesCount: null,
+    salesTotal: null,
+    cashTotal: null,
+    cardTotal: null,
+    transferTotal: null,
+    returnsTotal: null,
+    closingNotes: null,
+  };
+}
+
+// بناء وثيقة مرتجع
+function buildSalesReturnDoc({
+  tenantId, returnNumber, sessionId, originalOrderNumber, items, total,
+  reason, cashierName, createdBy, createdAt,
+}) {
+  return {
+    tenantId: tenantId,
+    returnNumber: Number(returnNumber) || 0,
+    sessionId: sessionId || null,
+    originalOrderNumber: originalOrderNumber || null, // رقم الفاتورة الأصلية (اختياري)
+    items: Array.isArray(items) ? items : [],         // [{productId, name, qty, unitPrice, lineTotal, isService}]
+    total: Number(total) || 0,                        // مبلغ الإرجاع
+    reason: reason || null,
     cashierName: cashierName || null,
     createdBy: createdBy || null,
     createdAt: createdAt,
@@ -2555,6 +2615,10 @@ module.exports = {
   buildProductDoc,
   buildStockMovementDoc,
   buildSalesOrderDoc,
+  buildCashierSessionDoc,
+  SESSION_STATUS,
+  ALL_SESSION_STATUS,
+  buildSalesReturnDoc,
   PAYMENT_METHOD,
   ALL_PAYMENT_METHOD,
   POS_VAT_RATE,
