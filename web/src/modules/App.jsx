@@ -16,6 +16,7 @@ import FinancialStatementsView  from "./FinancialStatementsView";  // fin_fs
 // ── واجهات العرض (تُربط بقاعدة البيانات لاحقًا) ──
 import ExecutiveDashboard       from "./ExecutiveDashboard";
 import OrgStructureView         from "./OrgStructureView";
+import PermissionsView          from "./PermissionsView";
 import CollectionsView          from "./CollectionsView";
 import TreasuryView             from "./TreasuryView";
 import FPAView                  from "./FPAView";
@@ -53,6 +54,7 @@ const views = {
   // الإدارة العليا
   exec_kpi:      ExecutiveDashboard,
   exec_org:      OrgStructureView,
+  exec_perm:     PermissionsView,
 
   // المالية
   fin_acc:       AccountingView,

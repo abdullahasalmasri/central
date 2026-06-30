@@ -6787,6 +6787,39 @@ exports.updateOrgSection = onCall(async (request) => {
   }
 });
 
+// ===== تعديل صلاحيات موظف (المالك فقط) =====
+// data: { uid, permissions: [...] }
+exports.setUserPermissions = onCall(async (request) => {
+  try {
+    if (!request.auth) throw new HttpsError("unauthenticated", "يجب تسجيل الدخول أولاً.");
+    if (request.auth.token.role !== ROLES.OWNER) throw new HttpsError("permission-denied", "إدارة الصلاحيات متاحة للمالك فقط.");
+    const callerTenantId = request.auth.token.tenantId;
+    if (!callerTenantId) throw new HttpsError("failed-precondition", "حسابك غير مرتبط بشركة.");
+
+    const data = request.data || {};
+    const targetUid = typeof data.uid === "string" ? data.uid.trim() : "";
+    const permissions = data.permissions;
+    if (!targetUid) throw new HttpsError("invalid-argument", "يجب تحديد الموظف.");
+    if (!validatePermissions(permissions)) throw new HttpsError("invalid-argument", "صلاحيات غير صحيحة.");
+
+    const targetRef = db.collection(COLLECTIONS.USERS).doc(targetUid);
+    const targetDoc = await targetRef.get();
+    if (!targetDoc.exists || targetDoc.data().tenantId !== callerTenantId) {
+      throw new HttpsError("invalid-argument", "الموظف غير موجود.");
+    }
+    if (targetDoc.data().role === ROLES.OWNER) {
+      throw new HttpsError("invalid-argument", "لا يمكن تعديل صلاحيات المالك (يملك صلاحية كاملة).");
+    }
+
+    await targetRef.update({ permissions: permissions });
+    return { uid: targetUid, updated: true, count: permissions.length };
+  } catch (err) {
+    if (err instanceof HttpsError) throw err;
+    console.error("setUserPermissions failed:", err);
+    throw new HttpsError("internal", "تعذّر تحديث الصلاحيات، حاول مرة أخرى.");
+  }
+});
+
 // ===== تقرير المشروع عبر فترة (عدة أشهر) =====
 // data: { projectId, fromMonth, toMonth }
 exports.getProjectProfitabilityRange = onCall(async (request) => {
