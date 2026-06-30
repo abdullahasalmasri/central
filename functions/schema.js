@@ -53,6 +53,9 @@ const COLLECTIONS = {
   FINDINGS: "findings",
   RATINGS: "ratings",
   IMPROVEMENTS: "improvements",
+  PRODUCTS: "products",
+  STOCK_MOVEMENTS: "stockMovements",
+  SALES_ORDERS: "salesOrders",
 };
 
 const ROLES = {
@@ -73,6 +76,8 @@ const MODULES = {
   SALES: "sales",
   LEGAL: "legal",
   QUALITY: "quality",
+  INVENTORY: "inventory",
+  POS: "pos",
 };
 
 const ALL_MODULES = Object.values(MODULES);
@@ -2348,6 +2353,62 @@ function buildImprovementDoc({
   };
 }
 
+// ═══════════════════════════════════════════════════════
+// ===== المخزون ونقاط البيع =====
+// ═══════════════════════════════════════════════════════
+
+// --- الأصناف (منتجات/خدمات) ---
+// المنتج له مخزون (quantity) يُخصم عند البيع. الخدمة (isService) لا تُخصم.
+function buildProductDoc({
+  tenantId, productNumber, sku, name, category, unit, salePrice, cost,
+  quantity, minQuantity, isService, active, notes, createdBy, createdAt,
+}) {
+  return {
+    tenantId: tenantId,
+    productNumber: Number(productNumber) || 0,
+    sku: (sku || "").trim() || null,            // رمز الصنف (باركود اختياري)
+    name: (name || "").trim(),
+    category: (category || "").trim() || null,
+    unit: (unit || "").trim() || "قطعة",
+    salePrice: Number(salePrice) || 0,          // سعر البيع
+    cost: Number(cost) || 0,                    // التكلفة
+    quantity: Number(quantity) || 0,            // الكمية الحالية
+    minQuantity: Number(minQuantity) || 0,      // حد التنبيه
+    isService: !!isService,                     // خدمة (بدون مخزون)
+    active: active !== false,
+    notes: notes || null,
+    createdBy: createdBy || null,
+    createdAt: createdAt,
+  };
+}
+
+// --- حركة المخزون ---
+const STOCK_MOVEMENT_TYPE = {
+  IN: "in",         // وارد (شراء/إضافة)
+  OUT: "out",       // صادر (بيع/صرف)
+  ADJUST: "adjust", // تسوية جرد
+};
+const ALL_STOCK_MOVEMENT_TYPE = Object.values(STOCK_MOVEMENT_TYPE);
+
+function buildStockMovementDoc({
+  tenantId, productId, productName, type, quantity, balanceAfter,
+  reason, source, note, createdBy, createdAt,
+}) {
+  return {
+    tenantId: tenantId,
+    productId: productId,
+    productName: productName || null,           // لقطة من الاسم
+    type: ALL_STOCK_MOVEMENT_TYPE.includes(type) ? type : STOCK_MOVEMENT_TYPE.IN,
+    quantity: Number(quantity) || 0,
+    balanceAfter: Number(balanceAfter) || 0,    // الرصيد بعد الحركة
+    reason: reason || null,
+    source: source || "manual",                 // manual / pos / purchase
+    note: note || null,
+    createdBy: createdBy || null,
+    createdAt: createdAt,
+  };
+}
+
 module.exports = {
   COLLECTIONS,
   ROLES,
@@ -2458,6 +2519,10 @@ module.exports = {
   buildFindingDoc,
   buildRatingDoc,
   buildImprovementDoc,
+  buildProductDoc,
+  buildStockMovementDoc,
+  STOCK_MOVEMENT_TYPE,
+  ALL_STOCK_MOVEMENT_TYPE,
   IMPROVEMENT_STATUS,
   ALL_IMPROVEMENT_STATUS,
   FINDING_SEVERITY,

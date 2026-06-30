@@ -47,6 +47,7 @@ const NAV = [
     { id: "ops_people",     name: "الأفراد",             file: "PeopleView.jsx" },
     { id: "ops_facilities", name: "المرافق",             file: "FacilitiesView.jsx" },
     { id: "ops_materials",  name: "المواد",              file: "MaterialsView.jsx" },
+    { id: "ops_inv",        name: "المخزون",             file: "InventoryView.jsx" },
     { id: "ops_process",    name: "العمليات التشغيلية",   file: "ProcessesView.jsx" },
     { id: "ops_planning",   name: "التخطيط والرقابة",     file: "PlanningView.jsx" },
     { id: "ops_qs",         name: "الجودة والسلامة",      file: "QualitySafetyView.jsx" },

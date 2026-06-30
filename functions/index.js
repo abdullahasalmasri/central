@@ -76,6 +76,10 @@ const {
   buildFindingDoc,
   buildRatingDoc,
   buildImprovementDoc,
+  buildProductDoc,
+  buildStockMovementDoc,
+  ALL_STOCK_MOVEMENT_TYPE,
+  STOCK_MOVEMENT_TYPE,
   ALL_IMPROVEMENT_STATUS,
   ALL_FINDING_SEVERITY,
   ALL_FINDING_STATUS,
@@ -8740,6 +8744,245 @@ exports.getImprovementData = onCall(async (request) => {
     if (err instanceof HttpsError) throw err;
     console.error("getImprovementData failed:", err);
     throw new HttpsError("internal", "تعذّر تحميل بيانات التحسين.");
+  }
+});
+
+// ═══════════════════════════════════════════════════════
+// ===== المخزون =====
+// ═══════════════════════════════════════════════════════
+
+// إنشاء صنف
+exports.createProduct = onCall(async (request) => {
+  try {
+    const callerTenantId = await requireModule(request.auth, MODULES.INVENTORY);
+    const data = request.data || {};
+    const name = typeof data.name === "string" ? data.name.trim() : "";
+    if (name.length < 2) throw new HttpsError("invalid-argument", "اسم الصنف مطلوب (حرفان على الأقل).");
+    const salePrice = Number(data.salePrice) || 0;
+    if (salePrice < 0) throw new HttpsError("invalid-argument", "سعر البيع غير صحيح.");
+    const isService = !!data.isService;
+    const initialQty = isService ? 0 : (Number(data.quantity) || 0);
+    if (initialQty < 0) throw new HttpsError("invalid-argument", "الكمية غير صحيحة.");
+
+    const tenantRef = db.collection(COLLECTIONS.TENANTS).doc(callerTenantId);
+    const productRef = db.collection(COLLECTIONS.PRODUCTS).doc();
+    const movementRef = db.collection(COLLECTIONS.STOCK_MOVEMENTS).doc();
+    const result = await db.runTransaction(async (tx) => {
+      const tenantSnap = await tx.get(tenantRef);
+      if (!tenantSnap.exists) throw new HttpsError("failed-precondition", "الشركة غير موجودة.");
+      const nextNumber = (tenantSnap.data().lastProductNumber || 0) + 1;
+      const productDoc = buildProductDoc({
+        tenantId: callerTenantId,
+        productNumber: nextNumber,
+        sku: typeof data.sku === "string" ? data.sku.trim() : null,
+        name: name,
+        category: typeof data.category === "string" ? data.category.trim() : null,
+        unit: typeof data.unit === "string" ? data.unit.trim() : null,
+        salePrice: salePrice,
+        cost: Number(data.cost) || 0,
+        quantity: initialQty,
+        minQuantity: Number(data.minQuantity) || 0,
+        isService: isService,
+        active: true,
+        notes: typeof data.notes === "string" ? data.notes.trim() : null,
+        createdBy: request.auth.uid,
+        createdAt: FieldValue.serverTimestamp(),
+      });
+      tx.set(productRef, productDoc);
+      tx.update(tenantRef, { lastProductNumber: nextNumber });
+      // حركة افتتاحية للكمية الأولية (للمنتجات فقط)
+      if (!isService && initialQty > 0) {
+        tx.set(movementRef, buildStockMovementDoc({
+          tenantId: callerTenantId,
+          productId: productRef.id,
+          productName: name,
+          type: STOCK_MOVEMENT_TYPE.IN,
+          quantity: initialQty,
+          balanceAfter: initialQty,
+          reason: "رصيد افتتاحي",
+          source: "manual",
+          note: null,
+          createdBy: request.auth.uid,
+          createdAt: FieldValue.serverTimestamp(),
+        }));
+      }
+      return { productNumber: nextNumber };
+    });
+    return { id: productRef.id, productNumber: result.productNumber };
+  } catch (err) {
+    if (err instanceof HttpsError) throw err;
+    console.error("createProduct failed:", err);
+    throw new HttpsError("internal", "تعذّر إنشاء الصنف.");
+  }
+});
+
+// تعديل صنف (بدون تعديل الكمية مباشرة — الكمية عبر addStockMovement)
+exports.updateProduct = onCall(async (request) => {
+  try {
+    const callerTenantId = await requireModule(request.auth, MODULES.INVENTORY);
+    const data = request.data || {};
+    const productId = typeof data.productId === "string" ? data.productId.trim() : "";
+    if (!productId) throw new HttpsError("invalid-argument", "يجب تحديد الصنف.");
+
+    const ref = db.collection(COLLECTIONS.PRODUCTS).doc(productId);
+    const doc = await ref.get();
+    if (!doc.exists || doc.data().tenantId !== callerTenantId) throw new HttpsError("invalid-argument", "الصنف غير موجود.");
+
+    const update = {};
+    if (typeof data.name === "string") {
+      const n = data.name.trim();
+      if (n.length < 2) throw new HttpsError("invalid-argument", "اسم الصنف قصير.");
+      update.name = n;
+    }
+    if (typeof data.sku === "string") update.sku = data.sku.trim() || null;
+    if (typeof data.category === "string") update.category = data.category.trim() || null;
+    if (typeof data.unit === "string") update.unit = data.unit.trim() || "قطعة";
+    if (typeof data.notes === "string") update.notes = data.notes.trim() || null;
+    if (data.active !== undefined) update.active = !!data.active;
+    ["salePrice", "cost", "minQuantity"].forEach((k) => {
+      if (data[k] !== undefined) {
+        const v = Number(data[k]);
+        if (!(v >= 0)) throw new HttpsError("invalid-argument", `قيمة غير صحيحة (${k}).`);
+        update[k] = v;
+      }
+    });
+
+    if (Object.keys(update).length === 0) throw new HttpsError("invalid-argument", "لا تغييرات.");
+    update.updatedBy = request.auth.uid;
+    update.updatedAt = FieldValue.serverTimestamp();
+    await ref.update(update);
+    return { id: productId, updated: true };
+  } catch (err) {
+    if (err instanceof HttpsError) throw err;
+    console.error("updateProduct failed:", err);
+    throw new HttpsError("internal", "تعذّر تعديل الصنف.");
+  }
+});
+
+// حذف صنف
+exports.deleteProduct = onCall(async (request) => {
+  try {
+    const callerTenantId = await requireModule(request.auth, MODULES.INVENTORY);
+    const data = request.data || {};
+    const productId = typeof data.productId === "string" ? data.productId.trim() : "";
+    if (!productId) throw new HttpsError("invalid-argument", "يجب تحديد الصنف.");
+    const ref = db.collection(COLLECTIONS.PRODUCTS).doc(productId);
+    const doc = await ref.get();
+    if (!doc.exists || doc.data().tenantId !== callerTenantId) throw new HttpsError("invalid-argument", "الصنف غير موجود.");
+    await ref.delete();
+    return { id: productId, deleted: true };
+  } catch (err) {
+    if (err instanceof HttpsError) throw err;
+    console.error("deleteProduct failed:", err);
+    throw new HttpsError("internal", "تعذّر حذف الصنف.");
+  }
+});
+
+// حركة مخزون (وارد/صادر/تسوية) — تحدّث الكمية
+exports.addStockMovement = onCall(async (request) => {
+  try {
+    const callerTenantId = await requireModule(request.auth, MODULES.INVENTORY);
+    const data = request.data || {};
+    const productId = typeof data.productId === "string" ? data.productId.trim() : "";
+    if (!productId) throw new HttpsError("invalid-argument", "يجب تحديد الصنف.");
+    const type = data.type;
+    if (!ALL_STOCK_MOVEMENT_TYPE.includes(type)) throw new HttpsError("invalid-argument", "نوع الحركة غير صحيح.");
+    const qty = Number(data.quantity);
+    if (!Number.isFinite(qty) || qty <= 0) throw new HttpsError("invalid-argument", "الكمية يجب أن تكون أكبر من صفر.");
+
+    const productRef = db.collection(COLLECTIONS.PRODUCTS).doc(productId);
+    const movementRef = db.collection(COLLECTIONS.STOCK_MOVEMENTS).doc();
+    const result = await db.runTransaction(async (tx) => {
+      const pSnap = await tx.get(productRef);
+      if (!pSnap.exists || pSnap.data().tenantId !== callerTenantId) throw new HttpsError("invalid-argument", "الصنف غير موجود.");
+      const p = pSnap.data();
+      if (p.isService) throw new HttpsError("failed-precondition", "الخدمات ليس لها مخزون.");
+      const current = Number(p.quantity) || 0;
+
+      let balanceAfter;
+      if (type === "in") balanceAfter = current + qty;
+      else if (type === "out") {
+        if (qty > current) throw new HttpsError("failed-precondition", `الكمية المطلوبة (${qty}) أكبر من المتوفّر (${current}).`);
+        balanceAfter = current - qty;
+      } else { // adjust = تعيين الرصيد الفعلي
+        balanceAfter = qty;
+      }
+
+      tx.update(productRef, { quantity: balanceAfter, updatedAt: FieldValue.serverTimestamp() });
+      tx.set(movementRef, buildStockMovementDoc({
+        tenantId: callerTenantId,
+        productId: productId,
+        productName: p.name,
+        type: type,
+        quantity: type === "adjust" ? balanceAfter : qty,
+        balanceAfter: balanceAfter,
+        reason: typeof data.reason === "string" ? data.reason.trim() : null,
+        source: "manual",
+        note: typeof data.note === "string" ? data.note.trim() : null,
+        createdBy: request.auth.uid,
+        createdAt: FieldValue.serverTimestamp(),
+      }));
+      return { balanceAfter };
+    });
+    return { id: movementRef.id, balanceAfter: result.balanceAfter };
+  } catch (err) {
+    if (err instanceof HttpsError) throw err;
+    console.error("addStockMovement failed:", err);
+    throw new HttpsError("internal", "تعذّر تسجيل الحركة.");
+  }
+});
+
+// بيانات المخزون: الأصناف + الملخّص + آخر الحركات
+exports.getInventory = onCall(async (request) => {
+  try {
+    const callerTenantId = await requireModule(request.auth, MODULES.INVENTORY);
+    const round2 = (n) => Math.round((Number(n) || 0) * 100) / 100;
+    const toMs = (ts) => (ts && ts.toMillis ? ts.toMillis() : null);
+
+    const [productSnap, moveSnap] = await Promise.all([
+      db.collection(COLLECTIONS.PRODUCTS).where("tenantId", "==", callerTenantId).get(),
+      db.collection(COLLECTIONS.STOCK_MOVEMENTS).where("tenantId", "==", callerTenantId).get(),
+    ]);
+
+    const products = productSnap.docs.map((d) => {
+      const p = d.data();
+      const lowStock = !p.isService && (Number(p.quantity) || 0) <= (Number(p.minQuantity) || 0) && (Number(p.minQuantity) || 0) > 0;
+      return { id: d.id, ...p, lowStock };
+    });
+    products.sort((a, b) => (b.productNumber || 0) - (a.productNumber || 0));
+
+    const movements = moveSnap.docs.map((d) => {
+      const m = d.data();
+      return { id: d.id, ...m, createdAt: toMs(m.createdAt) };
+    });
+    movements.sort((a, b) => (b.createdAt || 0) - (a.createdAt || 0));
+
+    const stockProducts = products.filter((p) => !p.isService);
+    const totalStockValue = round2(stockProducts.reduce((s, p) => s + (Number(p.quantity) || 0) * (Number(p.cost) || 0), 0));
+    const totalRetailValue = round2(stockProducts.reduce((s, p) => s + (Number(p.quantity) || 0) * (Number(p.salePrice) || 0), 0));
+    const lowStockCount = products.filter((p) => p.lowStock).length;
+
+    // الفئات
+    const catMap = {};
+    products.forEach((p) => { const c = p.category || "غير مصنّف"; catMap[c] = (catMap[c] || 0) + 1; });
+    const categories = Object.entries(catMap).map(([name, count]) => ({ name, count })).sort((a, b) => b.count - a.count);
+
+    return {
+      products,
+      movements: movements.slice(0, 30),
+      categories,
+      summary: {
+        totalProducts: products.length,
+        serviceCount: products.filter((p) => p.isService).length,
+        totalStockValue: totalStockValue,
+        totalRetailValue: totalRetailValue,
+        lowStockCount: lowStockCount,
+      },
+    };
+  } catch (err) {
+    if (err instanceof HttpsError) throw err;
+    console.error("getInventory failed:", err);
+    throw new HttpsError("internal", "تعذّر تحميل بيانات المخزون.");
   }
 });
 

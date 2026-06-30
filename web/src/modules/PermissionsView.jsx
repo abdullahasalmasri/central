@@ -18,6 +18,9 @@ const MODULES = [
   { id: "procurement", name: "المشتريات", icon: "🛒", color: "#db2777" },
   { id: "sales", name: "المبيعات والتسويق", icon: "📣", color: "#e11d48" },
   { id: "legal", name: "القانونية والامتثال", icon: "⚖️", color: "#78716c" },
+  { id: "quality", name: "التميز والجودة", icon: "🏆", color: "#65a30d" },
+  { id: "inventory", name: "المخزون", icon: "📦", color: "#ea580c" },
+  { id: "pos", name: "نقاط البيع والكاشير", icon: "🛒", color: "#0891b2" },
   { id: "attendance", name: "الحضور", icon: "🕐", color: "#7c3aed" },
   { id: "reviews", name: "التقييم", icon: "⭐", color: "#ca8a04" },
 ];

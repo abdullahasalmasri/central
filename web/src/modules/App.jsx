@@ -29,6 +29,7 @@ import ProjectsView            from "./ProjectsView";
 import PeopleView              from "./PeopleView";
 import FacilitiesView          from "./FacilitiesView";
 import MaterialsView           from "./MaterialsView";
+import InventoryView           from "./InventoryView";           // ops_inv (المخزون)
 import ProcessesView           from "./ProcessesView";
 import PlanningView            from "./PlanningView";
 import QualitySafetyView        from "./QualitySafetyView";
@@ -79,6 +80,7 @@ const views = {
   ops_people:    PeopleView,
   ops_facilities: FacilitiesView,
   ops_materials: MaterialsView,
+  ops_inv:       InventoryView,
   ops_process:   ProcessesView,
   ops_planning:  PlanningView,
   ops_qs:        QualitySafetyView,
