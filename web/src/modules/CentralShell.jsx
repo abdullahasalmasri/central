@@ -52,9 +52,9 @@ const NAV = [
     { id: "ops_qs",         name: "الجودة والسلامة",      file: "QualitySafetyView.jsx" },
   ]},
   { type: "section", id: "assets", name: "الأصول والمرافق", icon: Building2, color: "#0e7490", children: [
-    { id: "as_veh",  name: "المركبات", file: null },
-    { id: "as_hous", name: "الإسكان",  file: null },
-    { id: "as_equ",  name: "المعدّات", file: null },
+    { id: "as_veh",  name: "المركبات", file: "AssetsView.jsx" },
+    { id: "as_hous", name: "الإسكان",  file: "AssetsView.jsx" },
+    { id: "as_equ",  name: "المعدّات", file: "AssetsView.jsx" },
     { id: "as_dep",  name: "الإهلاك",  file: "DepreciationView.jsx" },
   ]},
   { type: "section", id: "cost", name: "التكاليف والربحية", icon: TrendingUp, color: "#ca8a04", children: [
@@ -373,7 +373,7 @@ export default function CentralShell({ views = {} }) {
         {/* CONTENT — يعرض الواجهة الفعلية المربوطة، وإلا رسالة للتفرّع المخطّط */}
         <div className="sh-content">
           {views[activeView] ? (
-            React.createElement(views[activeView])
+            React.createElement(views[activeView], { view: activeView })
           ) : (
             <div className="sh-ph" style={{ "--c": cur.color }}>
               <div className="sh-ph-card">

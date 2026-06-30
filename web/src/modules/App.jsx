@@ -31,6 +31,7 @@ import ProcessesView           from "./ProcessesView";
 import PlanningView            from "./PlanningView";
 import QualitySafetyView        from "./QualitySafetyView";
 import DepreciationView         from "./DepreciationView";
+import AssetsView              from "./AssetsView";
 import SalesView                from "./SalesView";
 import MarketingView            from "./MarketingView";
 import CustomerServiceView      from "./CustomerServiceView";
@@ -75,6 +76,9 @@ const views = {
   ops_qs:        QualitySafetyView,
 
   // الأصول والمرافق
+  as_veh:        AssetsView,
+  as_hous:       AssetsView,
+  as_equ:        AssetsView,
   as_dep:        DepreciationView,
 
   // المبيعات والتسويق
