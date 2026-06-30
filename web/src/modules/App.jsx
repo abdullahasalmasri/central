@@ -54,6 +54,7 @@ import NPSView                  from "./NPSView";
 import ProcessImprovementView   from "./ProcessImprovementView";
 import SubscriptionView         from "./SubscriptionView";
 import BuildSystemView          from "./BuildSystemView";
+import SupportView              from "./SupportView";              // support (الدعم)
 
 // ── خريطة الربط: معرّف التفرّع (نفس الموجود في الـ Shell) → الواجهة ──
 const views = {
@@ -121,6 +122,7 @@ const views = {
   // إدارة المنصة
   subscriptions: SubscriptionView,
   build:         BuildSystemView,
+  support:       SupportView,
 };
 
 export default function App() {

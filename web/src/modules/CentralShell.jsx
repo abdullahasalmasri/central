@@ -86,6 +86,7 @@ const NAV = [
   { type: "divider", label: "إدارة المنصة" },
   { type: "item", id: "subscriptions", name: "الاشتراكات", icon: CreditCard, color: "#d97706", file: "SubscriptionView.jsx" },
   { type: "item", id: "build",         name: "بناء النظام", icon: Boxes,      color: "#4f46e5", file: "BuildSystemView.jsx" },
+  { type: "item", id: "support",       name: "الدعم",        icon: Bell,       color: "#2563eb", file: "SupportView.jsx" },
 ];
 
 // خريطة مسطّحة: id → معلومات الواجهة (للعنوان والمحتوى)

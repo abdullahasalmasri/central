@@ -5,6 +5,7 @@ const COLLECTIONS = {
   USERS: "users",
   PLATFORM_OWNERS: "platformOwners",
   PLATFORM_CONFIG: "platformConfig",
+  SUPPORT_TICKETS: "supportTickets",
   SHIFTS: "shifts",
   SCHEDULES: "schedules",
   RECORDS: "records",
@@ -2612,6 +2613,31 @@ function buildStockRequestDoc({
   };
 }
 
+
+// ===== تذاكر الدعم (تواصل العميل مع مالك المنصة) =====
+const PLATFORM_TICKET_STATUS = { OPEN: "open", IN_PROGRESS: "in_progress", CLOSED: "closed" };
+const ALL_PLATFORM_TICKET_STATUS = Object.values(PLATFORM_TICKET_STATUS);
+const PLATFORM_TICKET_CATEGORY = { COMPLAINT: "complaint", FEATURE: "feature", BILLING: "billing", TECHNICAL: "technical", OTHER: "other" };
+const ALL_PLATFORM_TICKET_CATEGORY = Object.values(PLATFORM_TICKET_CATEGORY);
+
+function buildSupportTicketDoc({ tenantId, tenantName, subject, category, status, firstMessage, createdBy, createdByName, createdAt, firstMessageAt }) {
+  return {
+    tenantId: tenantId,
+    tenantName: tenantName || null,
+    subject: (subject || "").trim(),
+    category: ALL_PLATFORM_TICKET_CATEGORY.includes(category) ? category : PLATFORM_TICKET_CATEGORY.OTHER,
+    status: ALL_PLATFORM_TICKET_STATUS.includes(status) ? status : PLATFORM_TICKET_STATUS.OPEN,
+    messages: firstMessage ? [{ from: "client", text: firstMessage, authorName: createdByName || null, at: firstMessageAt }] : [],
+    createdBy: createdBy || null,
+    createdByName: createdByName || null,
+    createdAt: createdAt,
+    lastMessageAt: createdAt,
+    lastMessageFrom: firstMessage ? "client" : null,
+    ownerUnread: !!firstMessage,
+    clientUnread: false,
+  };
+}
+
 module.exports = {
   COLLECTIONS,
   ROLES,
@@ -2736,6 +2762,11 @@ module.exports = {
   ALL_INCIDENT_STATUS,
   buildSafetyInspectionDoc,
   buildStockRequestDoc,
+  buildSupportTicketDoc,
+  PLATFORM_TICKET_STATUS,
+  ALL_PLATFORM_TICKET_STATUS,
+  PLATFORM_TICKET_CATEGORY,
+  ALL_PLATFORM_TICKET_CATEGORY,
   STOCK_REQUEST_STATUS,
   ALL_STOCK_REQUEST_STATUS,
   INSPECTION_RESULT,

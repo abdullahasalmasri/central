@@ -87,6 +87,8 @@ const {
   ALL_INCIDENT_STATUS,
   buildSafetyInspectionDoc,
   buildStockRequestDoc,
+  buildSupportTicketDoc,
+  ALL_PLATFORM_TICKET_CATEGORY,
   ALL_STOCK_REQUEST_STATUS,
   ALL_INSPECTION_RESULT,
   ALL_PAYMENT_METHOD,
@@ -11600,5 +11602,215 @@ exports.getTenantDetails = onCall(async (request) => {
     if (err instanceof HttpsError) throw err;
     console.error("getTenantDetails failed:", err);
     throw new HttpsError("internal", "تعذّر تحميل تفاصيل العميل.");
+  }
+});
+
+// ═══════════════════════════════════════════════════════
+// ===== تذاكر الدعم (تواصل العميل ↔ مالك المنصة) =====
+// ═══════════════════════════════════════════════════════
+
+// إنشاء تذكرة دعم (من العميل داخل Central)
+// data: { subject, category, message }
+exports.createSupportTicket = onCall(async (request) => {
+  try {
+    if (!request.auth || !request.auth.uid) throw new HttpsError("unauthenticated", "يجب تسجيل الدخول.");
+    const callerTenantId = request.auth.token.tenantId;
+    if (!callerTenantId) throw new HttpsError("failed-precondition", "حسابك غير مرتبط بشركة.");
+    const data = request.data || {};
+    const subject = typeof data.subject === "string" ? data.subject.trim() : "";
+    const message = typeof data.message === "string" ? data.message.trim() : "";
+    if (!subject) throw new HttpsError("invalid-argument", "أدخل عنوان التذكرة.");
+    if (!message) throw new HttpsError("invalid-argument", "أدخل تفاصيل المشكلة.");
+    if (subject.length > 200 || message.length > 4000) throw new HttpsError("invalid-argument", "النص طويل جدًا.");
+
+    // اسم الشركة + اسم المستخدم
+    let tenantName = null, userName = null;
+    try {
+      const [tenantDoc, userDoc] = await Promise.all([
+        db.collection(COLLECTIONS.TENANTS).doc(callerTenantId).get(),
+        db.collection(COLLECTIONS.USERS).doc(request.auth.uid).get(),
+      ]);
+      tenantName = tenantDoc.exists ? (tenantDoc.data().name || null) : null;
+      userName = userDoc.exists ? (userDoc.data().name || null) : null;
+    } catch (e) { /* تجاهل */ }
+
+    const now = admin.firestore.Timestamp.now();
+    const ref = db.collection(COLLECTIONS.SUPPORT_TICKETS).doc();
+    await ref.set(buildSupportTicketDoc({
+      tenantId: callerTenantId,
+      tenantName: tenantName,
+      subject: subject,
+      category: data.category,
+      status: "open",
+      firstMessage: message,
+      createdBy: request.auth.uid,
+      createdByName: userName,
+      createdAt: FieldValue.serverTimestamp(),
+      firstMessageAt: now,
+    }));
+    return { id: ref.id };
+  } catch (err) {
+    if (err instanceof HttpsError) throw err;
+    console.error("createSupportTicket failed:", err);
+    throw new HttpsError("internal", "تعذّر إنشاء التذكرة.");
+  }
+});
+
+// تذاكر العميل (يشوف تذاكره وردود المالك)
+exports.getMyTickets = onCall(async (request) => {
+  try {
+    if (!request.auth || !request.auth.uid) throw new HttpsError("unauthenticated", "يجب تسجيل الدخول.");
+    const callerTenantId = request.auth.token.tenantId;
+    if (!callerTenantId) throw new HttpsError("failed-precondition", "حسابك غير مرتبط بشركة.");
+    const toMs = (ts) => (ts && ts.toMillis ? ts.toMillis() : null);
+
+    const snap = await db.collection(COLLECTIONS.SUPPORT_TICKETS).where("tenantId", "==", callerTenantId).get();
+    const tickets = snap.docs.map((d) => {
+      const t = d.data();
+      return {
+        id: d.id, subject: t.subject, category: t.category, status: t.status,
+        messages: (t.messages || []).map((m) => ({ from: m.from, text: m.text, authorName: m.authorName, at: toMs(m.at) })),
+        createdAt: toMs(t.createdAt), lastMessageAt: toMs(t.lastMessageAt), lastMessageFrom: t.lastMessageFrom,
+        clientUnread: !!t.clientUnread,
+      };
+    });
+    tickets.sort((a, b) => (b.lastMessageAt || 0) - (a.lastMessageAt || 0));
+    return { tickets };
+  } catch (err) {
+    if (err instanceof HttpsError) throw err;
+    console.error("getMyTickets failed:", err);
+    throw new HttpsError("internal", "تعذّر تحميل تذاكرك.");
+  }
+});
+
+// كل التذاكر (للمالك)
+exports.getAllSupportTickets = onCall(async (request) => {
+  try {
+    await requirePlatformOwner(request.auth);
+    const toMs = (ts) => (ts && ts.toMillis ? ts.toMillis() : null);
+
+    const snap = await db.collection(COLLECTIONS.SUPPORT_TICKETS).get();
+    const tickets = snap.docs.map((d) => {
+      const t = d.data();
+      return {
+        id: d.id, tenantId: t.tenantId, tenantName: t.tenantName, subject: t.subject,
+        category: t.category, status: t.status, createdByName: t.createdByName,
+        messages: (t.messages || []).map((m) => ({ from: m.from, text: m.text, authorName: m.authorName, at: toMs(m.at) })),
+        createdAt: toMs(t.createdAt), lastMessageAt: toMs(t.lastMessageAt), lastMessageFrom: t.lastMessageFrom,
+        ownerUnread: !!t.ownerUnread,
+      };
+    });
+    tickets.sort((a, b) => (b.lastMessageAt || 0) - (a.lastMessageAt || 0));
+    return {
+      tickets,
+      summary: {
+        total: tickets.length,
+        open: tickets.filter((t) => t.status === "open").length,
+        inProgress: tickets.filter((t) => t.status === "in_progress").length,
+        closed: tickets.filter((t) => t.status === "closed").length,
+        unread: tickets.filter((t) => t.ownerUnread).length,
+      },
+    };
+  } catch (err) {
+    if (err instanceof HttpsError) throw err;
+    console.error("getAllSupportTickets failed:", err);
+    throw new HttpsError("internal", "تعذّر تحميل التذاكر.");
+  }
+});
+
+// إضافة رد على تذكرة (العميل أو المالك) — يحدّد الدور تلقائيًا
+// data: { ticketId, message }
+exports.addTicketMessage = onCall(async (request) => {
+  try {
+    if (!request.auth || !request.auth.uid) throw new HttpsError("unauthenticated", "يجب تسجيل الدخول.");
+    const data = request.data || {};
+    const ticketId = typeof data.ticketId === "string" ? data.ticketId.trim() : "";
+    const message = typeof data.message === "string" ? data.message.trim() : "";
+    if (!ticketId) throw new HttpsError("invalid-argument", "يجب تحديد التذكرة.");
+    if (!message) throw new HttpsError("invalid-argument", "أدخل رسالة.");
+    if (message.length > 4000) throw new HttpsError("invalid-argument", "الرسالة طويلة جدًا.");
+
+    const ref = db.collection(COLLECTIONS.SUPPORT_TICKETS).doc(ticketId);
+    const doc = await ref.get();
+    if (!doc.exists) throw new HttpsError("invalid-argument", "التذكرة غير موجودة.");
+    const ticket = doc.data();
+
+    // تحديد الدور: مالك منصة أم عميل صاحب التذكرة؟
+    const ownerDoc = await db.collection(COLLECTIONS.PLATFORM_OWNERS).doc(request.auth.uid).get();
+    const isOwner = ownerDoc.exists;
+    let from;
+    if (isOwner) {
+      from = "owner";
+    } else {
+      const callerTenantId = request.auth.token.tenantId;
+      if (callerTenantId !== ticket.tenantId) throw new HttpsError("permission-denied", "غير مخوّل لهذه التذكرة.");
+      from = "client";
+    }
+
+    // اسم المُرسِل
+    let authorName = null;
+    if (isOwner) {
+      authorName = "الدعم";
+    } else {
+      try {
+        const userDoc = await db.collection(COLLECTIONS.USERS).doc(request.auth.uid).get();
+        authorName = userDoc.exists ? (userDoc.data().name || null) : null;
+      } catch (e) { authorName = null; }
+    }
+
+    const msg = { from: from, text: message, authorName: authorName, at: admin.firestore.Timestamp.now() };
+    const update = {
+      messages: admin.firestore.FieldValue.arrayUnion(msg),
+      lastMessageAt: FieldValue.serverTimestamp(),
+      lastMessageFrom: from,
+    };
+    // علامة غير مقروء للطرف الآخر
+    if (from === "owner") { update.clientUnread = true; update.ownerUnread = false; if (ticket.status === "open") update.status = "in_progress"; }
+    else { update.ownerUnread = true; update.clientUnread = false; }
+
+    await ref.update(update);
+    return { id: ticketId, from: from };
+  } catch (err) {
+    if (err instanceof HttpsError) throw err;
+    console.error("addTicketMessage failed:", err);
+    throw new HttpsError("internal", "تعذّر إرسال الرسالة.");
+  }
+});
+
+// تغيير حالة التذكرة (المالك)
+// data: { ticketId, status }
+exports.setPlatformTicketStatus = onCall(async (request) => {
+  try {
+    await requirePlatformOwner(request.auth);
+    const data = request.data || {};
+    const ticketId = typeof data.ticketId === "string" ? data.ticketId.trim() : "";
+    if (!ticketId) throw new HttpsError("invalid-argument", "يجب تحديد التذكرة.");
+    if (!["open", "in_progress", "closed"].includes(data.status)) throw new HttpsError("invalid-argument", "حالة غير صحيحة.");
+
+    const ref = db.collection(COLLECTIONS.SUPPORT_TICKETS).doc(ticketId);
+    const doc = await ref.get();
+    if (!doc.exists) throw new HttpsError("invalid-argument", "التذكرة غير موجودة.");
+    await ref.update({ status: data.status });
+    return { id: ticketId, status: data.status };
+  } catch (err) {
+    if (err instanceof HttpsError) throw err;
+    console.error("setPlatformTicketStatus failed:", err);
+    throw new HttpsError("internal", "تعذّر تغيير الحالة.");
+  }
+});
+
+// تعليم تذاكر المالك كمقروءة
+exports.markOwnerTicketRead = onCall(async (request) => {
+  try {
+    await requirePlatformOwner(request.auth);
+    const data = request.data || {};
+    const ticketId = typeof data.ticketId === "string" ? data.ticketId.trim() : "";
+    if (!ticketId) throw new HttpsError("invalid-argument", "يجب تحديد التذكرة.");
+    await db.collection(COLLECTIONS.SUPPORT_TICKETS).doc(ticketId).update({ ownerUnread: false });
+    return { id: ticketId };
+  } catch (err) {
+    if (err instanceof HttpsError) throw err;
+    console.error("markOwnerTicketRead failed:", err);
+    throw new HttpsError("internal", "تعذّر التحديث.");
   }
 });

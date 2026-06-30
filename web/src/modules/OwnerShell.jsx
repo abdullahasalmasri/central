@@ -213,9 +213,10 @@ function OwnerDashboard({ user }) {
         <button style={tab === "clients" ? styles.tabOn : styles.tabOff} onClick={() => setTab("clients")}>👥 العملاء</button>
         <button style={tab === "revenue" ? styles.tabOn : styles.tabOff} onClick={() => setTab("revenue")}>📈 الإيرادات</button>
         <button style={tab === "pricing" ? styles.tabOn : styles.tabOff} onClick={() => setTab("pricing")}>💲 التسعير</button>
+        <button style={tab === "support" ? styles.tabOn : styles.tabOff} onClick={() => setTab("support")}>🎫 الدعم</button>
       </div>
 
-      {tab === "pricing" ? <PricingTab /> : tab === "revenue" ? <RevenueTab data={data} loading={loading} /> : (
+      {tab === "pricing" ? <PricingTab /> : tab === "support" ? <SupportTab /> : tab === "revenue" ? <RevenueTab data={data} loading={loading} /> : (
       <div style={styles.body}>
         <h1 style={styles.pageTitle}>لوحة العملاء</h1>
         <p style={styles.pageSub}>إدارة الشركات المشتركة وحالات اشتراكها.</p>
@@ -289,6 +290,189 @@ function OwnerDashboard({ user }) {
 
       {modal ? <EditModal tenant={modal} onClose={() => setModal(null)} onSaved={() => { setModal(null); loadData(); }} /> : null}
       {detailsTenant ? <DetailsModal tenantBrief={detailsTenant} onClose={() => setDetailsTenant(null)} /> : null}
+    </div>
+  );
+}
+
+// ═══════════ تبويب الدعم (تذاكر العملاء) ═══════════
+const TICKET_STATUS_INFO = {
+  open: { label: "مفتوحة", color: "#ea580c", bg: "#ffedd5" },
+  in_progress: { label: "قيد المعالجة", color: "#2563eb", bg: "#dbeafe" },
+  closed: { label: "مغلقة", color: "#16a34a", bg: "#dcfce7" },
+};
+const TICKET_CAT_LABEL = { complaint: "شكوى", feature: "طلب ميزة", billing: "اشتراك/فوترة", technical: "مشكلة تقنية", other: "أخرى" };
+
+function fmtDateTime(ms) {
+  if (!ms) return "";
+  const d = new Date(ms);
+  return d.toLocaleDateString("en-GB") + " " + d.toLocaleTimeString("en-GB", { hour: "2-digit", minute: "2-digit" });
+}
+
+function SupportTab() {
+  const [data, setData] = useState(null);
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState("");
+  const [filter, setFilter] = useState("all");
+  const [openTicket, setOpenTicket] = useState(null);
+
+  useEffect(() => { load(); }, []);
+
+  async function load() {
+    setLoading(true);
+    setError("");
+    try {
+      const res = await httpsCallable(functions, "getAllSupportTickets")({});
+      setData(res.data);
+    } catch (e) {
+      setError(e.message || "تعذّر تحميل التذاكر.");
+      setData(null);
+    } finally {
+      setLoading(false);
+    }
+  }
+
+  const s = data ? data.summary : { total: 0, open: 0, inProgress: 0, closed: 0, unread: 0 };
+  const tickets = data ? data.tickets : [];
+  const filtered = filter === "all" ? tickets : tickets.filter((t) => t.status === filter);
+
+  return (
+    <div style={styles.body}>
+      <h1 style={styles.pageTitle}>الدعم والتذاكر</h1>
+      <p style={styles.pageSub}>شكاوى العملاء وطلباتهم — رد عليها وتابع حالتها.</p>
+
+      {error ? <div style={styles.error}>{error}</div> : null}
+
+      {loading ? <p style={styles.muted}>جارٍ التحميل...</p> : !data ? (
+        <div style={styles.warnBox}>تعذّر تحميل التذاكر.</div>
+      ) : (
+        <>
+          <div style={styles.kpiGrid}>
+            <div style={styles.kpiCard}><span style={styles.kpiLabel}>إجمالي التذاكر</span><span style={{ ...styles.kpiValue, color: "#6366f1" }}>{s.total}</span></div>
+            <div style={styles.kpiCard}><span style={styles.kpiLabel}>مفتوحة</span><span style={{ ...styles.kpiValue, color: s.open > 0 ? "#ea580c" : "#16a34a" }}>{s.open}</span></div>
+            <div style={styles.kpiCard}><span style={styles.kpiLabel}>قيد المعالجة</span><span style={{ ...styles.kpiValue, color: "#2563eb" }}>{s.inProgress}</span></div>
+            <div style={styles.kpiCard}><span style={styles.kpiLabel}>غير مقروءة</span><span style={{ ...styles.kpiValue, color: s.unread > 0 ? "#dc2626" : "#16a34a" }}>{s.unread}</span></div>
+          </div>
+
+          <div style={styles.filters}>
+            {[["all", "الكل"], ["open", "مفتوحة"], ["in_progress", "قيد المعالجة"], ["closed", "مغلقة"]].map(([k, lbl]) => (
+              <button key={k} style={filter === k ? styles.filterOn : styles.filterOff} onClick={() => setFilter(k)}>{lbl}</button>
+            ))}
+          </div>
+
+          {filtered.length === 0 ? (
+            <div style={styles.warnBox}>{tickets.length === 0 ? "لا توجد تذاكر بعد." : "لا توجد تذاكر بهذه الحالة."}</div>
+          ) : (
+            <div style={styles.ticketList}>
+              {filtered.map((t) => {
+                const st = TICKET_STATUS_INFO[t.status] || TICKET_STATUS_INFO.open;
+                return (
+                  <div key={t.id} style={{ ...styles.ticketCard, ...(t.ownerUnread ? styles.ticketUnread : {}) }} onClick={() => setOpenTicket(t)}>
+                    <div style={styles.tkLeft}>
+                      <div style={styles.tkTop}>
+                        {t.ownerUnread ? <span style={styles.unreadDot} /> : null}
+                        <span style={styles.tkSubject}>{t.subject}</span>
+                        <span style={{ ...styles.chip, color: st.color, background: st.bg }}>{st.label}</span>
+                        <span style={styles.tkCat}>{TICKET_CAT_LABEL[t.category] || t.category}</span>
+                      </div>
+                      <div style={styles.tkMeta}>
+                        <span>🏢 {t.tenantName || "—"}</span>
+                        {t.createdByName ? <span>👤 {t.createdByName}</span> : null}
+                        <span>💬 {(t.messages || []).length}</span>
+                        <span dir="ltr">{fmtDateTime(t.lastMessageAt)}</span>
+                      </div>
+                    </div>
+                    <span style={styles.tkArrow}>‹</span>
+                  </div>
+                );
+              })}
+            </div>
+          )}
+        </>
+      )}
+
+      {openTicket ? <TicketModal ticket={openTicket} onClose={() => setOpenTicket(null)} onChanged={() => { setOpenTicket(null); load(); }} /> : null}
+    </div>
+  );
+}
+
+function TicketModal({ ticket, onClose, onChanged }) {
+  const [messages, setMessages] = useState(ticket.messages || []);
+  const [status, setStatus] = useState(ticket.status);
+  const [reply, setReply] = useState("");
+  const [sending, setSending] = useState(false);
+  const [err, setErr] = useState("");
+
+  // تعليم كمقروءة عند الفتح
+  useEffect(() => {
+    if (ticket.ownerUnread) {
+      httpsCallable(functions, "markOwnerTicketRead")({ ticketId: ticket.id }).catch(() => {});
+    }
+  }, [ticket.id, ticket.ownerUnread]);
+
+  const st = TICKET_STATUS_INFO[status] || TICKET_STATUS_INFO.open;
+
+  async function send() {
+    setErr("");
+    if (!reply.trim()) return;
+    setSending(true);
+    try {
+      await httpsCallable(functions, "addTicketMessage")({ ticketId: ticket.id, message: reply.trim() });
+      setMessages((m) => [...m, { from: "owner", text: reply.trim(), authorName: "الدعم", at: Date.now() }]);
+      setReply("");
+      if (status === "open") setStatus("in_progress");
+    } catch (e) { setErr(e.message || "تعذّر الإرسال."); } finally { setSending(false); }
+  }
+
+  async function changeStatus(newStatus) {
+    try {
+      await httpsCallable(functions, "setPlatformTicketStatus")({ ticketId: ticket.id, status: newStatus });
+      setStatus(newStatus);
+    } catch (e) { alert(e.message || "تعذّر تغيير الحالة."); }
+  }
+
+  return (
+    <div style={styles.overlay} onClick={onChanged}>
+      <div style={styles.ticketModal} onClick={(e) => e.stopPropagation()}>
+        <div style={styles.tmHead}>
+          <div style={{ flex: 1, minWidth: 0 }}>
+            <h2 style={styles.tmSubject}>{ticket.subject}</h2>
+            <div style={styles.tmMeta}>🏢 {ticket.tenantName || "—"} · {TICKET_CAT_LABEL[ticket.category] || ticket.category}</div>
+          </div>
+          <button style={styles.close} onClick={onChanged}>✕</button>
+        </div>
+
+        {/* أزرار الحالة */}
+        <div style={styles.tmStatusBar}>
+          {[["open", "مفتوحة"], ["in_progress", "قيد المعالجة"], ["closed", "إغلاق"]].map(([k, lbl]) => (
+            <button key={k} style={status === k ? { ...styles.tmStatusBtn, ...styles.tmStatusOn, color: (TICKET_STATUS_INFO[k] || {}).color } : styles.tmStatusBtn} onClick={() => changeStatus(k)}>{lbl}</button>
+          ))}
+        </div>
+
+        {/* المحادثة */}
+        <div style={styles.tmMessages}>
+          {messages.map((m, i) => (
+            <div key={i} style={{ ...styles.msgRow, justifyContent: m.from === "owner" ? "flex-start" : "flex-end" }}>
+              <div style={m.from === "owner" ? styles.msgOwner : styles.msgClient}>
+                <div style={styles.msgAuthor}>{m.from === "owner" ? "الدعم" : (m.authorName || "العميل")}</div>
+                <div style={styles.msgText}>{m.text}</div>
+                <div style={styles.msgTime} dir="ltr">{typeof m.at === "number" ? fmtDateTime(m.at) : ""}</div>
+              </div>
+            </div>
+          ))}
+        </div>
+
+        {err ? <div style={styles.error}>{err}</div> : null}
+
+        {/* الرد */}
+        {status === "closed" ? (
+          <div style={styles.tmClosedNote}>التذكرة مغلقة. افتحها للرد.</div>
+        ) : (
+          <div style={styles.tmReplyBar}>
+            <textarea style={styles.tmReplyInput} value={reply} onChange={(e) => setReply(e.target.value)} placeholder="اكتب ردك..." rows={2} disabled={sending} />
+            <button style={styles.tmSendBtn} onClick={send} disabled={sending || !reply.trim()}>{sending ? "..." : "إرسال"}</button>
+          </div>
+        )}
+      </div>
     </div>
   );
 }
@@ -867,4 +1051,35 @@ const styles = {
   dPermAll: { fontSize: 12, fontWeight: 700, color: "#16a34a", background: "#dcfce7", borderRadius: 6, padding: "3px 12px" },
   dPermNone: { fontSize: 12, color: "#cbd5e1" },
   detailsBtn: { padding: "9px 16px", fontSize: 13, fontWeight: 600, color: "#4f46e5", background: "#eef2ff", border: "none", borderRadius: 8, cursor: "pointer" },
+
+  // الدعم
+  ticketList: { display: "flex", flexDirection: "column", gap: 10 },
+  ticketCard: { background: "#fff", border: "1px solid #e2e8f0", borderRadius: 12, padding: "15px 18px", display: "flex", justifyContent: "space-between", alignItems: "center", gap: 12, cursor: "pointer", transition: "all .15s" },
+  ticketUnread: { borderColor: "#c7d2fe", background: "#fafbff" },
+  tkLeft: { flex: 1, minWidth: 0 },
+  tkTop: { display: "flex", alignItems: "center", gap: 9, flexWrap: "wrap", marginBottom: 7 },
+  unreadDot: { width: 8, height: 8, borderRadius: "50%", background: "#6366f1", flexShrink: 0 },
+  tkSubject: { fontSize: 15, fontWeight: 700, color: "#0f172a" },
+  tkCat: { fontSize: 12, color: "#64748b", background: "#f1f5f9", borderRadius: 5, padding: "2px 10px" },
+  tkMeta: { display: "flex", gap: 16, flexWrap: "wrap", fontSize: 13, color: "#64748b" },
+  tkArrow: { fontSize: 24, color: "#cbd5e1", flexShrink: 0 },
+
+  ticketModal: { background: "#fff", borderRadius: 16, width: "100%", maxWidth: 600, maxHeight: "92vh", display: "flex", flexDirection: "column", padding: 0, overflow: "hidden", direction: "rtl", fontFamily: "'IBM Plex Sans Arabic', system-ui, sans-serif" },
+  tmHead: { display: "flex", justifyContent: "space-between", alignItems: "flex-start", gap: 10, padding: "20px 24px 14px", borderBottom: "1px solid #e2e8f0" },
+  tmSubject: { fontSize: 17, fontWeight: 800, color: "#0f172a", margin: "0 0 5px" },
+  tmMeta: { fontSize: 13, color: "#64748b" },
+  tmStatusBar: { display: "flex", gap: 8, padding: "12px 24px", borderBottom: "1px solid #f1f5f9", background: "#fafbfc" },
+  tmStatusBtn: { padding: "7px 16px", fontSize: 13, fontWeight: 600, color: "#64748b", background: "#fff", border: "1px solid #e2e8f0", borderRadius: 7, cursor: "pointer" },
+  tmStatusOn: { fontWeight: 800, borderColor: "currentColor", background: "#f8fafc" },
+  tmMessages: { flex: 1, overflowY: "auto", padding: "18px 24px", display: "flex", flexDirection: "column", gap: 12, minHeight: 200, maxHeight: 400, background: "#f8fafc" },
+  msgRow: { display: "flex" },
+  msgOwner: { maxWidth: "78%", background: "#eef2ff", border: "1px solid #c7d2fe", borderRadius: "12px 12px 12px 3px", padding: "10px 14px" },
+  msgClient: { maxWidth: "78%", background: "#fff", border: "1px solid #e2e8f0", borderRadius: "12px 12px 3px 12px", padding: "10px 14px" },
+  msgAuthor: { fontSize: 12, fontWeight: 700, color: "#6366f1", marginBottom: 4 },
+  msgText: { fontSize: 14, color: "#0f172a", lineHeight: 1.6, whiteSpace: "pre-wrap" },
+  msgTime: { fontSize: 11, color: "#94a3b8", marginTop: 5 },
+  tmReplyBar: { display: "flex", gap: 10, padding: "14px 24px", borderTop: "1px solid #e2e8f0", alignItems: "flex-end" },
+  tmReplyInput: { flex: 1, padding: "10px 12px", fontSize: 14, border: "1px solid #cbd5e1", borderRadius: 8, resize: "none", fontFamily: "inherit", boxSizing: "border-box" },
+  tmSendBtn: { padding: "11px 22px", fontSize: 14, fontWeight: 700, color: "#fff", background: "#6366f1", border: "none", borderRadius: 8, cursor: "pointer", whiteSpace: "nowrap" },
+  tmClosedNote: { padding: "16px 24px", textAlign: "center", fontSize: 14, color: "#94a3b8", borderTop: "1px solid #e2e8f0" },
 };
