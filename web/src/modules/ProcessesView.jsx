@@ -215,6 +215,8 @@ function TasksTab({ tasks, onReload }) {
 // ═══════════ تبويب الجدولة (المراحل) ═══════════
 function ScheduleTab({ milestones, onReload, onEdit }) {
   const [busyId, setBusyId] = useState("");
+  const [view, setView] = useState("timeline"); // timeline | list
+  const todayStr = new Date().toISOString().slice(0, 10);
   const sorted = [...milestones].sort((a, b) => (a.startDate || "9999").localeCompare(b.startDate || "9999"));
 
   async function remove(m) {
@@ -231,31 +233,110 @@ function ScheduleTab({ milestones, onReload, onEdit }) {
     return <div style={styles.empty}><div style={styles.emptyIcon}>📅</div><p style={styles.muted}>لا توجد مراحل. اضغط «+ مرحلة».</p></div>;
   }
 
+  const isLate = (m) => m.endDate && m.endDate < todayStr && m.status !== "done";
+  const late = milestones.filter(isLate);
+  const avgProgress = milestones.length ? Math.round(milestones.reduce((s, m) => s + (Number(m.progress) || 0), 0) / milestones.length) : 0;
+  const doneCount = milestones.filter((m) => m.status === "done").length;
+
+  // نطاق الخط الزمني
+  const dated = milestones.filter((m) => m.startDate && m.endDate);
+  let minD = null, maxD = null;
+  dated.forEach((m) => { if (!minD || m.startDate < minD) minD = m.startDate; if (!maxD || m.endDate > maxD) maxD = m.endDate; });
+  const minMs = minD ? new Date(minD).getTime() : 0;
+  const maxMs = maxD ? new Date(maxD).getTime() : 0;
+  const span = (maxMs - minMs) || 1;
+  const pct = (d) => Math.max(0, Math.min(100, ((new Date(d).getTime() - minMs) / span) * 100));
+  const todayPct = (minD && maxD && todayStr >= minD && todayStr <= maxD) ? pct(todayStr) : null;
+
   return (
-    <div style={styles.milestoneList}>
-      {sorted.map((m) => {
-        const cfg = MILESTONE_STATUS[m.status] || MILESTONE_STATUS.planned;
-        return (
-          <div key={m.id} style={styles.milestoneCard}>
-            <div style={styles.mTop}>
-              <div style={styles.mTitleWrap}>
-                <span style={styles.mTitle}>{m.title}</span>
-                <span style={{ ...styles.mBadge, background: cfg.bg, color: cfg.color }}>{cfg.label}</span>
-              </div>
-              <div style={styles.mActions}>
-                <button style={styles.mEdit} onClick={() => onEdit(m)}>تعديل</button>
-                <button style={styles.mDel} onClick={() => remove(m)} disabled={busyId === m.id}>حذف</button>
-              </div>
-            </div>
-            {m.description ? <div style={styles.mDesc}>{m.description}</div> : null}
-            <div style={styles.progressWrap}>
-              <div style={styles.progressBar}><div style={{ ...styles.progressFill, width: `${m.progress || 0}%` }} /></div>
-              <span style={styles.progressVal}>{m.progress || 0}%</span>
-            </div>
-            {(m.startDate || m.endDate) ? <div style={styles.mDates} dir="ltr">{m.startDate || "—"} ← {m.endDate || "—"}</div> : null}
+    <div>
+      {/* ملخّص */}
+      <div style={styles.schedSummary}>
+        <div style={styles.schedStat}><span style={styles.schedNum}>{milestones.length}</span><span style={styles.schedLbl}>مرحلة</span></div>
+        <div style={styles.schedStat}><span style={{ ...styles.schedNum, color: "#2563eb" }}>{avgProgress}%</span><span style={styles.schedLbl}>الإنجاز</span></div>
+        <div style={styles.schedStat}><span style={{ ...styles.schedNum, color: "#16a34a" }}>{doneCount}</span><span style={styles.schedLbl}>منجزة</span></div>
+        <div style={styles.schedStat}><span style={{ ...styles.schedNum, color: late.length > 0 ? "#dc2626" : "#16a34a" }}>{late.length}</span><span style={styles.schedLbl}>متأخرة</span></div>
+      </div>
+
+      {/* تنبيه التأخير */}
+      {late.length > 0 ? (
+        <div style={styles.lateBanner}>
+          <div style={styles.lateHead}>⚠️ مراحل تجاوزت موعدها ({late.length})</div>
+          <div style={styles.lateList}>
+            {late.map((m) => <span key={m.id} style={styles.lateItem}>{m.title} <span dir="ltr">· انتهى {m.endDate}</span></span>)}
           </div>
-        );
-      })}
+        </div>
+      ) : null}
+
+      {/* مبدّل العرض */}
+      <div style={styles.schedToggle}>
+        <button style={view === "timeline" ? styles.schedTOn : styles.schedTOff} onClick={() => setView("timeline")}>📊 خط زمني</button>
+        <button style={view === "list" ? styles.schedTOn : styles.schedTOff} onClick={() => setView("list")}>📋 قائمة</button>
+      </div>
+
+      {view === "timeline" ? (
+        dated.length === 0 ? (
+          <div style={styles.warnBox2}>أضف تواريخ بداية ونهاية للمراحل لعرض الخط الزمني.</div>
+        ) : (
+          <div style={styles.ganttWrap}>
+            {todayPct !== null ? <div style={{ ...styles.ganttToday, right: `${todayPct}%` }} title="اليوم" /> : null}
+            {sorted.map((m) => {
+              const cfg = MILESTONE_STATUS[m.status] || MILESTONE_STATUS.planned;
+              const lateM = isLate(m);
+              if (!m.startDate || !m.endDate) {
+                return (
+                  <div key={m.id} style={styles.ganttRow}>
+                    <div style={styles.ganttLabel} title={m.title}>{m.title}</div>
+                    <div style={styles.ganttTrack}><span style={styles.ganttNoDate}>بدون تواريخ</span></div>
+                  </div>
+                );
+              }
+              const left = pct(m.startDate);
+              const width = Math.max(2, pct(m.endDate) - left);
+              return (
+                <div key={m.id} style={styles.ganttRow}>
+                  <div style={styles.ganttLabel} title={m.title}>{m.title}</div>
+                  <div style={styles.ganttTrack}>
+                    <div style={{ ...styles.ganttBar, right: `${left}%`, width: `${width}%`, background: lateM ? "#fecaca" : cfg.bg, borderColor: lateM ? "#dc2626" : cfg.color }} onClick={() => onEdit(m)} title={`${m.startDate} ← ${m.endDate} · ${m.progress || 0}%`}>
+                      <div style={{ ...styles.ganttFill, width: `${m.progress || 0}%`, background: lateM ? "#dc2626" : cfg.color }} />
+                      <span style={{ ...styles.ganttBarLabel, color: lateM ? "#7f1d1d" : cfg.color }}>{m.progress || 0}%</span>
+                    </div>
+                  </div>
+                </div>
+              );
+            })}
+            <div style={styles.ganttAxis}><span dir="ltr">{minD}</span><span dir="ltr">{maxD}</span></div>
+          </div>
+        )
+      ) : (
+        <div style={styles.milestoneList}>
+          {sorted.map((m) => {
+            const cfg = MILESTONE_STATUS[m.status] || MILESTONE_STATUS.planned;
+            const lateM = isLate(m);
+            return (
+              <div key={m.id} style={{ ...styles.milestoneCard, ...(lateM ? styles.milestoneLate : {}) }}>
+                <div style={styles.mTop}>
+                  <div style={styles.mTitleWrap}>
+                    <span style={styles.mTitle}>{m.title}</span>
+                    <span style={{ ...styles.mBadge, background: cfg.bg, color: cfg.color }}>{cfg.label}</span>
+                    {lateM ? <span style={styles.mLateBadge}>متأخرة</span> : null}
+                  </div>
+                  <div style={styles.mActions}>
+                    <button style={styles.mEdit} onClick={() => onEdit(m)}>تعديل</button>
+                    <button style={styles.mDel} onClick={() => remove(m)} disabled={busyId === m.id}>حذف</button>
+                  </div>
+                </div>
+                {m.description ? <div style={styles.mDesc}>{m.description}</div> : null}
+                <div style={styles.progressWrap}>
+                  <div style={styles.progressBar}><div style={{ ...styles.progressFill, width: `${m.progress || 0}%` }} /></div>
+                  <span style={styles.progressVal}>{m.progress || 0}%</span>
+                </div>
+                {(m.startDate || m.endDate) ? <div style={styles.mDates} dir="ltr">{m.startDate || "—"} ← {m.endDate || "—"}</div> : null}
+              </div>
+            );
+          })}
+        </div>
+      )}
     </div>
   );
 }
@@ -545,4 +626,34 @@ const styles = {
   modalActions: { display: "flex", gap: 10, marginTop: 18 },
   cancelBtn: { flex: 1, padding: "11px", fontSize: 14, fontWeight: 600, color: "#475569", background: "#f1f5f9", border: "none", borderRadius: 8, cursor: "pointer" },
   saveBtn: { flex: 2, padding: "11px", fontSize: 14, fontWeight: 700, color: "#fff", background: "#ea580c", border: "none", borderRadius: 8, cursor: "pointer" },
+
+  // الجدولة المطوّرة
+  schedSummary: { display: "grid", gridTemplateColumns: "repeat(4, 1fr)", gap: 10, marginBottom: 16 },
+  schedStat: { background: "#fff", border: "1px solid #e2e8f0", borderRadius: 10, padding: "12px 14px", display: "flex", flexDirection: "column", alignItems: "center", gap: 4 },
+  schedNum: { fontSize: 22, fontWeight: 800, color: "#0f172a", fontFamily: "monospace" },
+  schedLbl: { fontSize: 12, color: "#64748b", fontWeight: 600 },
+
+  lateBanner: { background: "#fef2f2", border: "1px solid #fecaca", borderRadius: 10, padding: "12px 16px", marginBottom: 16 },
+  lateHead: { fontSize: 14, fontWeight: 800, color: "#b91c1c", marginBottom: 8 },
+  lateList: { display: "flex", gap: 8, flexWrap: "wrap" },
+  lateItem: { fontSize: 12, color: "#7f1d1d", background: "#fff", border: "1px solid #fecaca", borderRadius: 8, padding: "4px 12px" },
+
+  schedToggle: { display: "flex", gap: 8, marginBottom: 16 },
+  schedTOn: { padding: "8px 18px", fontSize: 13, fontWeight: 700, color: "#fff", background: "#ea580c", border: "none", borderRadius: 8, cursor: "pointer" },
+  schedTOff: { padding: "8px 18px", fontSize: 13, fontWeight: 600, color: "#64748b", background: "#fff", border: "1px solid #e2e8f0", borderRadius: 8, cursor: "pointer" },
+
+  ganttWrap: { background: "#fff", border: "1px solid #e2e8f0", borderRadius: 12, padding: "18px 20px", position: "relative", overflow: "hidden" },
+  ganttToday: { position: "absolute", top: 14, bottom: 36, width: 2, background: "#0891b2", zIndex: 2, opacity: 0.6 },
+  ganttRow: { display: "flex", alignItems: "center", gap: 12, marginBottom: 10 },
+  ganttLabel: { width: 130, flexShrink: 0, fontSize: 13, fontWeight: 600, color: "#334155", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" },
+  ganttTrack: { flex: 1, position: "relative", height: 28, background: "#f8fafc", borderRadius: 6 },
+  ganttBar: { position: "absolute", top: 0, height: 28, borderRadius: 6, border: "1.5px solid", cursor: "pointer", overflow: "hidden", display: "flex", alignItems: "center", justifyContent: "center", minWidth: 30 },
+  ganttFill: { position: "absolute", top: 0, right: 0, height: "100%", opacity: 0.35 },
+  ganttBarLabel: { position: "relative", fontSize: 11, fontWeight: 800, fontFamily: "monospace", zIndex: 1 },
+  ganttNoDate: { fontSize: 11, color: "#cbd5e1", paddingRight: 8 },
+  ganttAxis: { display: "flex", justifyContent: "space-between", marginTop: 8, paddingRight: 142, fontSize: 11, color: "#94a3b8", fontFamily: "monospace" },
+
+  warnBox2: { padding: "14px 16px", background: "#fffbeb", border: "1px solid #fde68a", borderRadius: 10, fontSize: 14, color: "#92400e" },
+  milestoneLate: { borderColor: "#fecaca", background: "#fffafa" },
+  mLateBadge: { fontSize: 11, fontWeight: 700, color: "#dc2626", background: "#fee2e2", borderRadius: 5, padding: "2px 8px" },
 };
