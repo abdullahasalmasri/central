@@ -22,7 +22,7 @@ import { auth } from "../firebase";
 const NAV = [
   { type: "section", id: "exec", name: "الإدارة العليا", icon: Crown, color: "#7c3aed", children: [
     { id: "exec_kpi",  name: "لوحة المؤشرات",   file: "ExecutiveDashboard.jsx" },
-    { id: "exec_org",  name: "الهيكل التنظيمي", file: null },
+    { id: "exec_org",  name: "الهيكل التنظيمي", file: "OrgStructureView.jsx" },
     { id: "exec_perm", name: "الصلاحيات",       file: null },
   ]},
   { type: "section", id: "fin", name: "المالية", icon: Wallet, color: "#059669", children: [

@@ -6739,6 +6739,54 @@ exports.getResourceAllocation = onCall(async (request) => {
   }
 });
 
+// ═══════════════════════════════════════════════════════
+// ===== الهيكل التنظيمي (تفعيل الأقسام + مديروها) =====
+// ═══════════════════════════════════════════════════════
+
+// قراءة هيكل الأقسام: { [sectionId]: { active, manager } }
+exports.getOrgStructure = onCall(async (request) => {
+  try {
+    const callerTenantId = await requireProfitabilityView(request.auth);
+    const tenantDoc = await db.collection(COLLECTIONS.TENANTS).doc(callerTenantId).get();
+    const org = (tenantDoc.exists && tenantDoc.data().orgStructure) || {};
+    return { orgStructure: org, canManage: request.auth.token.role === ROLES.OWNER };
+  } catch (err) {
+    if (err instanceof HttpsError) throw err;
+    console.error("getOrgStructure failed:", err);
+    throw new HttpsError("internal", "تعذّر تحميل الهيكل التنظيمي.");
+  }
+});
+
+// تحديث قسم: تفعيل/تعطيل + تعيين مدير (المالك فقط)
+// data: { sectionId, active?, manager? }
+exports.updateOrgSection = onCall(async (request) => {
+  try {
+    if (!request.auth) throw new HttpsError("unauthenticated", "يجب تسجيل الدخول أولاً.");
+    if (request.auth.token.role !== ROLES.OWNER) throw new HttpsError("permission-denied", "هذا الإجراء متاح للمالك فقط.");
+    const callerTenantId = request.auth.token.tenantId;
+    if (!callerTenantId) throw new HttpsError("failed-precondition", "حسابك غير مرتبط بشركة.");
+
+    const data = request.data || {};
+    const sectionId = typeof data.sectionId === "string" ? data.sectionId.trim() : "";
+    if (!sectionId || !/^[a-z][a-z_]{1,30}$/.test(sectionId)) throw new HttpsError("invalid-argument", "معرّف القسم غير صحيح.");
+
+    const update = {};
+    if (data.active !== undefined) update[`orgStructure.${sectionId}.active`] = !!data.active;
+    if (data.manager !== undefined) {
+      const m = typeof data.manager === "string" ? data.manager.trim() : "";
+      update[`orgStructure.${sectionId}.manager`] = m || null;
+    }
+    if (Object.keys(update).length === 0) throw new HttpsError("invalid-argument", "لا تغييرات.");
+
+    await db.collection(COLLECTIONS.TENANTS).doc(callerTenantId).update(update);
+    return { sectionId, updated: true };
+  } catch (err) {
+    if (err instanceof HttpsError) throw err;
+    console.error("updateOrgSection failed:", err);
+    throw new HttpsError("internal", "تعذّر تحديث القسم، حاول مرة أخرى.");
+  }
+});
+
 // ===== تقرير المشروع عبر فترة (عدة أشهر) =====
 // data: { projectId, fromMonth, toMonth }
 exports.getProjectProfitabilityRange = onCall(async (request) => {
