@@ -69,6 +69,11 @@ const {
   buildInteractionDoc,
   ALL_INTERACTION_TYPE,
   buildContractDoc,
+  buildLicenseDoc,
+  buildDisputeDoc,
+  ALL_DISPUTE_TYPE,
+  ALL_DISPUTE_STATUS,
+  ALL_DISPUTE_OUTCOME,
   ALL_CONTRACT_TYPE,
   ALL_CONTRACT_STATUS,
   CONTRACT_STATUS,
@@ -7801,6 +7806,350 @@ exports.getContracts = onCall(async (request) => {
     if (err instanceof HttpsError) throw err;
     console.error("getContracts failed:", err);
     throw new HttpsError("internal", "تعذّر تحميل العقود.");
+  }
+});
+
+// ═══════════════════════════════════════════════════════
+// ===== القانونية: الامتثال والتراخيص =====
+// ═══════════════════════════════════════════════════════
+
+// إنشاء ترخيص
+exports.createLicense = onCall(async (request) => {
+  try {
+    const callerTenantId = await requireModule(request.auth, MODULES.LEGAL);
+    const data = request.data || {};
+    const name = typeof data.name === "string" ? data.name.trim() : "";
+    if (name.length < 2) throw new HttpsError("invalid-argument", "اسم الترخيص مطلوب (حرفان على الأقل).");
+
+    const docRef = db.collection(COLLECTIONS.LICENSES).doc();
+    await docRef.set(buildLicenseDoc({
+      tenantId: callerTenantId,
+      licenseNumber: typeof data.licenseNumber === "string" ? data.licenseNumber.trim() : null,
+      name: name,
+      authority: typeof data.authority === "string" ? data.authority.trim() : null,
+      issueDate: typeof data.issueDate === "string" && isValidDate(data.issueDate) ? data.issueDate : null,
+      endDate: typeof data.endDate === "string" && isValidDate(data.endDate) ? data.endDate : null,
+      notes: typeof data.notes === "string" ? data.notes.trim() : null,
+      createdBy: request.auth.uid,
+      createdAt: FieldValue.serverTimestamp(),
+    }));
+    return { id: docRef.id, created: true };
+  } catch (err) {
+    if (err instanceof HttpsError) throw err;
+    console.error("createLicense failed:", err);
+    throw new HttpsError("internal", "تعذّر إنشاء الترخيص.");
+  }
+});
+
+// تعديل ترخيص
+exports.updateLicense = onCall(async (request) => {
+  try {
+    const callerTenantId = await requireModule(request.auth, MODULES.LEGAL);
+    const data = request.data || {};
+    const licenseId = typeof data.licenseId === "string" ? data.licenseId.trim() : "";
+    if (!licenseId) throw new HttpsError("invalid-argument", "يجب تحديد الترخيص.");
+
+    const ref = db.collection(COLLECTIONS.LICENSES).doc(licenseId);
+    const doc = await ref.get();
+    if (!doc.exists || doc.data().tenantId !== callerTenantId) throw new HttpsError("invalid-argument", "الترخيص غير موجود.");
+
+    const update = {};
+    if (typeof data.name === "string") {
+      const n = data.name.trim();
+      if (n.length < 2) throw new HttpsError("invalid-argument", "اسم الترخيص قصير.");
+      update.name = n;
+    }
+    if (typeof data.licenseNumber === "string") update.licenseNumber = data.licenseNumber.trim() || null;
+    if (typeof data.authority === "string") update.authority = data.authority.trim() || null;
+    if (typeof data.issueDate === "string") update.issueDate = isValidDate(data.issueDate) ? data.issueDate : null;
+    if (typeof data.endDate === "string") update.endDate = isValidDate(data.endDate) ? data.endDate : null;
+    if (typeof data.notes === "string") update.notes = data.notes.trim() || null;
+
+    if (Object.keys(update).length === 0) throw new HttpsError("invalid-argument", "لا تغييرات.");
+    update.updatedBy = request.auth.uid;
+    update.updatedAt = FieldValue.serverTimestamp();
+    await ref.update(update);
+    return { id: licenseId, updated: true };
+  } catch (err) {
+    if (err instanceof HttpsError) throw err;
+    console.error("updateLicense failed:", err);
+    throw new HttpsError("internal", "تعذّر تعديل الترخيص.");
+  }
+});
+
+// حذف ترخيص
+exports.deleteLicense = onCall(async (request) => {
+  try {
+    const callerTenantId = await requireModule(request.auth, MODULES.LEGAL);
+    const data = request.data || {};
+    const licenseId = typeof data.licenseId === "string" ? data.licenseId.trim() : "";
+    if (!licenseId) throw new HttpsError("invalid-argument", "يجب تحديد الترخيص.");
+    const ref = db.collection(COLLECTIONS.LICENSES).doc(licenseId);
+    const doc = await ref.get();
+    if (!doc.exists || doc.data().tenantId !== callerTenantId) throw new HttpsError("invalid-argument", "الترخيص غير موجود.");
+    await ref.delete();
+    return { id: licenseId, deleted: true };
+  } catch (err) {
+    if (err instanceof HttpsError) throw err;
+    console.error("deleteLicense failed:", err);
+    throw new HttpsError("internal", "تعذّر حذف الترخيص.");
+  }
+});
+
+// تحديث حالة متطلب امتثال (يُخزّن في وثيقة الشركة)
+// data: { key, ok, note? }
+exports.setComplianceItem = onCall(async (request) => {
+  try {
+    const callerTenantId = await requireModule(request.auth, MODULES.LEGAL);
+    const data = request.data || {};
+    const key = typeof data.key === "string" ? data.key.trim() : "";
+    if (!key || !/^[a-z][a-z_]{1,30}$/.test(key)) throw new HttpsError("invalid-argument", "معرّف المتطلب غير صحيح.");
+
+    const update = {};
+    if (data.ok !== undefined) update[`complianceStatus.${key}.ok`] = !!data.ok;
+    if (data.note !== undefined) {
+      const note = typeof data.note === "string" ? data.note.trim() : "";
+      update[`complianceStatus.${key}.note`] = note || null;
+    }
+    if (Object.keys(update).length === 0) throw new HttpsError("invalid-argument", "لا تغييرات.");
+
+    await db.collection(COLLECTIONS.TENANTS).doc(callerTenantId).update(update);
+    return { key, updated: true };
+  } catch (err) {
+    if (err instanceof HttpsError) throw err;
+    console.error("setComplianceItem failed:", err);
+    throw new HttpsError("internal", "تعذّر تحديث المتطلب.");
+  }
+});
+
+// بيانات الامتثال: التراخيص + حالة المتطلبات + الملخّص
+exports.getCompliance = onCall(async (request) => {
+  try {
+    const callerTenantId = await requireModule(request.auth, MODULES.LEGAL);
+    const round2 = (n) => Math.round((Number(n) || 0) * 100) / 100;
+    const todayStr = new Date().toISOString().slice(0, 10);
+    const daysBetween = (a, b) => Math.round((new Date(b) - new Date(a)) / (1000 * 60 * 60 * 24));
+
+    const [licenseSnap, tenantDoc] = await Promise.all([
+      db.collection(COLLECTIONS.LICENSES).where("tenantId", "==", callerTenantId).get(),
+      db.collection(COLLECTIONS.TENANTS).doc(callerTenantId).get(),
+    ]);
+
+    const licenses = licenseSnap.docs.map((d) => {
+      const l = d.data();
+      let daysToEnd = null;
+      let computedStatus = "valid";
+      if (l.endDate) {
+        daysToEnd = daysBetween(todayStr, l.endDate);
+        if (daysToEnd < 0) computedStatus = "expired";
+        else if (daysToEnd <= 30) computedStatus = "expiring";
+      } else {
+        computedStatus = "valid";
+      }
+      return { id: d.id, ...l, daysToEnd, computedStatus };
+    });
+    licenses.sort((a, b) => {
+      const ae = a.endDate || "9999"; const be = b.endDate || "9999";
+      return ae.localeCompare(be);
+    });
+
+    const complianceStatus = (tenantDoc.exists && tenantDoc.data().complianceStatus) || {};
+
+    const validCount = licenses.filter((l) => l.computedStatus === "valid").length;
+    const expiringSoon = licenses.filter((l) => l.computedStatus === "expiring");
+    const expiredCount = licenses.filter((l) => l.computedStatus === "expired").length;
+
+    const renewals = expiringSoon
+      .map((l) => ({ id: l.id, name: l.name, authority: l.authority, days: l.daysToEnd }))
+      .sort((a, b) => (a.days || 0) - (b.days || 0));
+
+    return {
+      licenses,
+      complianceStatus,
+      renewals,
+      summary: {
+        validCount,
+        expiringCount: expiringSoon.length,
+        expiredCount,
+        totalCount: licenses.length,
+      },
+    };
+  } catch (err) {
+    if (err instanceof HttpsError) throw err;
+    console.error("getCompliance failed:", err);
+    throw new HttpsError("internal", "تعذّر تحميل بيانات الامتثال.");
+  }
+});
+
+// ═══════════════════════════════════════════════════════
+// ===== القانونية: المنازعات =====
+// ═══════════════════════════════════════════════════════
+
+// إنشاء منازعة
+exports.createDispute = onCall(async (request) => {
+  try {
+    const callerTenantId = await requireModule(request.auth, MODULES.LEGAL);
+    const data = request.data || {};
+    const name = typeof data.name === "string" ? data.name.trim() : "";
+    if (name.length < 2) throw new HttpsError("invalid-argument", "اسم القضية مطلوب (حرفان على الأقل).");
+    const value = Number(data.value) || 0;
+    if (value < 0) throw new HttpsError("invalid-argument", "القيمة غير صحيحة.");
+
+    const tenantRef = db.collection(COLLECTIONS.TENANTS).doc(callerTenantId);
+    const dispRef = db.collection(COLLECTIONS.DISPUTES).doc();
+    const result = await db.runTransaction(async (tx) => {
+      const tenantSnap = await tx.get(tenantRef);
+      if (!tenantSnap.exists) throw new HttpsError("failed-precondition", "الشركة غير موجودة.");
+      const nextNumber = (tenantSnap.data().lastDisputeNumber || 0) + 1;
+      const dispDoc = buildDisputeDoc({
+        tenantId: callerTenantId,
+        disputeNumber: nextNumber,
+        name: name,
+        party: typeof data.party === "string" ? data.party.trim() : null,
+        type: data.type,
+        value: value,
+        status: data.status,
+        outcome: data.outcome,
+        provision: Number(data.provision) || 0,
+        notes: typeof data.notes === "string" ? data.notes.trim() : null,
+        openDate: typeof data.openDate === "string" && isValidDate(data.openDate) ? data.openDate : null,
+        createdBy: request.auth.uid,
+        createdAt: FieldValue.serverTimestamp(),
+      });
+      tx.set(dispRef, dispDoc);
+      tx.update(tenantRef, { lastDisputeNumber: nextNumber });
+      return { disputeNumber: nextNumber };
+    });
+    return { id: dispRef.id, disputeNumber: result.disputeNumber };
+  } catch (err) {
+    if (err instanceof HttpsError) throw err;
+    console.error("createDispute failed:", err);
+    throw new HttpsError("internal", "تعذّر إنشاء القضية.");
+  }
+});
+
+// تعديل منازعة
+exports.updateDispute = onCall(async (request) => {
+  try {
+    const callerTenantId = await requireModule(request.auth, MODULES.LEGAL);
+    const data = request.data || {};
+    const disputeId = typeof data.disputeId === "string" ? data.disputeId.trim() : "";
+    if (!disputeId) throw new HttpsError("invalid-argument", "يجب تحديد القضية.");
+
+    const ref = db.collection(COLLECTIONS.DISPUTES).doc(disputeId);
+    const doc = await ref.get();
+    if (!doc.exists || doc.data().tenantId !== callerTenantId) throw new HttpsError("invalid-argument", "القضية غير موجودة.");
+
+    const update = {};
+    if (typeof data.name === "string") {
+      const n = data.name.trim();
+      if (n.length < 2) throw new HttpsError("invalid-argument", "اسم القضية قصير.");
+      update.name = n;
+    }
+    if (typeof data.party === "string") update.party = data.party.trim() || null;
+    if (typeof data.type === "string") {
+      if (!ALL_DISPUTE_TYPE.includes(data.type)) throw new HttpsError("invalid-argument", "نوع غير صحيح.");
+      update.type = data.type;
+    }
+    if (typeof data.status === "string") {
+      if (!ALL_DISPUTE_STATUS.includes(data.status)) throw new HttpsError("invalid-argument", "حالة غير صحيحة.");
+      update.status = data.status;
+    }
+    if (data.outcome !== undefined) {
+      if (data.outcome === null || data.outcome === "") update.outcome = null;
+      else if (ALL_DISPUTE_OUTCOME.includes(data.outcome)) update.outcome = data.outcome;
+      else throw new HttpsError("invalid-argument", "نتيجة غير صحيحة.");
+    }
+    ["value", "provision"].forEach((k) => {
+      if (data[k] !== undefined) {
+        const v = Number(data[k]);
+        if (!(v >= 0)) throw new HttpsError("invalid-argument", `قيمة غير صحيحة (${k}).`);
+        update[k] = v;
+      }
+    });
+    if (typeof data.openDate === "string") update.openDate = isValidDate(data.openDate) ? data.openDate : null;
+    if (typeof data.notes === "string") update.notes = data.notes.trim() || null;
+
+    if (Object.keys(update).length === 0) throw new HttpsError("invalid-argument", "لا تغييرات.");
+    update.updatedBy = request.auth.uid;
+    update.updatedAt = FieldValue.serverTimestamp();
+    await ref.update(update);
+    return { id: disputeId, updated: true };
+  } catch (err) {
+    if (err instanceof HttpsError) throw err;
+    console.error("updateDispute failed:", err);
+    throw new HttpsError("internal", "تعذّر تعديل القضية.");
+  }
+});
+
+// حذف منازعة
+exports.deleteDispute = onCall(async (request) => {
+  try {
+    const callerTenantId = await requireModule(request.auth, MODULES.LEGAL);
+    const data = request.data || {};
+    const disputeId = typeof data.disputeId === "string" ? data.disputeId.trim() : "";
+    if (!disputeId) throw new HttpsError("invalid-argument", "يجب تحديد القضية.");
+    const ref = db.collection(COLLECTIONS.DISPUTES).doc(disputeId);
+    const doc = await ref.get();
+    if (!doc.exists || doc.data().tenantId !== callerTenantId) throw new HttpsError("invalid-argument", "القضية غير موجودة.");
+    await ref.delete();
+    return { id: disputeId, deleted: true };
+  } catch (err) {
+    if (err instanceof HttpsError) throw err;
+    console.error("deleteDispute failed:", err);
+    throw new HttpsError("internal", "تعذّر حذف القضية.");
+  }
+});
+
+// بيانات المنازعات: القضايا + الملخّص + التجميع
+exports.getDisputes = onCall(async (request) => {
+  try {
+    const callerTenantId = await requireModule(request.auth, MODULES.LEGAL);
+    const round2 = (n) => Math.round((Number(n) || 0) * 100) / 100;
+    const snap = await db.collection(COLLECTIONS.DISPUTES).where("tenantId", "==", callerTenantId).get();
+    const disputes = snap.docs.map((d) => ({ id: d.id, ...d.data() }));
+    disputes.sort((a, b) => (b.disputeNumber || 0) - (a.disputeNumber || 0));
+
+    const openLike = disputes.filter((d) => d.status !== "closed");
+    const closed = disputes.filter((d) => d.status === "closed");
+    const won = closed.filter((d) => d.outcome === "won");
+    const lost = closed.filter((d) => d.outcome === "lost");
+
+    const valueAtRisk = round2(openLike.reduce((s, d) => s + (Number(d.value) || 0), 0));
+    const provisions = round2(openLike.reduce((s, d) => s + (Number(d.provision) || 0), 0));
+    const decided = won.length + lost.length;
+    const winRate = decided > 0 ? round2((won.length / decided) * 100) : 0;
+
+    // التجميع حسب الحالة
+    const statusMap = {};
+    disputes.forEach((d) => { const st = d.status || "review"; statusMap[st] = (statusMap[st] || 0) + 1; });
+    const byStatus = Object.entries(statusMap).map(([status, count]) => ({ status, count }));
+
+    // التجميع حسب النوع
+    const typeMap = {};
+    disputes.forEach((d) => { const t = d.type || "other"; typeMap[t] = (typeMap[t] || 0) + 1; });
+    const byType = Object.entries(typeMap).map(([type, count]) => ({
+      type, count, pct: disputes.length > 0 ? round2((count / disputes.length) * 100) : 0,
+    })).sort((a, b) => b.count - a.count);
+
+    return {
+      disputes,
+      byStatus,
+      byType,
+      summary: {
+        openCount: openLike.length,
+        totalCount: disputes.length,
+        valueAtRisk: valueAtRisk,
+        provisions: provisions,
+        winRate: winRate,
+        wonCount: won.length,
+        lostCount: lost.length,
+      },
+    };
+  } catch (err) {
+    if (err instanceof HttpsError) throw err;
+    console.error("getDisputes failed:", err);
+    throw new HttpsError("internal", "تعذّر تحميل المنازعات.");
   }
 });
 

@@ -1,256 +1,328 @@
-import React from "react";
-import {
-  Folder, AlertCircle, TrendingUp, Wallet, Clock, Handshake, Gavel,
-  Calendar, ChevronDown, Scale, Tag
-} from "lucide-react";
+import { useState, useEffect } from "react";
+import { doc, getDoc } from "firebase/firestore";
+import { httpsCallable } from "firebase/functions";
+import { db, auth, functions } from "../firebase";
 
 /* ============================================================
    المنازعات — قسم القانونية والامتثال
-   البيانات تجريبية. دوال backend المطلوبة (جديدة) مكتوبة بجانب كل مجموعة.
+   إدارة القضايا والنزاعات مع القيمة المعرّضة ومعدل الكسب.
+   getDisputes / createDispute / updateDispute / deleteDispute.
    ============================================================ */
 
-// 📊 البطاقات — مصدرها: getDisputes (دالة backend جديدة)
-const KPIS = [
-  { id: "open", label: "قضايا مفتوحة",          value: "4",  sub: "قضية", icon: Folder,      color: "#78716c" },
-  { id: "risk", label: "القيمة المعرّضة للخطر", value: "680,000", unit: "ر.س", icon: AlertCircle, color: "#dc2626" },
-  { id: "win",  label: "معدل الكسب",            value: "75", suffix: "%", icon: TrendingUp,  color: "#16a34a" },
-  { id: "prov", label: "المخصّصات القانونية",   value: "250,000", unit: "ر.س", icon: Wallet,  color: "#2563eb" },
-];
-
-// ⚖️ حالة القضايا — مصدرها: getDisputes (تجميع حسب الحالة)
-const CASE_STATUS = [
-  { name: "قيد النظر", count: 2, color: "#2563eb", icon: Clock },
-  { name: "تسوية",     count: 1, color: "#ea580c", icon: Handshake },
-  { name: "حكم",       count: 1, color: "#7c3aed", icon: Gavel },
-];
-
-// 🏷️ أنواع المنازعات — مصدرها: getDisputes (تجميع حسب النوع)
-const TYPES = [
-  { name: "عمالية",  value: 3, pct: 50, color: "#78716c" },
-  { name: "تجارية",  value: 2, pct: 33, color: "#2563eb" },
-  { name: "تعاقدية", value: 1, pct: 17, color: "#7c3aed" },
-];
-
-// 📋 القضايا — مصدرها: getDisputes
-// type: labor=عمالية · commercial=تجارية · contractual=تعاقدية
-// status: review=قيد النظر · settlement=تسوية · ruling=حكم · closed=مغلقة
-const CASES = [
-  { name: "نزاع مستحقات عامل",  party: "عامل سابق",           type: "labor",       value: 85000,  status: "review"     },
-  { name: "خلاف فاتورة",        party: "مورد معدّات",         type: "commercial",  value: 145000, status: "review"     },
-  { name: "مطالبة تأخير توريد", party: "مدينة الملك عبدالله", type: "contractual", value: 320000, status: "settlement" },
-  { name: "دعوى إنهاء خدمة",    party: "عامل سابق",           type: "labor",       value: 65000,  status: "ruling"     },
-  { name: "مطالبة جودة خدمة",   party: "أرامكو",              type: "commercial",  value: 65000,  status: "closed"     },
-];
-
-const TYPE_LABEL = { labor: "عمالية", commercial: "تجارية", contractual: "تعاقدية" };
-const STATUS = {
-  review:     { label: "قيد النظر", cls: "review"     },
-  settlement: { label: "تسوية",     cls: "settlement" },
-  ruling:     { label: "حكم",       cls: "ruling"     },
-  closed:     { label: "مغلقة",     cls: "closed"     },
+const fmt = (n) => (Math.round((Number(n) || 0) * 100) / 100).toLocaleString("en-US");
+const TYPE_LABEL = { labor: "عمالية", commercial: "تجارية", contractual: "تعاقدية", other: "أخرى" };
+const TYPE_ORDER = ["labor", "commercial", "contractual", "other"];
+const STATUS_INFO = {
+  review: { label: "قيد النظر", color: "#2563eb", bg: "#dbeafe" },
+  settlement: { label: "تسوية", color: "#ea580c", bg: "#ffedd5" },
+  ruling: { label: "حكم", color: "#7c3aed", bg: "#ede9fe" },
+  closed: { label: "مغلقة", color: "#64748b", bg: "#f1f5f9" },
 };
-
-const fmt = (n) => n.toLocaleString("en-US");
-
-const STYLES = `
-  *{margin:0;padding:0;box-sizing:border-box}
-  .dis-root{
-    --bg:#f4f6f9; --panel:#fff; --ink:#161b26; --ink2:#5a6580; --ink3:#94a0b8;
-    --line:#e7ebf1; --line2:#dde2ec;
-    font-family:'IBM Plex Sans Arabic','Segoe UI',Tahoma,sans-serif;
-    direction:rtl; background:var(--bg); color:var(--ink); min-height:100vh;
-    padding:26px 30px; -webkit-font-smoothing:antialiased;
-  }
-  .dis-num{font-variant-numeric:tabular-nums; letter-spacing:-.3px}
-
-  .dis-head{display:flex; align-items:center; gap:14px; margin-bottom:24px; flex-wrap:wrap}
-  .dis-head-ic{width:50px; height:50px; border-radius:13px; display:grid; place-items:center;
-    background:#78716c1a; color:#78716c; flex-shrink:0}
-  .dis-title{font-size:23px; font-weight:700; letter-spacing:-.4px; line-height:1.1}
-  .dis-sub{font-size:13px; color:var(--ink2); margin-top:2px}
-  .dis-period{margin-right:auto; display:flex; align-items:center; gap:7px; height:42px; padding:0 15px;
-    background:var(--panel); border:1px solid var(--line2); border-radius:11px; cursor:pointer;
-    font-family:inherit; font-size:13.5px; font-weight:600; color:var(--ink)}
-  .dis-period svg:first-child{color:#78716c}
-
-  .dis-kpis{display:grid; grid-template-columns:repeat(4,1fr); gap:14px; margin-bottom:16px}
-  .dis-kpi{background:var(--panel); border:1px solid var(--line); border-radius:15px; padding:17px 18px;
-    position:relative; overflow:hidden}
-  .dis-kpi::after{content:""; position:absolute; top:0; right:0; width:3px; height:100%; background:var(--c)}
-  .dis-kpi-ic{width:38px; height:38px; border-radius:10px; display:grid; place-items:center;
-    background:color-mix(in srgb,var(--c) 14%,transparent); color:var(--c); margin-bottom:12px}
-  .dis-kpi-label{font-size:12.5px; color:var(--ink2); font-weight:500; margin-bottom:5px}
-  .dis-kpi-val{font-size:24px; font-weight:700}
-  .dis-kpi-val .u{font-size:13px; color:var(--ink3); font-weight:600; margin-right:3px}
-  .dis-kpi-val .x{font-size:15px; color:var(--ink3); font-weight:600}
-  .dis-kpi-val .s{font-size:13px; color:var(--ink3); font-weight:500; margin-right:4px}
-
-  /* CASE STATUS */
-  .dis-status{display:grid; grid-template-columns:repeat(3,1fr); gap:14px; margin-bottom:16px}
-  .dis-stat{background:var(--panel); border:1px solid var(--line); border-radius:15px; padding:17px 18px; display:flex; align-items:center; gap:13px}
-  .dis-stat-ic{width:44px; height:44px; border-radius:12px; display:grid; place-items:center; flex-shrink:0}
-  .dis-stat-count{font-size:26px; font-weight:800; line-height:1; font-variant-numeric:tabular-nums}
-  .dis-stat-name{font-size:12.5px; color:var(--ink2); font-weight:600; margin-top:3px}
-
-  .dis-row{display:grid; grid-template-columns:1.6fr 1fr; gap:16px; align-items:start}
-  .dis-card{background:var(--panel); border:1px solid var(--line); border-radius:16px; padding:20px}
-  .dis-card-head{display:flex; align-items:center; justify-content:space-between; margin-bottom:18px}
-  .dis-card-title{font-size:15.5px; font-weight:700}
-  .dis-card-hint{font-size:12px; color:var(--ink3); font-weight:500}
-
-  /* TABLE */
-  .dis-tablewrap{overflow-x:auto}
-  table.dis-table{width:100%; border-collapse:collapse; min-width:560px}
-  .dis-table th{text-align:right; font-size:11.5px; color:var(--ink3); font-weight:700; padding:0 12px 11px;
-    border-bottom:1px solid var(--line); white-space:nowrap}
-  .dis-table th.n, .dis-table td.n{text-align:left}
-  .dis-table td{padding:13px 12px; border-bottom:1px solid var(--line); font-size:13px; vertical-align:middle}
-  .dis-table tr:last-child td{border-bottom:none}
-  .dis-case-name{font-weight:600; color:var(--ink); white-space:nowrap}
-  .dis-case-party{color:var(--ink2); font-size:12px; white-space:nowrap}
-  .dis-case-type{font-size:11px; font-weight:700; padding:3px 9px; border-radius:7px; background:#f1f0ee; color:#57534e; white-space:nowrap}
-  .dis-case-val{font-weight:700; font-variant-numeric:tabular-nums; text-align:left}
-  .dis-spill{display:inline-block; font-size:11px; font-weight:700; padding:4px 10px; border-radius:999px; white-space:nowrap}
-  .dis-spill.review{background:#dbeafe; color:#1d4ed8}
-  .dis-spill.settlement{background:#ffedd5; color:#9a3412}
-  .dis-spill.ruling{background:#ede9fe; color:#6d28d9}
-  .dis-spill.closed{background:#dcfce7; color:#15803d}
-
-  /* TYPES */
-  .dis-types{display:flex; flex-direction:column; gap:14px}
-  .dis-type-top{display:flex; align-items:center; justify-content:space-between; margin-bottom:7px}
-  .dis-type-name{display:flex; align-items:center; gap:8px; font-size:13px; font-weight:600}
-  .dis-type-dot{width:9px; height:9px; border-radius:3px; flex-shrink:0}
-  .dis-type-val{font-size:13px; font-weight:700; font-variant-numeric:tabular-nums}
-  .dis-type-val .p{font-size:11px; color:var(--ink3); font-weight:600; margin-right:5px}
-  .dis-type-bar{height:8px; background:#eef1f6; border-radius:999px; overflow:hidden}
-  .dis-type-bar i{display:block; height:100%; border-radius:999px}
-
-  @media(max-width:1000px){
-    .dis-kpis{grid-template-columns:repeat(2,1fr)}
-    .dis-status{grid-template-columns:1fr}
-    .dis-row{grid-template-columns:1fr}
-  }
-  @media(max-width:560px){
-    .dis-root{padding:18px 14px}
-    .dis-kpis{grid-template-columns:1fr}
-    .dis-title{font-size:19px}
-  }
-`;
+const STATUS_ORDER = ["review", "settlement", "ruling", "closed"];
+const OUTCOME_LABEL = { won: "كسب ✓", lost: "خسارة ✕", settled: "تسوية" };
+const OUTCOME_ORDER = ["won", "lost", "settled"];
 
 export default function DisputesView() {
+  const [tenantId, setTenantId] = useState("");
+  const [data, setData] = useState(null);
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState("");
+  const [modal, setModal] = useState(null);
+
+  useEffect(() => {
+    (async () => {
+      try {
+        const uid = auth.currentUser && auth.currentUser.uid;
+        if (!uid) { setError("لم يتم تسجيل الدخول."); setLoading(false); return; }
+        const userSnap = await getDoc(doc(db, "users", uid));
+        const tid = userSnap.exists() ? userSnap.data().tenantId : null;
+        if (!tid) { setError("تعذّر تحديد المنشأة."); setLoading(false); return; }
+        setTenantId(tid);
+      } catch (e) {
+        setError("تعذّر تحميل بيانات المستخدم."); setLoading(false);
+      }
+    })();
+  }, []);
+
+  useEffect(() => {
+    if (tenantId) loadData();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [tenantId]);
+
+  async function loadData() {
+    setLoading(true);
+    setError("");
+    try {
+      const res = await httpsCallable(functions, "getDisputes")({});
+      setData(res.data);
+    } catch (e) {
+      setError(e.message || "تعذّر تحميل البيانات.");
+      setData(null);
+    } finally {
+      setLoading(false);
+    }
+  }
+
+  const s = data ? data.summary : { openCount: 0, totalCount: 0, valueAtRisk: 0, provisions: 0, winRate: 0, wonCount: 0, lostCount: 0 };
+  const disputes = data ? data.disputes : [];
+  const byType = data ? data.byType : [];
+  const maxType = Math.max(1, ...byType.map((t) => t.count));
+
   return (
-    <div className="dis-root">
-      <style>{STYLES}</style>
-
-      {/* HEAD */}
-      <div className="dis-head">
-        <div className="dis-head-ic"><Scale size={24} /></div>
+    <div style={styles.page}>
+      <div style={styles.topRow}>
         <div>
-          <div className="dis-title">المنازعات</div>
-          <div className="dis-sub">القضايا القانونية والتسويات · القانونية والامتثال</div>
+          <h1 style={styles.pageTitle}>المنازعات</h1>
+          <p style={styles.pageSub}>إدارة القضايا والنزاعات القانونية ومتابعتها.</p>
         </div>
-        <button className="dis-period">
-          <Calendar size={16} /> الكل <ChevronDown size={15} />
-        </button>
+        <button style={styles.addBtn} onClick={() => setModal("new")}>+ قضية جديدة</button>
       </div>
 
-      {/* KPIs */}
-      <div className="dis-kpis">
-        {KPIS.map((k) => {
-          const Icon = k.icon;
-          return (
-            <div className="dis-kpi" key={k.id} style={{ "--c": k.color }}>
-              <div className="dis-kpi-ic"><Icon size={19} /></div>
-              <div className="dis-kpi-label">{k.label}</div>
-              <div className="dis-kpi-val dis-num">
-                {k.value}
-                {k.unit && <span className="u">{k.unit}</span>}
-                {k.suffix && <span className="x">{k.suffix}</span>}
-                {k.sub && <span className="s">{k.sub}</span>}
-              </div>
-            </div>
-          );
-        })}
-      </div>
+      {error ? <div style={styles.error}>{error}</div> : null}
 
-      {/* CASE STATUS */}
-      <div className="dis-status">
-        {CASE_STATUS.map((s) => {
-          const Icon = s.icon;
-          return (
-            <div className="dis-stat" key={s.name}>
-              <div className="dis-stat-ic" style={{ background: s.color + "1a", color: s.color }}>
-                <Icon size={22} />
-              </div>
-              <div>
-                <div className="dis-stat-count">{s.count}</div>
-                <div className="dis-stat-name">{s.name}</div>
-              </div>
-            </div>
-          );
-        })}
-      </div>
-
-      {/* ROW: TABLE + TYPES */}
-      <div className="dis-row">
-
-        <div className="dis-card" style={{ marginBottom: 0 }}>
-          <div className="dis-card-head">
-            <span className="dis-card-title">القضايا والمنازعات</span>
-            <span className="dis-card-hint">{CASES.length} قضية</span>
+      {loading ? <p style={styles.muted}>جارٍ التحميل...</p> : !data ? (
+        <div style={styles.warnBox}>تعذّر تحميل البيانات.</div>
+      ) : (
+        <>
+          {/* KPIs */}
+          <div style={styles.kpiGrid}>
+            <div style={styles.kpiCard}><span style={styles.kpiLabel}>قضايا مفتوحة</span><span style={{ ...styles.kpiValue, color: "#78716c" }}>{s.openCount}</span></div>
+            <div style={styles.kpiCard}><span style={styles.kpiLabel}>القيمة المعرّضة</span><span style={{ ...styles.kpiValue, color: "#dc2626" }} dir="ltr">{fmt(s.valueAtRisk)}</span></div>
+            <div style={styles.kpiCard}><span style={styles.kpiLabel}>معدل الكسب</span><span style={{ ...styles.kpiValue, color: "#16a34a" }} dir="ltr">{fmt(s.winRate)}%</span></div>
+            <div style={styles.kpiCard}><span style={styles.kpiLabel}>المخصّصات القانونية</span><span style={{ ...styles.kpiValue, color: "#2563eb" }} dir="ltr">{fmt(s.provisions)}</span></div>
           </div>
-          <div className="dis-tablewrap">
-            <table className="dis-table">
-              <thead>
-                <tr>
-                  <th>القضية</th>
-                  <th>الطرف</th>
-                  <th>النوع</th>
-                  <th className="n">القيمة</th>
-                  <th>الحالة</th>
-                </tr>
-              </thead>
-              <tbody>
-                {CASES.map((c, i) => {
-                  const st = STATUS[c.status];
-                  return (
-                    <tr key={i}>
-                      <td className="dis-case-name">{c.name}</td>
-                      <td className="dis-case-party">{c.party}</td>
-                      <td><span className="dis-case-type">{TYPE_LABEL[c.type]}</span></td>
-                      <td className="dis-case-val n dis-num">{fmt(c.value)}</td>
-                      <td><span className={`dis-spill ${st.cls}`}>{st.label}</span></td>
-                    </tr>
-                  );
-                })}
-              </tbody>
-            </table>
-          </div>
-        </div>
 
-        <div className="dis-card" style={{ marginBottom: 0 }}>
-          <div className="dis-card-head">
-            <span className="dis-card-title">أنواع المنازعات</span>
-            <Tag size={17} style={{ color: "#94a0b8" }} />
-          </div>
-          <div className="dis-types">
-            {TYPES.map((t) => (
-              <div key={t.name}>
-                <div className="dis-type-top">
-                  <span className="dis-type-name">
-                    <span className="dis-type-dot" style={{ background: t.color }} />
-                    {t.name}
-                  </span>
-                  <span className="dis-type-val dis-num">{t.value}<span className="p">{t.pct}٪</span></span>
+          <div style={styles.twoCol}>
+            {/* القضايا */}
+            <div style={styles.section}>
+              <h3 style={styles.sectionTitle}>القضايا ({disputes.length})</h3>
+              {disputes.length === 0 ? <p style={styles.muted}>لا توجد قضايا. أضف قضية جديدة.</p> : (
+                <div style={styles.caseList}>
+                  {disputes.map((c) => {
+                    const st = STATUS_INFO[c.status] || STATUS_INFO.review;
+                    return (
+                      <div key={c.id} style={styles.caseCard}>
+                        <div style={styles.cTop}>
+                          <div style={{ flex: 1, minWidth: 0 }}>
+                            <div style={styles.cNameRow}>
+                              <span style={styles.cNum}>#{String(c.disputeNumber).padStart(4, "0")}</span>
+                              <span style={styles.cName}>{c.name}</span>
+                            </div>
+                            {c.party ? <div style={styles.cParty}>⚖️ {c.party}</div> : null}
+                          </div>
+                          <span style={{ ...styles.chip, color: st.color, background: st.bg }}>{st.label}</span>
+                        </div>
+                        <div style={styles.cBody}>
+                          <span style={styles.cTypeChip}>{TYPE_LABEL[c.type] || c.type}</span>
+                          <span style={styles.cValue} dir="ltr">{fmt(c.value)} ﷼</span>
+                          {c.provision > 0 ? <span style={styles.cProv}>مخصّص: <span dir="ltr">{fmt(c.provision)}</span></span> : null}
+                          {c.outcome ? <span style={{ ...styles.cOutcome, color: c.outcome === "won" ? "#16a34a" : c.outcome === "lost" ? "#dc2626" : "#ea580c" }}>{OUTCOME_LABEL[c.outcome]}</span> : null}
+                        </div>
+                        <div style={styles.cActions}>
+                          <button style={styles.editBtn} onClick={() => setModal({ edit: c })}>✏️ تعديل</button>
+                          <DeleteBtn disputeId={c.id} name={c.name} onDone={loadData} />
+                        </div>
+                      </div>
+                    );
+                  })}
                 </div>
-                <div className="dis-type-bar"><i style={{ width: `${t.pct}%`, background: t.color }} /></div>
-              </div>
-            ))}
-          </div>
-        </div>
+              )}
+            </div>
 
+            {/* الأنواع + معدل الكسب */}
+            <div>
+              <div style={styles.section}>
+                <h3 style={styles.sectionTitle}>أنواع المنازعات</h3>
+                {byType.length === 0 ? <p style={styles.muted}>لا توجد قضايا.</p> : (
+                  <div style={styles.typeList}>
+                    {byType.map((t) => (
+                      <div key={t.type} style={styles.typeItem}>
+                        <div style={styles.typeTop}>
+                          <span style={styles.typeName}>{TYPE_LABEL[t.type] || t.type}</span>
+                          <span style={styles.typeCount}>{t.count} ({t.pct}%)</span>
+                        </div>
+                        <div style={styles.typeBar}><div style={{ ...styles.typeFill, width: `${(t.count / maxType) * 100}%` }} /></div>
+                      </div>
+                    ))}
+                  </div>
+                )}
+              </div>
+
+              {(s.wonCount + s.lostCount) > 0 ? (
+                <div style={styles.section}>
+                  <h3 style={styles.sectionTitle}>سجل القضايا المغلقة</h3>
+                  <div style={styles.recordRow}>
+                    <div style={styles.recordItem}><span style={{ ...styles.recordVal, color: "#16a34a" }}>{s.wonCount}</span><span style={styles.recordLabel}>مكسوبة</span></div>
+                    <div style={styles.recordItem}><span style={{ ...styles.recordVal, color: "#dc2626" }}>{s.lostCount}</span><span style={styles.recordLabel}>خاسرة</span></div>
+                    <div style={styles.recordItem}><span style={{ ...styles.recordVal, color: "#2563eb" }} dir="ltr">{fmt(s.winRate)}%</span><span style={styles.recordLabel}>معدل الكسب</span></div>
+                  </div>
+                </div>
+              ) : null}
+            </div>
+          </div>
+        </>
+      )}
+
+      {modal === "new" ? <DisputeModal onClose={() => setModal(null)} onSaved={() => { setModal(null); loadData(); }} /> : null}
+      {modal && modal.edit ? <DisputeModal dispute={modal.edit} onClose={() => setModal(null)} onSaved={() => { setModal(null); loadData(); }} /> : null}
+    </div>
+  );
+}
+
+function DeleteBtn({ disputeId, name, onDone }) {
+  const [busy, setBusy] = useState(false);
+  async function del() {
+    if (!window.confirm(`حذف قضية «${name}»؟`)) return;
+    setBusy(true);
+    try {
+      await httpsCallable(functions, "deleteDispute")({ disputeId });
+      onDone();
+    } catch (e) { alert(e.message || "تعذّر الحذف."); setBusy(false); }
+  }
+  return <button style={styles.delBtn} onClick={del} disabled={busy}>{busy ? "..." : "🗑 حذف"}</button>;
+}
+
+function DisputeModal({ dispute, onClose, onSaved }) {
+  const isEdit = !!dispute;
+  const c = dispute || {};
+  const [f, setF] = useState({
+    name: c.name || "", party: c.party || "", type: c.type || "labor",
+    value: c.value ? String(c.value) : "", provision: c.provision ? String(c.provision) : "",
+    status: c.status || "review", outcome: c.outcome || "", openDate: c.openDate || "", notes: c.notes || "",
+  });
+  const [err, setErr] = useState(""); const [saving, setSaving] = useState(false);
+  const set = (k, v) => setF((p) => ({ ...p, [k]: v }));
+  const showOutcome = f.status === "closed";
+
+  async function save() {
+    setErr("");
+    if (f.name.trim().length < 2) { setErr("اسم القضية مطلوب."); return; }
+    setSaving(true);
+    try {
+      const payload = {
+        name: f.name.trim(), party: f.party.trim(), type: f.type,
+        value: Number(f.value) || 0, provision: Number(f.provision) || 0,
+        status: f.status, outcome: f.status === "closed" ? (f.outcome || null) : null,
+        openDate: f.openDate, notes: f.notes.trim(),
+      };
+      if (isEdit) {
+        await httpsCallable(functions, "updateDispute")({ disputeId: dispute.id, ...payload });
+      } else {
+        await httpsCallable(functions, "createDispute")(payload);
+      }
+      onSaved();
+    } catch (e) {
+      setErr(e.message || "تعذّر الحفظ.");
+    } finally {
+      setSaving(false);
+    }
+  }
+
+  return (
+    <div style={styles.overlay} onClick={onClose}>
+      <div style={styles.modal} onClick={(e) => e.stopPropagation()}>
+        <div style={styles.modalHead}>
+          <h2 style={styles.modalTitle}>{isEdit ? `تعديل قضية #${String(dispute.disputeNumber).padStart(4, "0")}` : "قضية جديدة"}</h2>
+          <button style={styles.close} onClick={onClose}>✕</button>
+        </div>
+        {err ? <div style={styles.error}>{err}</div> : null}
+
+        <div style={styles.field}><label style={styles.label}>اسم القضية *</label><input style={styles.input} value={f.name} onChange={(e) => set("name", e.target.value)} disabled={saving} placeholder="نزاع مستحقات عامل" /></div>
+        <div style={styles.field}><label style={styles.label}>الطرف الآخر</label><input style={styles.input} value={f.party} onChange={(e) => set("party", e.target.value)} disabled={saving} placeholder="اسم الطرف" /></div>
+        <div style={styles.row}>
+          <div style={{ flex: 1 }}><div style={styles.field}><label style={styles.label}>النوع</label>
+            <select style={styles.input} value={f.type} onChange={(e) => set("type", e.target.value)} disabled={saving}>{TYPE_ORDER.map((t) => <option key={t} value={t}>{TYPE_LABEL[t]}</option>)}</select>
+          </div></div>
+          <div style={{ flex: 1 }}><div style={styles.field}><label style={styles.label}>الحالة</label>
+            <select style={styles.input} value={f.status} onChange={(e) => set("status", e.target.value)} disabled={saving}>{STATUS_ORDER.map((st) => <option key={st} value={st}>{STATUS_INFO[st].label}</option>)}</select>
+          </div></div>
+        </div>
+        <div style={styles.row}>
+          <div style={{ flex: 1 }}><div style={styles.field}><label style={styles.label}>القيمة المعرّضة</label><input style={styles.input} type="number" min="0" value={f.value} onChange={(e) => set("value", e.target.value)} disabled={saving} dir="ltr" /></div></div>
+          <div style={{ flex: 1 }}><div style={styles.field}><label style={styles.label}>المخصّص القانوني</label><input style={styles.input} type="number" min="0" value={f.provision} onChange={(e) => set("provision", e.target.value)} disabled={saving} dir="ltr" /></div></div>
+        </div>
+        {showOutcome ? (
+          <div style={styles.field}><label style={styles.label}>نتيجة القضية</label>
+            <select style={styles.input} value={f.outcome} onChange={(e) => set("outcome", e.target.value)} disabled={saving}>
+              <option value="">— اختر —</option>
+              {OUTCOME_ORDER.map((o) => <option key={o} value={o}>{OUTCOME_LABEL[o]}</option>)}
+            </select>
+          </div>
+        ) : null}
+        <div style={styles.field}><label style={styles.label}>تاريخ الفتح</label><input style={styles.input} type="date" value={f.openDate} onChange={(e) => set("openDate", e.target.value)} disabled={saving} dir="ltr" /></div>
+        <div style={styles.field}><label style={styles.label}>ملاحظات</label><textarea style={styles.textarea} value={f.notes} onChange={(e) => set("notes", e.target.value)} disabled={saving} rows={2} /></div>
+
+        <div style={styles.modalActions}>
+          <button style={styles.cancelBtn} onClick={onClose} disabled={saving}>إلغاء</button>
+          <button style={styles.saveBtn} onClick={save} disabled={saving}>{saving ? "جارٍ الحفظ..." : isEdit ? "حفظ" : "إضافة"}</button>
+        </div>
       </div>
     </div>
   );
 }
+
+const styles = {
+  page: { padding: "26px 30px 40px", minHeight: "100%", background: "#f4f6f9", fontFamily: "'IBM Plex Sans Arabic', system-ui, sans-serif", direction: "rtl" },
+  topRow: { display: "flex", justifyContent: "space-between", alignItems: "flex-start", marginBottom: 22, flexWrap: "wrap", gap: 12 },
+  pageTitle: { fontSize: 24, fontWeight: 800, color: "#78716c", margin: "0 0 4px" },
+  pageSub: { fontSize: 14, color: "#64748b", margin: 0 },
+  addBtn: { padding: "11px 20px", fontSize: 14, fontWeight: 700, color: "#fff", background: "#78716c", border: "none", borderRadius: 8, cursor: "pointer", whiteSpace: "nowrap" },
+
+  error: { padding: "10px 12px", background: "#fee2e2", color: "#b91c1c", borderRadius: 8, fontSize: 14, marginBottom: 16 },
+  warnBox: { padding: "12px 16px", background: "#fffbeb", border: "1px solid #fde68a", borderRadius: 10, fontSize: 14, color: "#92400e", marginBottom: 16 },
+  muted: { color: "#94a3b8", fontSize: 14, margin: 0 },
+
+  kpiGrid: { display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(170px, 1fr))", gap: 12, marginBottom: 18 },
+  kpiCard: { background: "#fff", border: "1px solid #e2e8f0", borderRadius: 12, padding: "16px 20px", display: "flex", flexDirection: "column", gap: 8 },
+  kpiLabel: { fontSize: 13, color: "#64748b", fontWeight: 600 },
+  kpiValue: { fontSize: 23, fontWeight: 800, color: "#0f172a", fontFamily: "monospace" },
+
+  twoCol: { display: "grid", gridTemplateColumns: "1.7fr 1fr", gap: 18, alignItems: "start" },
+
+  section: { background: "#fff", border: "1px solid #e2e8f0", borderRadius: 12, padding: "20px 22px", marginBottom: 18 },
+  sectionTitle: { fontSize: 16, fontWeight: 800, color: "#0f172a", margin: "0 0 16px" },
+
+  caseList: { display: "flex", flexDirection: "column", gap: 12 },
+  caseCard: { border: "1px solid #e2e8f0", borderRadius: 10, padding: "14px 16px" },
+  cTop: { display: "flex", justifyContent: "space-between", alignItems: "flex-start", gap: 10, marginBottom: 10 },
+  cNameRow: { display: "flex", alignItems: "center", gap: 8, flexWrap: "wrap" },
+  cNum: { fontSize: 12, fontWeight: 800, color: "#94a3b8", fontFamily: "monospace" },
+  cName: { fontSize: 15, fontWeight: 700, color: "#0f172a" },
+  cParty: { fontSize: 13, color: "#64748b", marginTop: 4 },
+  chip: { fontSize: 12, fontWeight: 700, borderRadius: 6, padding: "3px 12px", whiteSpace: "nowrap" },
+  cBody: { display: "flex", gap: 12, flexWrap: "wrap", alignItems: "center", marginBottom: 12 },
+  cTypeChip: { fontSize: 12, color: "#78716c", background: "#f5f5f4", borderRadius: 6, padding: "3px 10px", fontWeight: 600 },
+  cValue: { fontSize: 14, fontWeight: 800, color: "#dc2626", fontFamily: "monospace" },
+  cProv: { fontSize: 12, color: "#2563eb" },
+  cOutcome: { fontSize: 12, fontWeight: 700 },
+  cActions: { display: "flex", gap: 8, flexWrap: "wrap" },
+  editBtn: { padding: "7px 14px", fontSize: 13, fontWeight: 600, color: "#475569", background: "#f1f5f9", border: "none", borderRadius: 7, cursor: "pointer" },
+  delBtn: { padding: "7px 14px", fontSize: 13, fontWeight: 600, color: "#dc2626", background: "#fef2f2", border: "none", borderRadius: 7, cursor: "pointer" },
+
+  typeList: { display: "flex", flexDirection: "column", gap: 14 },
+  typeItem: {},
+  typeTop: { display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 7 },
+  typeName: { fontSize: 14, fontWeight: 700, color: "#334155" },
+  typeCount: { fontSize: 13, color: "#64748b", fontWeight: 600, fontFamily: "monospace" },
+  typeBar: { height: 8, background: "#f5f5f4", borderRadius: 999, overflow: "hidden" },
+  typeFill: { height: "100%", background: "linear-gradient(90deg, #78716c, #a8a29e)", borderRadius: 999 },
+
+  recordRow: { display: "flex", gap: 12, justifyContent: "space-around" },
+  recordItem: { display: "flex", flexDirection: "column", alignItems: "center", gap: 4 },
+  recordVal: { fontSize: 24, fontWeight: 800, fontFamily: "monospace" },
+  recordLabel: { fontSize: 12, color: "#94a3b8", fontWeight: 600 },
+
+  overlay: { position: "fixed", inset: 0, background: "rgba(15,23,42,.5)", display: "flex", alignItems: "center", justifyContent: "center", zIndex: 1000, padding: 16 },
+  modal: { background: "#fff", borderRadius: 16, width: "100%", maxWidth: 500, maxHeight: "92vh", overflowY: "auto", padding: 24, direction: "rtl", fontFamily: "'IBM Plex Sans Arabic', system-ui, sans-serif" },
+  modalHead: { display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 16 },
+  modalTitle: { fontSize: 17, fontWeight: 800, color: "#0f172a", margin: 0 },
+  close: { fontSize: 20, color: "#94a3b8", background: "none", border: "none", cursor: "pointer" },
+  field: { display: "flex", flexDirection: "column", marginBottom: 12 },
+  label: { display: "block", fontSize: 13, fontWeight: 600, color: "#334155", margin: "0 0 6px" },
+  input: { width: "100%", padding: "10px 12px", fontSize: 14, border: "1px solid #cbd5e1", borderRadius: 8, boxSizing: "border-box", fontFamily: "inherit" },
+  textarea: { width: "100%", padding: "10px 12px", fontSize: 14, border: "1px solid #cbd5e1", borderRadius: 8, boxSizing: "border-box", fontFamily: "inherit", resize: "vertical" },
+  row: { display: "flex", gap: 12 },
+  modalActions: { display: "flex", gap: 10, marginTop: 8 },
+  cancelBtn: { flex: 1, padding: "11px", fontSize: 14, fontWeight: 600, color: "#475569", background: "#f1f5f9", border: "none", borderRadius: 8, cursor: "pointer" },
+  saveBtn: { flex: 2, padding: "11px", fontSize: 14, fontWeight: 700, color: "#fff", background: "#78716c", border: "none", borderRadius: 8, cursor: "pointer" },
+};

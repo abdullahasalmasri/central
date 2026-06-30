@@ -47,6 +47,8 @@ const COLLECTIONS = {
   TICKETS: "tickets",
   INTERACTIONS: "interactions",
   CONTRACTS: "contracts",
+  LICENSES: "licenses",
+  DISPUTES: "disputes",
 };
 
 const ROLES = {
@@ -2159,6 +2161,71 @@ function buildContractDoc({
   };
 }
 
+// --- التراخيص (الامتثال) ---
+// رقم الترخيص نصّي (يحتوي حروف/رموز) — ليس تسلسليًا
+function buildLicenseDoc({
+  tenantId, licenseNumber, name, authority, issueDate, endDate, notes,
+  createdBy, createdAt,
+}) {
+  return {
+    tenantId: tenantId,
+    licenseNumber: (licenseNumber || "").trim() || null,
+    name: (name || "").trim(),
+    authority: (authority || "").trim() || null, // الجهة المصدرة
+    issueDate: issueDate || null,
+    endDate: endDate || null,
+    notes: notes || null,
+    createdBy: createdBy || null,
+    createdAt: createdAt,
+  };
+}
+
+// --- المنازعات (القضايا) ---
+const DISPUTE_TYPE = {
+  LABOR: "labor",             // عمالية
+  COMMERCIAL: "commercial",   // تجارية
+  CONTRACTUAL: "contractual", // تعاقدية
+  OTHER: "other",
+};
+const ALL_DISPUTE_TYPE = Object.values(DISPUTE_TYPE);
+
+const DISPUTE_STATUS = {
+  REVIEW: "review",         // قيد النظر
+  SETTLEMENT: "settlement", // تسوية
+  RULING: "ruling",         // حكم
+  CLOSED: "closed",         // مغلقة
+};
+const ALL_DISPUTE_STATUS = Object.values(DISPUTE_STATUS);
+
+const DISPUTE_OUTCOME = {
+  WON: "won",         // كسب
+  LOST: "lost",       // خسارة
+  SETTLED: "settled", // تسوية ودّية
+};
+const ALL_DISPUTE_OUTCOME = Object.values(DISPUTE_OUTCOME);
+
+// بناء وثيقة منازعة/قضية
+function buildDisputeDoc({
+  tenantId, disputeNumber, name, party, type, value, status, outcome,
+  provision, notes, openDate, createdBy, createdAt,
+}) {
+  return {
+    tenantId: tenantId,
+    disputeNumber: Number(disputeNumber) || 0,
+    name: (name || "").trim(),
+    party: (party || "").trim() || null,       // الطرف الآخر
+    type: ALL_DISPUTE_TYPE.includes(type) ? type : DISPUTE_TYPE.OTHER,
+    value: Number(value) || 0,                  // القيمة المعرّضة للخطر
+    status: ALL_DISPUTE_STATUS.includes(status) ? status : DISPUTE_STATUS.REVIEW,
+    outcome: ALL_DISPUTE_OUTCOME.includes(outcome) ? outcome : null, // للمغلقة
+    provision: Number(provision) || 0,          // المخصّص القانوني
+    notes: notes || null,
+    openDate: openDate || null,
+    createdBy: createdBy || null,
+    createdAt: createdAt,
+  };
+}
+
 module.exports = {
   COLLECTIONS,
   ROLES,
@@ -2261,6 +2328,14 @@ module.exports = {
   ALL_TICKET_STATUS,
   buildInteractionDoc,
   buildContractDoc,
+  buildLicenseDoc,
+  buildDisputeDoc,
+  DISPUTE_TYPE,
+  ALL_DISPUTE_TYPE,
+  DISPUTE_STATUS,
+  ALL_DISPUTE_STATUS,
+  DISPUTE_OUTCOME,
+  ALL_DISPUTE_OUTCOME,
   CONTRACT_TYPE,
   ALL_CONTRACT_TYPE,
   CONTRACT_STATUS,
