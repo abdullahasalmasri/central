@@ -1692,9 +1692,48 @@ const ASSET_TYPES = {
   HOUSING: "housing",     // سكن
   VEHICLE: "vehicle",     // مركبة
   EQUIPMENT: "equipment", // معدة
+  SIMPLE: "simple",       // أصول بسيطة (تلفاز، تكييف، أثاث، أسرّة)
   OTHER: "other",         // أخرى (نوع مخصّص)
 };
 const ALL_ASSET_TYPES = Object.values(ASSET_TYPES);
+
+// نوع الملكية وطريقة السداد
+const ASSET_OWNERSHIP = { OWNED: "owned", RENTED: "rented" };
+const ALL_ASSET_OWNERSHIP = Object.values(ASSET_OWNERSHIP);
+const ASSET_PAYMENT = { CASH: "cash", FINANCED: "financed" };
+const ALL_ASSET_PAYMENT = Object.values(ASSET_PAYMENT);
+
+// حاسبة التمويل (طريقة القسط الثابت — مطابقة لأنظمة البنوك/ساما)
+// تحسب القسط الشهري والإجمالي من قيمة السلعة + الضريبة + الدفعة المقدمة + المدة + APR
+function computeFinancing({ itemValue, taxAmount, downPayment, financeMonths, apr }) {
+  const value = Number(itemValue) || 0;
+  const tax = Number(taxAmount) || 0;
+  const down = Number(downPayment) || 0;
+  const n = Math.round(Number(financeMonths) || 0);
+  const rate = Number(apr) || 0;
+  const round2 = (x) => Math.round((Number(x) || 0) * 100) / 100;
+
+  const totalWithTax = round2(value + tax);
+  const financedAmount = round2(Math.max(0, totalWithTax - down)); // المبلغ الممول
+  let monthlyInstallment = 0, totalPayments = 0, totalInterest = 0;
+  if (n > 0) {
+    const r = rate / 100 / 12; // معدل شهري
+    if (r > 0) {
+      monthlyInstallment = financedAmount * r / (1 - Math.pow(1 + r, -n));
+    } else {
+      monthlyInstallment = financedAmount / n;
+    }
+    monthlyInstallment = round2(monthlyInstallment);
+    totalPayments = round2(monthlyInstallment * n);
+    totalInterest = round2(totalPayments - financedAmount);
+  }
+  const grandTotal = round2(totalPayments + down); // الإجمالي المدفوع (أقساط + دفعة مقدمة)
+  // نسبة التمويل (flat) التقريبية = الفائدة ÷ الممول ÷ السنوات
+  const years = n / 12;
+  const flatRate = financedAmount > 0 && years > 0 ? round2((totalInterest / financedAmount / years) * 100) : 0;
+
+  return { totalWithTax, financedAmount, monthlyInstallment, totalPayments, totalInterest, grandTotal, flatRate };
+}
 
 const ASSET_STATUS = {
   ACTIVE: "active",       // فعّال (يُحتسب)
@@ -1718,8 +1757,22 @@ const ALL_ASSET_EXPENSE_TYPES = Object.values(ASSET_EXPENSE_TYPES);
 function buildAssetDoc({
   tenantId, assetNumber, type, typeName, name, location,
   capacity, monthlyRent, status, notes, beneficiaries,
+  ownership, paymentMethod,
+  itemValue, taxAmount, downPayment, financeMonths, apr,
+  usefulLifeYears, salvageValue, purchaseDate,
+  supervisorName, custodianName,
   createdBy, createdAt,
 }) {
+  const own = ALL_ASSET_OWNERSHIP.includes(ownership) ? ownership : ASSET_OWNERSHIP.RENTED;
+  const pay = ALL_ASSET_PAYMENT.includes(paymentMethod) ? paymentMethod : ASSET_PAYMENT.CASH;
+  const isOwned = own === ASSET_OWNERSHIP.OWNED;
+  const val = Number(itemValue) || 0;
+  const tax = Number(taxAmount) || 0;
+  // حساب التمويل (يُعاد حسابه دائمًا للدقة)
+  const fin = isOwned && pay === ASSET_PAYMENT.FINANCED
+    ? computeFinancing({ itemValue: val, taxAmount: tax, downPayment, financeMonths, apr })
+    : null;
+
   return {
     tenantId: tenantId,
     assetNumber: Number(assetNumber) || 0,
@@ -1728,10 +1781,38 @@ function buildAssetDoc({
     name: (name || "").trim(),              // "سكن الدمام"، "هايلكس ٢٠٢٣"
     location: location || null,             // المدينة/الموقع
     capacity: Number(capacity) || 0,        // سعة الاستيعاب (كم مستفيد)
-    monthlyRent: Number(monthlyRent) || 0,  // الإيجار/القسط الثابت الشهري
+    monthlyRent: Number(monthlyRent) || 0,  // الإيجار الشهري (للمؤجّر)
     status: ALL_ASSET_STATUS.includes(status) ? status : ASSET_STATUS.ACTIVE,
     notes: notes || null,
-    beneficiaries: Array.isArray(beneficiaries) ? beneficiaries.filter((x) => typeof x === "string") : [],  // uids المستفيدين
+    beneficiaries: Array.isArray(beneficiaries) ? beneficiaries.filter((x) => typeof x === "string") : [],
+
+    // الملكية والسداد
+    ownership: own,                          // owned | rented
+    paymentMethod: isOwned ? pay : null,     // cash | financed (للمملوك)
+
+    // حاسبة الشراء/التمويل (للمملوك)
+    itemValue: val,                          // قيمة السلعة (قبل الضريبة)
+    taxAmount: tax,                          // الضريبة
+    totalWithTax: isOwned ? (Math.round((val + tax) * 100) / 100) : 0,
+    downPayment: isOwned && pay === ASSET_PAYMENT.FINANCED ? (Number(downPayment) || 0) : 0,
+    financeMonths: fin ? (Math.round(Number(financeMonths) || 0)) : 0,
+    apr: fin ? (Number(apr) || 0) : 0,
+    financedAmount: fin ? fin.financedAmount : 0,
+    monthlyInstallment: fin ? fin.monthlyInstallment : 0,
+    totalInterest: fin ? fin.totalInterest : 0,
+    totalAmount: fin ? fin.grandTotal : (isOwned ? (Math.round((val + tax) * 100) / 100) : 0),
+    flatRate: fin ? fin.flatRate : 0,
+
+    // الإهلاك (للمملوك فقط) — على قيمة السلعة الأصلية بدون فوائد
+    purchaseValue: isOwned ? val : 0,        // أساس الإهلاك = قيمة السلعة
+    usefulLifeYears: isOwned ? (Number(usefulLifeYears) || 0) : 0,
+    salvageValue: isOwned ? (Number(salvageValue) || 0) : 0,
+    purchaseDate: isOwned ? (purchaseDate || null) : null,
+
+    // الأشخاص المسؤولون
+    supervisorName: supervisorName || null,  // المشرف المسؤول
+    custodianName: custodianName || null,    // المستفيد الفعلي (تحت عهدته)
+
     createdBy: createdBy || null,
     createdAt: createdAt,
   };
@@ -1840,6 +1921,9 @@ module.exports = {
   ASSIGNMENT_STATUS,
   ASSET_TYPES,
   ALL_ASSET_TYPES,
+  ASSET_OWNERSHIP,
+  ASSET_PAYMENT,
+  computeFinancing,
   ASSET_STATUS,
   ALL_ASSET_STATUS,
   ASSET_EXPENSE_TYPES,

@@ -79,6 +79,7 @@ const views = {
   as_veh:        AssetsView,
   as_hous:       AssetsView,
   as_equ:        AssetsView,
+  as_simple:     AssetsView,
   as_dep:        DepreciationView,
 
   // المبيعات والتسويق

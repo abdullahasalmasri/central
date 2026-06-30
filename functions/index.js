@@ -7101,6 +7101,24 @@ const {
 } = require("./schema");
 
 // إنشاء أصل (رقم تسلسلي عبر معاملة)
+// استخراج حقول الملكية/التمويل/الإهلاك/الأشخاص (مشترك بين الإنشاء والتعديل)
+function extractAssetFields(data) {
+  return {
+    ownership: data.ownership === "owned" ? "owned" : "rented",
+    paymentMethod: data.paymentMethod === "financed" ? "financed" : "cash",
+    itemValue: Number(data.itemValue) || 0,
+    taxAmount: Number(data.taxAmount) || 0,
+    downPayment: Number(data.downPayment) || 0,
+    financeMonths: Number(data.financeMonths) || 0,
+    apr: Number(data.apr) || 0,
+    usefulLifeYears: Number(data.usefulLifeYears) || 0,
+    salvageValue: Number(data.salvageValue) || 0,
+    purchaseDate: typeof data.purchaseDate === "string" && isValidDate(data.purchaseDate) ? data.purchaseDate : null,
+    supervisorName: typeof data.supervisorName === "string" ? data.supervisorName.trim() : "",
+    custodianName: typeof data.custodianName === "string" ? data.custodianName.trim() : "",
+  };
+}
+
 exports.createAsset = onCall(async (request) => {
   try {
     const callerTenantId = await requireModule(request.auth, MODULES.ASSETS);
@@ -7137,6 +7155,7 @@ exports.createAsset = onCall(async (request) => {
         notes: notes,
         beneficiaries: [],
         status: ASSET_STATUS.ACTIVE,
+        ...extractAssetFields(data),
         createdBy: request.auth.uid,
         createdAt: FieldValue.serverTimestamp(),
       });
@@ -7194,6 +7213,29 @@ exports.updateAsset = onCall(async (request) => {
       update.status = data.status;
     }
 
+    // إن أُرسلت حقول الملكية، أعد حساب كل الحقول المالية والإهلاك والأشخاص
+    if (data.ownership !== undefined) {
+      const ex = extractAssetFields(data);
+      const cur = doc.data();
+      const rebuilt = buildAssetDoc({
+        tenantId: callerTenantId,
+        assetNumber: cur.assetNumber,
+        type: update.type || cur.type,
+        typeName: update.typeName !== undefined ? update.typeName : cur.typeName,
+        name: update.name || cur.name,
+        location: update.location !== undefined ? update.location : cur.location,
+        capacity: update.capacity !== undefined ? update.capacity : cur.capacity,
+        monthlyRent: update.monthlyRent !== undefined ? update.monthlyRent : cur.monthlyRent,
+        status: update.status || cur.status,
+        notes: update.notes !== undefined ? update.notes : cur.notes,
+        beneficiaries: cur.beneficiaries,
+        ...ex,
+        createdBy: cur.createdBy, createdAt: cur.createdAt,
+      });
+      const financialKeys = ["ownership", "paymentMethod", "itemValue", "taxAmount", "totalWithTax", "downPayment", "financeMonths", "apr", "financedAmount", "monthlyInstallment", "totalInterest", "totalAmount", "flatRate", "purchaseValue", "usefulLifeYears", "salvageValue", "purchaseDate", "supervisorName", "custodianName"];
+      for (const k of financialKeys) update[k] = rebuilt[k];
+    }
+
     if (Object.keys(update).length === 0) throw new HttpsError("invalid-argument", "لا تغييرات.");
     update.updatedBy = request.auth.uid;
     update.updatedAt = FieldValue.serverTimestamp();
@@ -7203,6 +7245,65 @@ exports.updateAsset = onCall(async (request) => {
     if (err instanceof HttpsError) throw err;
     console.error("updateAsset failed:", err);
     throw new HttpsError("internal", "تعذّر تعديل الأصل.");
+  }
+});
+
+// ===== حساب الإهلاك واسترداد رأس المال (للأصول المملوكة) =====
+exports.getDepreciation = onCall(async (request) => {
+  try {
+    const callerTenantId = await requireModule(request.auth, MODULES.ASSETS);
+    const round2 = (n) => Math.round((Number(n) || 0) * 100) / 100;
+    const snap = await db.collection(COLLECTIONS.ASSETS)
+      .where("tenantId", "==", callerTenantId).where("ownership", "==", "owned").get();
+
+    const now = new Date();
+    const catLabels = { vehicle: "المركبات", housing: "الإسكان", equipment: "المعدّات", simple: "أصول بسيطة", other: "أخرى" };
+    const assets = [];
+    const catMap = {};
+    let totalCost = 0, totalBook = 0, totalAnnual = 0, totalAccum = 0;
+
+    snap.docs.forEach((d) => {
+      const a = d.data();
+      const cost = Number(a.purchaseValue) || 0;
+      const salvage = Number(a.salvageValue) || 0;
+      const life = Number(a.usefulLifeYears) || 0;
+      if (cost <= 0 || life <= 0) return; // غير قابل للإهلاك (ناقص بيانات)
+      const depreciable = Math.max(0, cost - salvage);
+      const annual = round2(depreciable / life);
+      let elapsedYears = 0;
+      if (a.purchaseDate) {
+        const pd = new Date(a.purchaseDate);
+        if (!isNaN(pd.getTime())) elapsedYears = Math.max(0, (now - pd) / (365.25 * 24 * 3600 * 1000));
+      }
+      const accum = round2(Math.min(depreciable, annual * elapsedYears));
+      const book = round2(cost - accum);
+      const recovered = cost > 0 ? round2((accum / cost) * 100) : 0;
+      assets.push({
+        id: d.id, name: a.name || "—", cat: catLabels[a.type] || a.typeName || "أخرى",
+        cost: round2(cost), life, annual, book, recovered,
+      });
+      catMap[a.type] = (catMap[a.type] || 0) + annual;
+      totalCost += cost; totalBook += book; totalAccum += accum;
+      if (elapsedYears < life) totalAnnual += annual; // إهلاك العام (للأصول التي لم ينتهِ عمرها)
+    });
+
+    const categories = Object.entries(catMap).map(([type, value]) => ({
+      name: catLabels[type] || "أخرى", value: round2(value), type,
+    })).sort((a, b) => b.value - a.value);
+
+    return {
+      kpis: {
+        totalCost: round2(totalCost), totalBook: round2(totalBook),
+        annualDep: round2(totalAnnual),
+        recoveryRate: totalCost > 0 ? round2((totalAccum / totalCost) * 100) : 0,
+      },
+      categories,
+      assets: assets.sort((a, b) => b.cost - a.cost),
+    };
+  } catch (err) {
+    if (err instanceof HttpsError) throw err;
+    console.error("getDepreciation failed:", err);
+    throw new HttpsError("internal", "تعذّر حساب الإهلاك، حاول مرة أخرى.");
   }
 });
 

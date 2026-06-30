@@ -55,6 +55,7 @@ const NAV = [
     { id: "as_veh",  name: "المركبات", file: "AssetsView.jsx" },
     { id: "as_hous", name: "الإسكان",  file: "AssetsView.jsx" },
     { id: "as_equ",  name: "المعدّات", file: "AssetsView.jsx" },
+    { id: "as_simple", name: "الأصول البسيطة", file: "AssetsView.jsx" },
     { id: "as_dep",  name: "الإهلاك",  file: "DepreciationView.jsx" },
   ]},
   { type: "section", id: "cost", name: "التكاليف والربحية", icon: TrendingUp, color: "#ca8a04", children: [

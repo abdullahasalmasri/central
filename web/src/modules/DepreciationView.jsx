@@ -1,40 +1,27 @@
-import React from "react";
+import React, { useState, useEffect } from "react";
 import {
   Boxes, BookOpen, TrendingDown, RotateCcw, Truck, Home, Wrench,
   Calendar, ChevronDown
 } from "lucide-react";
+import { doc, getDoc } from "firebase/firestore";
+import { httpsCallable } from "firebase/functions";
+import { db, auth, functions } from "../firebase";
 
 /* ============================================================
    الإهلاك واسترداد رأس المال — قسم الأصول والمرافق
    البيانات تجريبية. دوال backend المطلوبة (جديدة) مكتوبة بجانب كل مجموعة.
    ============================================================ */
 
-// 📊 البطاقات — مصدرها: getDepreciation (دالة backend جديدة) + Assets Module الموجود
-const KPIS = [
-  { id: "cost", label: "إجمالي قيمة الأصول", value: "4,850,000", unit: "ر.س", icon: Boxes,        color: "#0e7490" },
-  { id: "book", label: "القيمة الدفترية",    value: "3,120,000", unit: "ر.س", icon: BookOpen,     color: "#2563eb" },
-  { id: "dep",  label: "إهلاك هذا العام",    value: "685,000",   unit: "ر.س", icon: TrendingDown, color: "#ea580c" },
-  { id: "rec",  label: "نسبة الاسترداد",     value: "36",        suffix: "%", icon: RotateCcw,    color: "#16a34a" },
+// إعدادات البطاقات والفئات — البيانات تأتي من getDepreciation
+const KPI_CONFIG = [
+  { id: "cost", label: "إجمالي قيمة الأصول", icon: Boxes,        color: "#0e7490", key: "totalCost", unit: "ر.س" },
+  { id: "book", label: "القيمة الدفترية",    icon: BookOpen,     color: "#2563eb", key: "totalBook", unit: "ر.س" },
+  { id: "dep",  label: "الإهلاك السنوي",     icon: TrendingDown, color: "#ea580c", key: "annualDep", unit: "ر.س" },
+  { id: "rec",  label: "نسبة الاسترداد",     icon: RotateCcw,    color: "#16a34a", key: "recoveryRate", suffix: "٪" },
 ];
-
-// 🗂️ توزيع الإهلاك حسب الفئة (سنوي) — مصدرها: getDepreciation (تجميع حسب الفئة)
-const CATEGORIES = [
-  { name: "المركبات (الأسطول)", value: 380000, icon: Truck,  color: "#0e7490" },
-  { name: "الإسكان",           value: 185000, icon: Home,   color: "#2563eb" },
-  { name: "المعدّات",          value: 120000, icon: Wrench, color: "#7c3aed" },
-];
-
-// 🏗️ جدول إهلاك الأصول — مصدرها: getDepreciation + getAssetBookValues
-const ASSETS = [
-  { name: "أسطول الشاحنات",   cat: "مركبات", cost: 1800000, life: 8,  annual: 225000, book: 1125000, recovered: 38 },
-  { name: "حافلات النقل",     cat: "مركبات", cost: 950000,  life: 8,  annual: 119000, book: 593000,  recovered: 38 },
-  { name: "مجمّع سكن العمال", cat: "إسكان",  cost: 1200000, life: 20, annual: 60000,  book: 960000,  recovered: 20 },
-  { name: "معدّات ثقيلة",     cat: "معدّات", cost: 600000,  life: 10, annual: 60000,  book: 360000,  recovered: 40 },
-  { name: "أجهزة ومكاتب",     cat: "معدّات", cost: 300000,  life: 5,  annual: 60000,  book: 82000,   recovered: 73 },
-];
-
-const maxCat = Math.max(...CATEGORIES.map((c) => c.value));
-const fmt = (n) => n.toLocaleString("en-US");
+const CAT_ICONS = { vehicle: Truck, housing: Home, equipment: Wrench, simple: Boxes, other: Boxes };
+const CAT_COLORS = { vehicle: "#0e7490", housing: "#2563eb", equipment: "#7c3aed", simple: "#16a34a", other: "#64748b" };
+const fmt = (n) => (Math.round((Number(n) || 0) * 100) / 100).toLocaleString("en-US");
 
 const STYLES = `
   *{margin:0;padding:0;box-sizing:border-box}
@@ -123,6 +110,34 @@ const STYLES = `
 `;
 
 export default function DepreciationView() {
+  const [data, setData] = useState(null);
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState("");
+
+  useEffect(() => {
+    (async () => {
+      try {
+        const uid = auth.currentUser && auth.currentUser.uid;
+        if (!uid) { setError("لم يتم تسجيل الدخول."); setLoading(false); return; }
+        const userSnap = await getDoc(doc(db, "users", uid));
+        if (!userSnap.exists() || !userSnap.data().tenantId) { setError("تعذّر تحديد المنشأة."); setLoading(false); return; }
+        const fn = httpsCallable(functions, "getDepreciation");
+        const res = await fn({});
+        setData(res.data);
+      } catch (e) {
+        setError("تعذّر تحميل بيانات الإهلاك.");
+      } finally {
+        setLoading(false);
+      }
+    })();
+  }, []);
+
+  const kpis = data ? data.kpis : { totalCost: 0, totalBook: 0, annualDep: 0, recoveryRate: 0 };
+  const categories = data ? data.categories : [];
+  const assets = data ? data.assets : [];
+  const maxCat = categories.length ? Math.max(...categories.map((c) => c.value), 1) : 1;
+  const recovered = kpis.totalCost - kpis.totalBook;
+
   return (
     <div className="dep-root">
       <style>{STYLES}</style>
@@ -132,117 +147,131 @@ export default function DepreciationView() {
         <div className="dep-head-ic"><TrendingDown size={24} /></div>
         <div>
           <div className="dep-title">الإهلاك واسترداد رأس المال</div>
-          <div className="dep-sub">إهلاك الأصول وقيمها الدفترية · الأصول والمرافق</div>
+          <div className="dep-sub">إهلاك الأصول المملوكة وقيمها الدفترية · الأصول والمرافق</div>
         </div>
         <button className="dep-period">
           <Calendar size={16} /> السنة المالية <ChevronDown size={15} />
         </button>
       </div>
 
-      {/* KPIs */}
-      <div className="dep-kpis">
-        {KPIS.map((k) => {
-          const Icon = k.icon;
-          return (
-            <div className="dep-kpi" key={k.id} style={{ "--c": k.color }}>
-              <div className="dep-kpi-ic"><Icon size={19} /></div>
-              <div className="dep-kpi-label">{k.label}</div>
-              <div className="dep-kpi-val dep-num">
-                {k.value}
-                {k.unit && <span className="u">{k.unit}</span>}
-                {k.suffix && <span className="x">{k.suffix}</span>}
-              </div>
-            </div>
-          );
-        })}
-      </div>
-
-      {/* ROW: CATEGORIES + RECOVERY */}
-      <div className="dep-row">
-
-        <div className="dep-card" style={{ marginBottom: 0 }}>
-          <div className="dep-card-head">
-            <span className="dep-card-title">توزيع الإهلاك حسب الفئة</span>
-            <span className="dep-card-hint">سنوي</span>
-          </div>
-          <div className="dep-cats">
-            {CATEGORIES.map((c) => {
-              const Icon = c.icon;
+      {loading ? (
+        <p style={{ color: "#94a0b8", fontSize: 14 }}>جارٍ حساب الإهلاك...</p>
+      ) : error ? (
+        <div style={{ padding: "12px 16px", background: "#fee2e2", color: "#b91c1c", borderRadius: 10, fontSize: 14 }}>{error}</div>
+      ) : assets.length === 0 ? (
+        <div style={{ padding: 40, background: "#fff", border: "1px solid #e7ebf1", borderRadius: 16, textAlign: "center" }}>
+          <Boxes size={40} style={{ color: "#94a0b8", marginBottom: 12 }} />
+          <p style={{ fontSize: 17, fontWeight: 700, color: "#161b26", margin: "0 0 6px" }}>لا توجد أصول مملوكة قابلة للإهلاك</p>
+          <p style={{ color: "#94a0b8", fontSize: 14, margin: 0 }}>أضف أصلًا مملوكًا (بقيمة شراء وعمر إنتاجي) من المركبات/الإسكان/المعدّات.</p>
+        </div>
+      ) : (
+        <>
+          {/* KPIs */}
+          <div className="dep-kpis">
+            {KPI_CONFIG.map((k) => {
+              const Icon = k.icon;
+              const val = kpis[k.key] || 0;
               return (
-                <div key={c.name}>
-                  <div className="dep-cat-top">
-                    <span className="dep-cat-name">
-                      <span className="dep-cat-ic" style={{ background: c.color + "1a", color: c.color }}>
-                        <Icon size={14} />
-                      </span>
-                      {c.name}
-                    </span>
-                    <span className="dep-cat-val dep-num">{fmt(c.value)}</span>
+                <div className="dep-kpi" key={k.id} style={{ "--c": k.color }}>
+                  <div className="dep-kpi-ic"><Icon size={19} /></div>
+                  <div className="dep-kpi-label">{k.label}</div>
+                  <div className="dep-kpi-val dep-num">
+                    {fmt(val)}
+                    {k.unit && <span className="u">{k.unit}</span>}
+                    {k.suffix && <span className="x">{k.suffix}</span>}
                   </div>
-                  <div className="dep-cat-bar"><i style={{ width: `${(c.value / maxCat) * 100}%`, background: c.color }} /></div>
                 </div>
               );
             })}
           </div>
-        </div>
 
-        <div className="dep-card" style={{ marginBottom: 0 }}>
-          <div className="dep-card-head">
-            <span className="dep-card-title">استرداد رأس المال</span>
-          </div>
-          <div className="dep-rec">
-            <div className="dep-rec-big dep-num">36<span className="p">٪</span></div>
-            <div className="dep-rec-cap">المستردّ من إجمالي تكلفة الأصول عبر الإهلاك المتراكم</div>
-            <div className="dep-rec-bar"><i style={{ width: "36%" }} /></div>
-            <div className="dep-rec-vals">
-              <span>مستردّ <b>1,730,000</b></span>
-              <span>متبقٍ <b>3,120,000</b></span>
+          {/* ROW: CATEGORIES + RECOVERY */}
+          <div className="dep-row">
+            <div className="dep-card" style={{ marginBottom: 0 }}>
+              <div className="dep-card-head">
+                <span className="dep-card-title">توزيع الإهلاك حسب الفئة</span>
+                <span className="dep-card-hint">سنوي</span>
+              </div>
+              <div className="dep-cats">
+                {categories.length === 0 ? <p style={{ color: "#94a0b8", fontSize: 13 }}>لا توجد بيانات.</p> : categories.map((c) => {
+                  const Icon = CAT_ICONS[c.type] || Boxes;
+                  const color = CAT_COLORS[c.type] || "#64748b";
+                  return (
+                    <div key={c.name}>
+                      <div className="dep-cat-top">
+                        <span className="dep-cat-name">
+                          <span className="dep-cat-ic" style={{ background: color + "1a", color: color }}>
+                            <Icon size={14} />
+                          </span>
+                          {c.name}
+                        </span>
+                        <span className="dep-cat-val dep-num">{fmt(c.value)}</span>
+                      </div>
+                      <div className="dep-cat-bar"><i style={{ width: `${(c.value / maxCat) * 100}%`, background: color }} /></div>
+                    </div>
+                  );
+                })}
+              </div>
+            </div>
+
+            <div className="dep-card" style={{ marginBottom: 0 }}>
+              <div className="dep-card-head">
+                <span className="dep-card-title">استرداد رأس المال</span>
+              </div>
+              <div className="dep-rec">
+                <div className="dep-rec-big dep-num">{Math.round(kpis.recoveryRate)}<span className="p">٪</span></div>
+                <div className="dep-rec-cap">المستردّ من إجمالي تكلفة الأصول عبر الإهلاك المتراكم</div>
+                <div className="dep-rec-bar"><i style={{ width: `${Math.min(100, kpis.recoveryRate)}%` }} /></div>
+                <div className="dep-rec-vals">
+                  <span>مستردّ <b>{fmt(recovered)}</b></span>
+                  <span>متبقٍ <b>{fmt(kpis.totalBook)}</b></span>
+                </div>
+              </div>
             </div>
           </div>
-        </div>
 
-      </div>
-
-      {/* TABLE */}
-      <div className="dep-card">
-        <div className="dep-card-head">
-          <span className="dep-card-title">جدول إهلاك الأصول</span>
-          <span className="dep-card-hint">{ASSETS.length} أصل</span>
-        </div>
-        <div className="dep-tablewrap">
-          <table className="dep-table">
-            <thead>
-              <tr>
-                <th>الأصل</th>
-                <th>الفئة</th>
-                <th className="n">التكلفة</th>
-                <th className="n">العمر</th>
-                <th className="n">الإهلاك السنوي</th>
-                <th className="n">القيمة الدفترية</th>
-                <th>نسبة الاسترداد</th>
-              </tr>
-            </thead>
-            <tbody>
-              {ASSETS.map((a, i) => (
-                <tr key={i}>
-                  <td className="dep-asset-name">{a.name}</td>
-                  <td className="dep-asset-cat">{a.cat}</td>
-                  <td className="dep-asset-amt n dep-num">{fmt(a.cost)}</td>
-                  <td className="dep-asset-life n">{a.life} سنوات</td>
-                  <td className="dep-asset-amt n dep-num">{fmt(a.annual)}</td>
-                  <td className="dep-asset-amt book n dep-num">{fmt(a.book)}</td>
-                  <td>
-                    <div className="dep-rec-cell">
-                      <div className="dep-rec-mini"><i style={{ width: `${a.recovered}%` }} /></div>
-                      <span className="dep-rec-pct dep-num">{a.recovered}٪</span>
-                    </div>
-                  </td>
-                </tr>
-              ))}
-            </tbody>
-          </table>
-        </div>
-      </div>
+          {/* TABLE */}
+          <div className="dep-card">
+            <div className="dep-card-head">
+              <span className="dep-card-title">جدول إهلاك الأصول</span>
+              <span className="dep-card-hint">{assets.length} أصل</span>
+            </div>
+            <div className="dep-tablewrap">
+              <table className="dep-table">
+                <thead>
+                  <tr>
+                    <th>الأصل</th>
+                    <th>الفئة</th>
+                    <th className="n">التكلفة</th>
+                    <th className="n">العمر</th>
+                    <th className="n">الإهلاك السنوي</th>
+                    <th className="n">القيمة الدفترية</th>
+                    <th>نسبة الاسترداد</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {assets.map((a, i) => (
+                    <tr key={a.id || i}>
+                      <td className="dep-asset-name">{a.name}</td>
+                      <td className="dep-asset-cat">{a.cat}</td>
+                      <td className="dep-asset-amt n dep-num">{fmt(a.cost)}</td>
+                      <td className="dep-asset-life n">{a.life} سنوات</td>
+                      <td className="dep-asset-amt n dep-num">{fmt(a.annual)}</td>
+                      <td className="dep-asset-amt book n dep-num">{fmt(a.book)}</td>
+                      <td>
+                        <div className="dep-rec-cell">
+                          <div className="dep-rec-mini"><i style={{ width: `${a.recovered}%` }} /></div>
+                          <span className="dep-rec-pct dep-num">{a.recovered}٪</span>
+                        </div>
+                      </td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          </div>
+        </>
+      )}
     </div>
   );
 }
