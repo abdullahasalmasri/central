@@ -65,7 +65,7 @@ export default function PlanningView() {
   async function loadProfitability() {
     setDataLoading(true);
     try {
-      const fn = httpsCallable(functions, "getProjectProfitability");
+      const fn = httpsCallable(functions, "getProjectProfitabilityTotal");
       const res = await fn({ projectId: selectedProjectId });
       setData(res.data);
     } catch (e) {

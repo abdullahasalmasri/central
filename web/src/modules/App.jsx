@@ -32,6 +32,7 @@ import PlanningView            from "./PlanningView";
 import QualitySafetyView        from "./QualitySafetyView";
 import DepreciationView         from "./DepreciationView";
 import AssetsView              from "./AssetsView";
+import CostProfitabilityView   from "./CostProfitabilityView";
 import SalesView                from "./SalesView";
 import MarketingView            from "./MarketingView";
 import CustomerServiceView      from "./CustomerServiceView";
@@ -81,6 +82,7 @@ const views = {
   as_equ:        AssetsView,
   as_simple:     AssetsView,
   as_dep:        DepreciationView,
+  cost_prof:     CostProfitabilityView,
 
   // المبيعات والتسويق
   sal_dir:       SalesView,

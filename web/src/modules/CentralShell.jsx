@@ -60,7 +60,7 @@ const NAV = [
   ]},
   { type: "section", id: "cost", name: "التكاليف والربحية", icon: TrendingUp, color: "#ca8a04", children: [
     { id: "cost_full",  name: "التكلفة الشاملة", file: null },
-    { id: "cost_prof",  name: "تقارير الربحية",  file: null },
+    { id: "cost_prof",  name: "تقارير الربحية",  file: "CostProfitabilityView.jsx" },
     { id: "cost_alloc", name: "توزيع الموارد",   file: null },
   ]},
   { type: "section", id: "sales", name: "المبيعات والتسويق", icon: Megaphone, color: "#db2777", children: [

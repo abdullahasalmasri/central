@@ -4625,7 +4625,8 @@ exports.setBudget = onCall(async (request) => {
 });
 
 // ===== ربحية المشروع: الفعلي (تلقائي) + الموازنة + الانحراف =====
-exports.getProjectProfitability = onCall(async (request) => {
+// ربحية المشروع الإجمالية (تراكمية، مع موازنة) — تُستخدم في لوحة التخطيط
+exports.getProjectProfitabilityTotal = onCall(async (request) => {
   try {
     const callerTenantId = await requireModule(request.auth, MODULES.PROJECTS);
     const data = request.data || {};
