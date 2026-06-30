@@ -21,6 +21,43 @@ function fmtDate(ms) {
   return new Date(ms).toLocaleDateString("en-GB");
 }
 
+// بنية الإدارات والأقسام (مطابقة لـ Central) — لصفحة التسعير
+const PRICING_STRUCTURE = [
+  { id: "exec", name: "الإدارة العليا", color: "#7c3aed", subs: [
+    { id: "exec_kpi", name: "لوحة المؤشرات" }, { id: "exec_org", name: "الهيكل التنظيمي" }, { id: "exec_perm", name: "الصلاحيات" },
+  ] },
+  { id: "fin", name: "المالية", color: "#059669", subs: [
+    { id: "fin_acc", name: "المحاسبة" }, { id: "fin_inv", name: "الفوترة و ZATCA" }, { id: "fin_cust", name: "العملاء" },
+    { id: "fin_fs", name: "القوائم المالية" }, { id: "fin_coll", name: "التحصيل" }, { id: "fin_treas", name: "الخزينة" },
+    { id: "fin_fpa", name: "التخطيط والتحليل" }, { id: "fin_proc", name: "المشتريات" }, { id: "fin_pos", name: "نقاط البيع" }, { id: "fin_cash", name: "الكاشير" },
+  ] },
+  { id: "hr", name: "الموارد البشرية", color: "#2563eb", subs: [
+    { id: "hr_emp", name: "شؤون الموظفين" }, { id: "hr_pay", name: "الرواتب" }, { id: "hr_rec", name: "التوظيف" },
+    { id: "hr_train", name: "التدريب" }, { id: "hr_rel", name: "علاقات الموظفين" },
+  ] },
+  { id: "ops", name: "العمليات", color: "#ea580c", subs: [
+    { id: "ops_proj", name: "المشاريع" }, { id: "ops_people", name: "الأفراد" }, { id: "ops_facilities", name: "المرافق" },
+    { id: "ops_materials", name: "المواد" }, { id: "ops_inv", name: "المخزون" }, { id: "ops_req", name: "طلبات المخزون" },
+    { id: "ops_process", name: "العمليات التشغيلية" }, { id: "ops_planning", name: "التخطيط والرقابة" }, { id: "ops_qs", name: "الجودة والسلامة" },
+  ] },
+  { id: "assets", name: "الأصول والمرافق", color: "#0e7490", subs: [
+    { id: "as_veh", name: "المركبات" }, { id: "as_hous", name: "الإسكان" }, { id: "as_equ", name: "المعدّات" },
+    { id: "as_simple", name: "الأصول البسيطة" }, { id: "as_dep", name: "الإهلاك" },
+  ] },
+  { id: "cost", name: "التكاليف والربحية", color: "#ca8a04", subs: [
+    { id: "cost_full", name: "التكلفة الشاملة" }, { id: "cost_prof", name: "تقارير الربحية" }, { id: "cost_alloc", name: "توزيع الموارد" },
+  ] },
+  { id: "sales", name: "المبيعات والتسويق", color: "#db2777", subs: [
+    { id: "sal_dir", name: "المبيعات المباشرة" }, { id: "sal_quote", name: "عروض الأسعار" }, { id: "sal_mkt", name: "التسويق والتواصل" }, { id: "sal_serv", name: "خدمة العملاء" },
+  ] },
+  { id: "legal", name: "القانونية والامتثال", color: "#78716c", subs: [
+    { id: "leg_con", name: "العقود" }, { id: "leg_com", name: "الامتثال والتراخيص" }, { id: "leg_dis", name: "المنازعات" },
+  ] },
+  { id: "quality", name: "التميز والجودة", color: "#65a30d", subs: [
+    { id: "qa_aud", name: "التدقيق الداخلي" }, { id: "qa_nps", name: "رضا العملاء و NPS" }, { id: "qa_imp", name: "تحسين العمليات" },
+  ] },
+];
+
 export default function OwnerShell() {
   const [user, setUser] = useState(null);
   const [authLoading, setAuthLoading] = useState(true);
@@ -110,6 +147,7 @@ function NotAuthorized({ email }) {
 }
 
 function OwnerDashboard({ user }) {
+  const [tab, setTab] = useState("clients"); // clients | pricing
   const [data, setData] = useState(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState("");
@@ -169,6 +207,13 @@ function OwnerDashboard({ user }) {
         </div>
       </div>
 
+      {/* التبويبات */}
+      <div style={styles.tabsBar}>
+        <button style={tab === "clients" ? styles.tabOn : styles.tabOff} onClick={() => setTab("clients")}>👥 العملاء</button>
+        <button style={tab === "pricing" ? styles.tabOn : styles.tabOff} onClick={() => setTab("pricing")}>💲 التسعير</button>
+      </div>
+
+      {tab === "pricing" ? <PricingTab /> : (
       <div style={styles.body}>
         <h1 style={styles.pageTitle}>لوحة العملاء</h1>
         <p style={styles.pageSub}>إدارة الشركات المشتركة وحالات اشتراكها.</p>
@@ -237,8 +282,117 @@ function OwnerDashboard({ user }) {
           </>
         )}
       </div>
+      )}
 
       {modal ? <EditModal tenant={modal} onClose={() => setModal(null)} onSaved={() => { setModal(null); loadData(); }} /> : null}
+    </div>
+  );
+}
+
+// ═══════════ تبويب التسعير ═══════════
+function PricingTab() {
+  const [prices, setPrices] = useState({}); // { sub_id: number }
+  const [loading, setLoading] = useState(true);
+  const [saving, setSaving] = useState(false);
+  const [error, setError] = useState("");
+  const [savedMsg, setSavedMsg] = useState("");
+
+  useEffect(() => { load(); }, []);
+
+  async function load() {
+    setLoading(true);
+    setError("");
+    try {
+      const res = await httpsCallable(functions, "getPlatformPricing")({});
+      const p = res.data.prices || {};
+      const asStr = {};
+      Object.keys(p).forEach((k) => { asStr[k] = String(p[k]); });
+      setPrices(asStr);
+    } catch (e) {
+      setError(e.message || "تعذّر تحميل الأسعار.");
+    } finally {
+      setLoading(false);
+    }
+  }
+
+  function setPrice(subId, val) {
+    setSavedMsg("");
+    setPrices((p) => ({ ...p, [subId]: val }));
+  }
+
+  async function save() {
+    setError("");
+    setSavedMsg("");
+    setSaving(true);
+    try {
+      const clean = {};
+      Object.keys(prices).forEach((k) => {
+        const v = Number(prices[k]);
+        if (Number.isFinite(v) && v > 0) clean[k] = v;
+      });
+      const res = await httpsCallable(functions, "setPlatformPricing")({ prices: clean });
+      setSavedMsg(`تم الحفظ (${res.data.count} قسم مُسعّر).`);
+    } catch (e) {
+      setError(e.message || "تعذّر الحفظ.");
+    } finally {
+      setSaving(false);
+    }
+  }
+
+  // سعر الإدارة = مجموع أسعار أقسامها
+  const deptTotal = (dept) => dept.subs.reduce((sum, sub) => sum + (Number(prices[sub.id]) || 0), 0);
+  const grandTotal = PRICING_STRUCTURE.reduce((sum, d) => sum + deptTotal(d), 0);
+
+  return (
+    <div style={styles.body}>
+      <h1 style={styles.pageTitle}>تسعير الأقسام</h1>
+      <p style={styles.pageSub}>حدّد سعر كل قسم بالريال لكل عامل شهريًا. سعر الإدارة = مجموع أقسامها. العميل يدفع للأقسام التي يفعّلها × عدد العمالة.</p>
+
+      {error ? <div style={styles.error}>{error}</div> : null}
+      {savedMsg ? <div style={styles.savedBox}>✓ {savedMsg}</div> : null}
+
+      {loading ? <p style={styles.muted}>جارٍ التحميل...</p> : (
+        <>
+          <div style={styles.priceSummary}>
+            <span style={styles.priceSummaryLabel}>السعر الكامل (كل الأقسام) للعامل الواحد شهريًا:</span>
+            <span style={styles.priceSummaryVal} dir="ltr">{fmt(grandTotal)} ر.س</span>
+          </div>
+
+          <div style={styles.deptList}>
+            {PRICING_STRUCTURE.map((dept) => (
+              <div key={dept.id} style={styles.deptCard}>
+                <div style={{ ...styles.deptHead, borderRightColor: dept.color }}>
+                  <span style={{ ...styles.deptName, color: dept.color }}>{dept.name}</span>
+                  <span style={styles.deptTotal} dir="ltr">{fmt(deptTotal(dept))} ر.س/عامل</span>
+                </div>
+                <div style={styles.subGrid}>
+                  {dept.subs.map((sub) => (
+                    <div key={sub.id} style={styles.subRow}>
+                      <span style={styles.subName}>{sub.name}</span>
+                      <div style={styles.priceInputWrap}>
+                        <input
+                          style={styles.priceInput}
+                          type="number" min="0" step="0.05"
+                          value={prices[sub.id] || ""}
+                          onChange={(e) => setPrice(sub.id, e.target.value)}
+                          placeholder="0.00"
+                          dir="ltr"
+                          disabled={saving}
+                        />
+                        <span style={styles.priceUnit}>ر.س</span>
+                      </div>
+                    </div>
+                  ))}
+                </div>
+              </div>
+            ))}
+          </div>
+
+          <div style={styles.saveBar}>
+            <button style={styles.saveAllBtn} onClick={save} disabled={saving}>{saving ? "جارٍ الحفظ..." : "💾 حفظ الأسعار"}</button>
+          </div>
+        </>
+      )}
     </div>
   );
 }
@@ -366,4 +520,28 @@ const styles = {
   modalActions: { display: "flex", gap: 10, marginTop: 8 },
   cancelBtn: { flex: 1, padding: "11px", fontSize: 14, fontWeight: 600, color: "#475569", background: "#f1f5f9", border: "none", borderRadius: 8, cursor: "pointer" },
   saveBtn: { flex: 2, padding: "11px", fontSize: 14, fontWeight: 700, color: "#fff", background: "#6366f1", border: "none", borderRadius: 8, cursor: "pointer" },
+
+  // التبويبات
+  tabsBar: { display: "flex", gap: 6, padding: "12px 30px 0", maxWidth: 1100, margin: "0 auto", borderBottom: "1px solid #e2e8f0" },
+  tabOn: { padding: "11px 22px", fontSize: 14, fontWeight: 700, color: "#6366f1", background: "transparent", border: "none", borderBottom: "2.5px solid #6366f1", cursor: "pointer", marginBottom: -1 },
+  tabOff: { padding: "11px 22px", fontSize: 14, fontWeight: 600, color: "#64748b", background: "transparent", border: "none", borderBottom: "2.5px solid transparent", cursor: "pointer", marginBottom: -1 },
+
+  // التسعير
+  savedBox: { padding: "10px 14px", background: "#dcfce7", color: "#15803d", borderRadius: 8, fontSize: 14, marginBottom: 16, fontWeight: 600 },
+  priceSummary: { background: "#eef2ff", border: "1px solid #c7d2fe", borderRadius: 12, padding: "16px 22px", display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 20, flexWrap: "wrap", gap: 8 },
+  priceSummaryLabel: { fontSize: 14, color: "#4338ca", fontWeight: 600 },
+  priceSummaryVal: { fontSize: 24, fontWeight: 800, color: "#4f46e5", fontFamily: "monospace" },
+  deptList: { display: "flex", flexDirection: "column", gap: 14 },
+  deptCard: { background: "#fff", border: "1px solid #e2e8f0", borderRadius: 12, overflow: "hidden" },
+  deptHead: { display: "flex", justifyContent: "space-between", alignItems: "center", padding: "14px 18px", borderRight: "4px solid", background: "#fafbfc" },
+  deptName: { fontSize: 16, fontWeight: 800 },
+  deptTotal: { fontSize: 14, fontWeight: 700, color: "#64748b", fontFamily: "monospace" },
+  subGrid: { display: "grid", gridTemplateColumns: "repeat(auto-fill, minmax(260px, 1fr))", gap: 10, padding: "16px 18px" },
+  subRow: { display: "flex", justifyContent: "space-between", alignItems: "center", gap: 10, padding: "8px 12px", background: "#f8fafc", borderRadius: 8 },
+  subName: { fontSize: 13, fontWeight: 600, color: "#334155", flex: 1, minWidth: 0 },
+  priceInputWrap: { display: "flex", alignItems: "center", gap: 5, flexShrink: 0 },
+  priceInput: { width: 75, padding: "7px 9px", fontSize: 13, border: "1px solid #cbd5e1", borderRadius: 7, textAlign: "center", fontFamily: "monospace", boxSizing: "border-box" },
+  priceUnit: { fontSize: 12, color: "#94a3b8" },
+  saveBar: { display: "flex", justifyContent: "flex-start", marginTop: 22, position: "sticky", bottom: 16 },
+  saveAllBtn: { padding: "13px 30px", fontSize: 15, fontWeight: 700, color: "#fff", background: "#6366f1", border: "none", borderRadius: 10, cursor: "pointer", boxShadow: "0 4px 12px rgba(99,102,241,.3)" },
 };

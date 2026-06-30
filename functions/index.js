@@ -11461,3 +11461,51 @@ exports.updateTenantSubscription = onCall(async (request) => {
     throw new HttpsError("internal", "تعذّر تحديث الاشتراك.");
   }
 });
+
+// قراءة أسعار المنصة (المالك يحدّد سعر كل قسم فرعي بالريال/عامل/شهر)
+exports.getPlatformPricing = onCall(async (request) => {
+  try {
+    await requirePlatformOwner(request.auth);
+    const doc = await db.collection(COLLECTIONS.PLATFORM_CONFIG).doc("pricing").get();
+    const data = doc.exists ? doc.data() : {};
+    return { prices: data.prices || {}, updatedAt: data.updatedAt && data.updatedAt.toMillis ? data.updatedAt.toMillis() : null };
+  } catch (err) {
+    if (err instanceof HttpsError) throw err;
+    console.error("getPlatformPricing failed:", err);
+    throw new HttpsError("internal", "تعذّر تحميل الأسعار.");
+  }
+});
+
+// حفظ أسعار المنصة (المالك فقط)
+// data: { prices: { "fin_acc": 0.30, "fin_inv": 0.20, ... } }
+exports.setPlatformPricing = onCall(async (request) => {
+  try {
+    await requirePlatformOwner(request.auth);
+    const data = request.data || {};
+    const raw = data.prices;
+    if (!raw || typeof raw !== "object" || Array.isArray(raw)) {
+      throw new HttpsError("invalid-argument", "صيغة الأسعار غير صحيحة.");
+    }
+    // تنظيف: مفاتيح نصية + قيم أرقام موجبة
+    const clean = {};
+    for (const key of Object.keys(raw)) {
+      if (typeof key !== "string" || !key.trim()) continue;
+      const val = Number(raw[key]);
+      if (Number.isFinite(val) && val >= 0) {
+        clean[key.trim()] = Math.round(val * 1000) / 1000; // حتى 3 خانات عشرية
+      }
+    }
+    if (Object.keys(clean).length > 500) throw new HttpsError("invalid-argument", "عدد الأقسام كبير جدًا.");
+
+    await db.collection(COLLECTIONS.PLATFORM_CONFIG).doc("pricing").set({
+      prices: clean,
+      updatedAt: FieldValue.serverTimestamp(),
+      updatedBy: request.auth.uid,
+    }, { merge: true });
+    return { saved: true, count: Object.keys(clean).length };
+  } catch (err) {
+    if (err instanceof HttpsError) throw err;
+    console.error("setPlatformPricing failed:", err);
+    throw new HttpsError("internal", "تعذّر حفظ الأسعار.");
+  }
+});

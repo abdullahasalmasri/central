@@ -4,6 +4,7 @@ const COLLECTIONS = {
   TENANTS: "tenants",
   USERS: "users",
   PLATFORM_OWNERS: "platformOwners",
+  PLATFORM_CONFIG: "platformConfig",
   SHIFTS: "shifts",
   SCHEDULES: "schedules",
   RECORDS: "records",
