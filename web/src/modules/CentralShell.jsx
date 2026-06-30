@@ -59,7 +59,7 @@ const NAV = [
     { id: "as_dep",  name: "الإهلاك",  file: "DepreciationView.jsx" },
   ]},
   { type: "section", id: "cost", name: "التكاليف والربحية", icon: TrendingUp, color: "#ca8a04", children: [
-    { id: "cost_full",  name: "التكلفة الشاملة", file: null },
+    { id: "cost_full",  name: "التكلفة الشاملة", file: "CostOverviewView.jsx" },
     { id: "cost_prof",  name: "تقارير الربحية",  file: "CostProfitabilityView.jsx" },
     { id: "cost_alloc", name: "توزيع الموارد",   file: null },
   ]},

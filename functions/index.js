@@ -6613,6 +6613,132 @@ exports.getEnterpriseProfitability = onCall(async (request) => {
   }
 });
 
+// ===== تقرير المنشأة عبر فترة: اتجاه الإيراد/التكلفة/الربح شهريًا =====
+// data: { fromMonth, toMonth }
+exports.getEnterpriseProfitabilityRange = onCall(async (request) => {
+  try {
+    const callerTenantId = await requireProfitabilityView(request.auth);
+    const data = request.data || {};
+    const fromMonth = typeof data.fromMonth === "string" ? data.fromMonth.trim() : "";
+    const toMonth = typeof data.toMonth === "string" ? data.toMonth.trim() : "";
+    if (!/^\d{4}-\d{2}$/.test(fromMonth)) throw new HttpsError("invalid-argument", "شهر البداية غير صحيح (YYYY-MM).");
+    if (!/^\d{4}-\d{2}$/.test(toMonth)) throw new HttpsError("invalid-argument", "شهر النهاية غير صحيح (YYYY-MM).");
+    if (fromMonth > toMonth) throw new HttpsError("invalid-argument", "شهر البداية يجب أن يسبق شهر النهاية.");
+
+    const months = enumerateMonths(fromMonth, toMonth);
+    if (months.length > 24) throw new HttpsError("invalid-argument", "النطاق كبير جدًا (24 شهرًا كحد أقصى).");
+
+    const tenantDoc = await db.collection(COLLECTIONS.TENANTS).doc(callerTenantId).get();
+    const adminCostPerWorker = tenantDoc.exists ? (Number(tenantDoc.data().adminCostPerWorker) || 0) : 0;
+
+    const projSnap = await db.collection(COLLECTIONS.PROJECTS).where("tenantId", "==", callerTenantId).get();
+    const r = (n) => Math.round(n * 100) / 100;
+
+    const monthly = [];
+    let gRevenue = 0, gNetRevenue = 0, gCost = 0, gProfit = 0;
+    for (const m of months) {
+      let mRevenue = 0, mNetRevenue = 0, mCost = 0, mProfit = 0, mWorkers = 0;
+      for (const pDoc of projSnap.docs) {
+        const core = await computeProjectMonthCore(callerTenantId, pDoc.id, m, adminCostPerWorker);
+        if (core.lines.length === 0) continue;
+        mRevenue += core.totals.revenue;
+        mNetRevenue += core.totals.netRevenue;
+        mCost += core.totals.cost;
+        mProfit += core.totals.profit;
+        mWorkers += core.workersCount;
+      }
+      monthly.push({
+        month: m,
+        revenue: r(mRevenue), netRevenue: r(mNetRevenue), cost: r(mCost), profit: r(mProfit),
+        workersCount: mWorkers,
+        margin: mNetRevenue > 0 ? r((mProfit / mNetRevenue) * 100) : 0,
+      });
+      gRevenue += mRevenue; gNetRevenue += mNetRevenue; gCost += mCost; gProfit += mProfit;
+    }
+
+    return {
+      fromMonth, toMonth,
+      monthsCount: months.length,
+      monthly,
+      totals: {
+        revenue: r(gRevenue), netRevenue: r(gNetRevenue), cost: r(gCost), profit: r(gProfit),
+        margin: gNetRevenue > 0 ? r((gProfit / gNetRevenue) * 100) : 0,
+        avgMonthlyCost: months.length > 0 ? r(gCost / months.length) : 0,
+        avgMonthlyProfit: months.length > 0 ? r(gProfit / months.length) : 0,
+      },
+    };
+  } catch (err) {
+    if (err instanceof HttpsError) throw err;
+    console.error("getEnterpriseProfitabilityRange failed:", err);
+    throw new HttpsError("internal", "تعذّر حساب اتجاه الربحية.");
+  }
+});
+
+// ===== توزيع الموارد: العمالة + الأصول على المشاريع لشهر =====
+// data: { month }
+exports.getResourceAllocation = onCall(async (request) => {
+  try {
+    const callerTenantId = await requireProfitabilityView(request.auth);
+    const data = request.data || {};
+    const month = typeof data.month === "string" ? data.month.trim() : "";
+    if (!/^\d{4}-\d{2}$/.test(month)) throw new HttpsError("invalid-argument", "الشهر غير صحيح (YYYY-MM).");
+    const r = (n) => Math.round(n * 100) / 100;
+
+    const tenantDoc = await db.collection(COLLECTIONS.TENANTS).doc(callerTenantId).get();
+    const adminCostPerWorker = tenantDoc.exists ? (Number(tenantDoc.data().adminCostPerWorker) || 0) : 0;
+
+    // الأصول لكل مشروع (التكلفة موزّعة على المشاريع المشتركة)
+    const assetsByProject = await computeAssetsByProject(callerTenantId);
+    const assetCountSnap = await db.collection(COLLECTIONS.ASSET_ASSIGNMENTS)
+      .where("tenantId", "==", callerTenantId).where("status", "==", "active").get();
+    const assetCount = {};
+    assetCountSnap.docs.forEach((d) => { const pid = d.data().projectId; if (pid) assetCount[pid] = (assetCount[pid] || 0) + 1; });
+
+    // المشاريع
+    const projSnap = await db.collection(COLLECTIONS.PROJECTS).where("tenantId", "==", callerTenantId).get();
+    const projects = [];
+    let gWorkers = 0, gWorkerCost = 0, gAssets = 0, gAssetCost = 0;
+
+    for (const pDoc of projSnap.docs) {
+      const project = pDoc.data();
+      const core = await computeProjectMonthCore(callerTenantId, pDoc.id, month, adminCostPerWorker);
+      const wCount = core.workersCount;
+      const wCost = core.totals.cost;
+      const aCost = assetsByProject[pDoc.id] ? assetsByProject[pDoc.id].cost : 0;
+      const aCount = assetCount[pDoc.id] || 0;
+      if (wCount === 0 && aCount === 0) continue; // تجاهل المشاريع بلا موارد
+
+      projects.push({
+        projectId: pDoc.id, projectName: project.name || null, projectNumber: project.projectNumber || null,
+        status: project.status || null,
+        workersCount: wCount, workerCost: r(wCost),
+        assetsCount: aCount, assetCost: r(aCost),
+        totalCost: r(wCost + aCost),
+      });
+      gWorkers += wCount; gWorkerCost += wCost; gAssets += aCount; gAssetCost += aCost;
+    }
+
+    const gTotal = gWorkerCost + gAssetCost;
+    projects.sort((a, b) => b.totalCost - a.totalCost);
+    projects.forEach((p) => { p.share = gTotal > 0 ? r((p.totalCost / gTotal) * 100) : 0; });
+
+    return {
+      month,
+      projectsCount: projects.length,
+      projects,
+      totals: {
+        workersCount: gWorkers, workerCost: r(gWorkerCost),
+        assetsCount: gAssets, assetCost: r(gAssetCost),
+        totalCost: r(gTotal),
+      },
+    };
+  } catch (err) {
+    if (err instanceof HttpsError) throw err;
+    console.error("getResourceAllocation failed:", err);
+    throw new HttpsError("internal", "تعذّر حساب توزيع الموارد.");
+  }
+});
+
 // ===== تقرير المشروع عبر فترة (عدة أشهر) =====
 // data: { projectId, fromMonth, toMonth }
 exports.getProjectProfitabilityRange = onCall(async (request) => {
