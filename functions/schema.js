@@ -49,6 +49,9 @@ const COLLECTIONS = {
   CONTRACTS: "contracts",
   LICENSES: "licenses",
   DISPUTES: "disputes",
+  AUDITS: "audits",
+  FINDINGS: "findings",
+  RATINGS: "ratings",
 };
 
 const ROLES = {
@@ -68,6 +71,7 @@ const MODULES = {
   ASSETS: "assets",
   SALES: "sales",
   LEGAL: "legal",
+  QUALITY: "quality",
 };
 
 const ALL_MODULES = Object.values(MODULES);
@@ -2226,6 +2230,91 @@ function buildDisputeDoc({
   };
 }
 
+// ═══════════════════════════════════════════════════════
+// ===== التميز والجودة: التدقيق الداخلي =====
+// ═══════════════════════════════════════════════════════
+
+// --- التدقيقات ---
+const AUDIT_STATUS = {
+  SCHEDULED: "scheduled", // مجدول
+  ACTIVE: "active",       // جارٍ
+  DONE: "done",           // مكتمل
+};
+const ALL_AUDIT_STATUS = Object.values(AUDIT_STATUS);
+
+// بناء وثيقة تدقيق
+function buildAuditDoc({
+  tenantId, auditNumber, name, department, status, auditDate, auditor, scope, notes,
+  createdBy, createdAt,
+}) {
+  return {
+    tenantId: tenantId,
+    auditNumber: Number(auditNumber) || 0,
+    name: (name || "").trim(),
+    department: (department || "").trim() || null,
+    status: ALL_AUDIT_STATUS.includes(status) ? status : AUDIT_STATUS.SCHEDULED,
+    auditDate: auditDate || null,
+    auditor: auditor || null,         // المدقّق
+    scope: scope || null,             // نطاق التدقيق
+    notes: notes || null,
+    createdBy: createdBy || null,
+    createdAt: createdAt,
+  };
+}
+
+// --- الملاحظات (نتائج التدقيق) ---
+const FINDING_SEVERITY = {
+  HIGH: "high",     // عالية
+  MEDIUM: "medium", // متوسطة
+  LOW: "low",       // منخفضة
+};
+const ALL_FINDING_SEVERITY = Object.values(FINDING_SEVERITY);
+
+const FINDING_STATUS = {
+  OPEN: "open",         // مفتوحة
+  PROGRESS: "progress", // قيد المعالجة
+  RESOLVED: "resolved", // تمت معالجتها
+};
+const ALL_FINDING_STATUS = Object.values(FINDING_STATUS);
+
+// بناء وثيقة ملاحظة تدقيق
+function buildFindingDoc({
+  tenantId, findingNumber, title, auditId, severity, status,
+  correctiveAction, responsible, dueDate, notes, createdBy, createdAt,
+}) {
+  return {
+    tenantId: tenantId,
+    findingNumber: Number(findingNumber) || 0,
+    title: (title || "").trim(),
+    auditId: auditId || null,                       // مرتبطة بتدقيق (اختياري)
+    severity: ALL_FINDING_SEVERITY.includes(severity) ? severity : FINDING_SEVERITY.MEDIUM,
+    status: ALL_FINDING_STATUS.includes(status) ? status : FINDING_STATUS.OPEN,
+    correctiveAction: (correctiveAction || "").trim() || null, // الإجراء التصحيحي
+    responsible: responsible || null,               // المسؤول عن المعالجة
+    dueDate: dueDate || null,                       // تاريخ الاستحقاق
+    notes: notes || null,
+    createdBy: createdBy || null,
+    createdAt: createdAt,
+  };
+}
+
+// --- تقييمات رضا العملاء (NPS) ---
+// score من 0 إلى 10 (مقياس NPS): 9-10 مروّج · 7-8 محايد · 0-6 منتقد
+function buildRatingDoc({
+  tenantId, customerName, score, comment, surveyName, date, createdBy, createdAt,
+}) {
+  return {
+    tenantId: tenantId,
+    customerName: (customerName || "").trim() || null,
+    score: Number(score),                       // 0-10
+    comment: (comment || "").trim() || null,
+    surveyName: (surveyName || "").trim() || null, // اسم الاستطلاع (اختياري)
+    date: date || null,
+    createdBy: createdBy || null,
+    createdAt: createdAt,
+  };
+}
+
 module.exports = {
   COLLECTIONS,
   ROLES,
@@ -2330,6 +2419,15 @@ module.exports = {
   buildContractDoc,
   buildLicenseDoc,
   buildDisputeDoc,
+  buildAuditDoc,
+  AUDIT_STATUS,
+  ALL_AUDIT_STATUS,
+  buildFindingDoc,
+  buildRatingDoc,
+  FINDING_SEVERITY,
+  ALL_FINDING_SEVERITY,
+  FINDING_STATUS,
+  ALL_FINDING_STATUS,
   DISPUTE_TYPE,
   ALL_DISPUTE_TYPE,
   DISPUTE_STATUS,

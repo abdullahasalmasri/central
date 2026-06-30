@@ -71,6 +71,12 @@ const {
   buildContractDoc,
   buildLicenseDoc,
   buildDisputeDoc,
+  buildAuditDoc,
+  ALL_AUDIT_STATUS,
+  buildFindingDoc,
+  buildRatingDoc,
+  ALL_FINDING_SEVERITY,
+  ALL_FINDING_STATUS,
   ALL_DISPUTE_TYPE,
   ALL_DISPUTE_STATUS,
   ALL_DISPUTE_OUTCOME,
@@ -8150,6 +8156,422 @@ exports.getDisputes = onCall(async (request) => {
     if (err instanceof HttpsError) throw err;
     console.error("getDisputes failed:", err);
     throw new HttpsError("internal", "تعذّر تحميل المنازعات.");
+  }
+});
+
+// ═══════════════════════════════════════════════════════
+// ===== التميز والجودة: التدقيق الداخلي =====
+// ═══════════════════════════════════════════════════════
+
+// --- التدقيقات ---
+
+// إنشاء تدقيق
+exports.createAudit = onCall(async (request) => {
+  try {
+    const callerTenantId = await requireModule(request.auth, MODULES.QUALITY);
+    const data = request.data || {};
+    const name = typeof data.name === "string" ? data.name.trim() : "";
+    if (name.length < 2) throw new HttpsError("invalid-argument", "اسم التدقيق مطلوب (حرفان على الأقل).");
+
+    const tenantRef = db.collection(COLLECTIONS.TENANTS).doc(callerTenantId);
+    const auditRef = db.collection(COLLECTIONS.AUDITS).doc();
+    const result = await db.runTransaction(async (tx) => {
+      const tenantSnap = await tx.get(tenantRef);
+      if (!tenantSnap.exists) throw new HttpsError("failed-precondition", "الشركة غير موجودة.");
+      const nextNumber = (tenantSnap.data().lastAuditNumber || 0) + 1;
+      const auditDoc = buildAuditDoc({
+        tenantId: callerTenantId,
+        auditNumber: nextNumber,
+        name: name,
+        department: typeof data.department === "string" ? data.department.trim() : null,
+        status: data.status,
+        auditDate: typeof data.auditDate === "string" && isValidDate(data.auditDate) ? data.auditDate : null,
+        auditor: typeof data.auditor === "string" ? data.auditor.trim() : null,
+        scope: typeof data.scope === "string" ? data.scope.trim() : null,
+        notes: typeof data.notes === "string" ? data.notes.trim() : null,
+        createdBy: request.auth.uid,
+        createdAt: FieldValue.serverTimestamp(),
+      });
+      tx.set(auditRef, auditDoc);
+      tx.update(tenantRef, { lastAuditNumber: nextNumber });
+      return { auditNumber: nextNumber };
+    });
+    return { id: auditRef.id, auditNumber: result.auditNumber };
+  } catch (err) {
+    if (err instanceof HttpsError) throw err;
+    console.error("createAudit failed:", err);
+    throw new HttpsError("internal", "تعذّر إنشاء التدقيق.");
+  }
+});
+
+// تعديل تدقيق
+exports.updateAudit = onCall(async (request) => {
+  try {
+    const callerTenantId = await requireModule(request.auth, MODULES.QUALITY);
+    const data = request.data || {};
+    const auditId = typeof data.auditId === "string" ? data.auditId.trim() : "";
+    if (!auditId) throw new HttpsError("invalid-argument", "يجب تحديد التدقيق.");
+
+    const ref = db.collection(COLLECTIONS.AUDITS).doc(auditId);
+    const doc = await ref.get();
+    if (!doc.exists || doc.data().tenantId !== callerTenantId) throw new HttpsError("invalid-argument", "التدقيق غير موجود.");
+
+    const update = {};
+    if (typeof data.name === "string") {
+      const n = data.name.trim();
+      if (n.length < 2) throw new HttpsError("invalid-argument", "اسم التدقيق قصير.");
+      update.name = n;
+    }
+    if (typeof data.department === "string") update.department = data.department.trim() || null;
+    if (typeof data.status === "string") {
+      if (!ALL_AUDIT_STATUS.includes(data.status)) throw new HttpsError("invalid-argument", "حالة غير صحيحة.");
+      update.status = data.status;
+    }
+    if (typeof data.auditor === "string") update.auditor = data.auditor.trim() || null;
+    if (typeof data.scope === "string") update.scope = data.scope.trim() || null;
+    if (typeof data.auditDate === "string") update.auditDate = isValidDate(data.auditDate) ? data.auditDate : null;
+    if (typeof data.notes === "string") update.notes = data.notes.trim() || null;
+
+    if (Object.keys(update).length === 0) throw new HttpsError("invalid-argument", "لا تغييرات.");
+    update.updatedBy = request.auth.uid;
+    update.updatedAt = FieldValue.serverTimestamp();
+    await ref.update(update);
+    return { id: auditId, updated: true };
+  } catch (err) {
+    if (err instanceof HttpsError) throw err;
+    console.error("updateAudit failed:", err);
+    throw new HttpsError("internal", "تعذّر تعديل التدقيق.");
+  }
+});
+
+// حذف تدقيق (مع ملاحظاته)
+exports.deleteAudit = onCall(async (request) => {
+  try {
+    const callerTenantId = await requireModule(request.auth, MODULES.QUALITY);
+    const data = request.data || {};
+    const auditId = typeof data.auditId === "string" ? data.auditId.trim() : "";
+    if (!auditId) throw new HttpsError("invalid-argument", "يجب تحديد التدقيق.");
+    const ref = db.collection(COLLECTIONS.AUDITS).doc(auditId);
+    const doc = await ref.get();
+    if (!doc.exists || doc.data().tenantId !== callerTenantId) throw new HttpsError("invalid-argument", "التدقيق غير موجود.");
+
+    // فكّ ربط الملاحظات المرتبطة (لا تُحذف، تصبح مستقلّة)
+    const linkedSnap = await db.collection(COLLECTIONS.FINDINGS).where("tenantId", "==", callerTenantId).where("auditId", "==", auditId).get();
+    const batch = db.batch();
+    linkedSnap.docs.forEach((d) => batch.update(d.ref, { auditId: null }));
+    batch.delete(ref);
+    await batch.commit();
+    return { id: auditId, deleted: true };
+  } catch (err) {
+    if (err instanceof HttpsError) throw err;
+    console.error("deleteAudit failed:", err);
+    throw new HttpsError("internal", "تعذّر حذف التدقيق.");
+  }
+});
+
+// --- الملاحظات ---
+
+// إنشاء ملاحظة
+exports.createFinding = onCall(async (request) => {
+  try {
+    const callerTenantId = await requireModule(request.auth, MODULES.QUALITY);
+    const data = request.data || {};
+    const title = typeof data.title === "string" ? data.title.trim() : "";
+    if (title.length < 2) throw new HttpsError("invalid-argument", "عنوان الملاحظة مطلوب (حرفان على الأقل).");
+
+    // التحقق من التدقيق المرتبط (اختياري)
+    let auditId = null;
+    if (typeof data.auditId === "string" && data.auditId.trim()) {
+      const auditSnap = await db.collection(COLLECTIONS.AUDITS).doc(data.auditId.trim()).get();
+      if (!auditSnap.exists || auditSnap.data().tenantId !== callerTenantId) {
+        throw new HttpsError("invalid-argument", "التدقيق المرتبط غير موجود.");
+      }
+      auditId = data.auditId.trim();
+    }
+
+    const tenantRef = db.collection(COLLECTIONS.TENANTS).doc(callerTenantId);
+    const findingRef = db.collection(COLLECTIONS.FINDINGS).doc();
+    const result = await db.runTransaction(async (tx) => {
+      const tenantSnap = await tx.get(tenantRef);
+      if (!tenantSnap.exists) throw new HttpsError("failed-precondition", "الشركة غير موجودة.");
+      const nextNumber = (tenantSnap.data().lastFindingNumber || 0) + 1;
+      const findingDoc = buildFindingDoc({
+        tenantId: callerTenantId,
+        findingNumber: nextNumber,
+        title: title,
+        auditId: auditId,
+        severity: data.severity,
+        status: data.status,
+        correctiveAction: typeof data.correctiveAction === "string" ? data.correctiveAction.trim() : null,
+        responsible: typeof data.responsible === "string" ? data.responsible.trim() : null,
+        dueDate: typeof data.dueDate === "string" && isValidDate(data.dueDate) ? data.dueDate : null,
+        notes: typeof data.notes === "string" ? data.notes.trim() : null,
+        createdBy: request.auth.uid,
+        createdAt: FieldValue.serverTimestamp(),
+      });
+      tx.set(findingRef, findingDoc);
+      tx.update(tenantRef, { lastFindingNumber: nextNumber });
+      return { findingNumber: nextNumber };
+    });
+    return { id: findingRef.id, findingNumber: result.findingNumber };
+  } catch (err) {
+    if (err instanceof HttpsError) throw err;
+    console.error("createFinding failed:", err);
+    throw new HttpsError("internal", "تعذّر إنشاء الملاحظة.");
+  }
+});
+
+// تعديل ملاحظة
+exports.updateFinding = onCall(async (request) => {
+  try {
+    const callerTenantId = await requireModule(request.auth, MODULES.QUALITY);
+    const data = request.data || {};
+    const findingId = typeof data.findingId === "string" ? data.findingId.trim() : "";
+    if (!findingId) throw new HttpsError("invalid-argument", "يجب تحديد الملاحظة.");
+
+    const ref = db.collection(COLLECTIONS.FINDINGS).doc(findingId);
+    const doc = await ref.get();
+    if (!doc.exists || doc.data().tenantId !== callerTenantId) throw new HttpsError("invalid-argument", "الملاحظة غير موجودة.");
+
+    const update = {};
+    if (typeof data.title === "string") {
+      const t = data.title.trim();
+      if (t.length < 2) throw new HttpsError("invalid-argument", "عنوان الملاحظة قصير.");
+      update.title = t;
+    }
+    if (typeof data.severity === "string") {
+      if (!ALL_FINDING_SEVERITY.includes(data.severity)) throw new HttpsError("invalid-argument", "خطورة غير صحيحة.");
+      update.severity = data.severity;
+    }
+    if (typeof data.status === "string") {
+      if (!ALL_FINDING_STATUS.includes(data.status)) throw new HttpsError("invalid-argument", "حالة غير صحيحة.");
+      update.status = data.status;
+    }
+    if (typeof data.correctiveAction === "string") update.correctiveAction = data.correctiveAction.trim() || null;
+    if (typeof data.responsible === "string") update.responsible = data.responsible.trim() || null;
+    if (typeof data.dueDate === "string") update.dueDate = isValidDate(data.dueDate) ? data.dueDate : null;
+    if (typeof data.notes === "string") update.notes = data.notes.trim() || null;
+    if (data.auditId !== undefined) {
+      if (data.auditId === null || data.auditId === "") update.auditId = null;
+      else {
+        const auditSnap = await db.collection(COLLECTIONS.AUDITS).doc(data.auditId).get();
+        if (!auditSnap.exists || auditSnap.data().tenantId !== callerTenantId) throw new HttpsError("invalid-argument", "التدقيق المرتبط غير موجود.");
+        update.auditId = data.auditId;
+      }
+    }
+
+    if (Object.keys(update).length === 0) throw new HttpsError("invalid-argument", "لا تغييرات.");
+    update.updatedBy = request.auth.uid;
+    update.updatedAt = FieldValue.serverTimestamp();
+    await ref.update(update);
+    return { id: findingId, updated: true };
+  } catch (err) {
+    if (err instanceof HttpsError) throw err;
+    console.error("updateFinding failed:", err);
+    throw new HttpsError("internal", "تعذّر تعديل الملاحظة.");
+  }
+});
+
+// حذف ملاحظة
+exports.deleteFinding = onCall(async (request) => {
+  try {
+    const callerTenantId = await requireModule(request.auth, MODULES.QUALITY);
+    const data = request.data || {};
+    const findingId = typeof data.findingId === "string" ? data.findingId.trim() : "";
+    if (!findingId) throw new HttpsError("invalid-argument", "يجب تحديد الملاحظة.");
+    const ref = db.collection(COLLECTIONS.FINDINGS).doc(findingId);
+    const doc = await ref.get();
+    if (!doc.exists || doc.data().tenantId !== callerTenantId) throw new HttpsError("invalid-argument", "الملاحظة غير موجودة.");
+    await ref.delete();
+    return { id: findingId, deleted: true };
+  } catch (err) {
+    if (err instanceof HttpsError) throw err;
+    console.error("deleteFinding failed:", err);
+    throw new HttpsError("internal", "تعذّر حذف الملاحظة.");
+  }
+});
+
+// بيانات التدقيق: التدقيقات + الملاحظات + الملخّص
+exports.getAuditData = onCall(async (request) => {
+  try {
+    const callerTenantId = await requireModule(request.auth, MODULES.QUALITY);
+    const round2 = (n) => Math.round((Number(n) || 0) * 100) / 100;
+
+    const [auditSnap, findingSnap] = await Promise.all([
+      db.collection(COLLECTIONS.AUDITS).where("tenantId", "==", callerTenantId).get(),
+      db.collection(COLLECTIONS.FINDINGS).where("tenantId", "==", callerTenantId).get(),
+    ]);
+
+    const audits = auditSnap.docs.map((d) => ({ id: d.id, ...d.data() }));
+    audits.sort((a, b) => (b.auditNumber || 0) - (a.auditNumber || 0));
+    const auditNames = {};
+    audits.forEach((a) => { auditNames[a.id] = a.name; });
+
+    const findings = findingSnap.docs.map((d) => {
+      const f = d.data();
+      return { id: d.id, ...f, auditName: f.auditId ? (auditNames[f.auditId] || null) : null };
+    });
+    findings.sort((a, b) => (b.findingNumber || 0) - (a.findingNumber || 0));
+
+    // الملخّص
+    const doneAudits = audits.filter((a) => a.status === "done");
+    const openFindings = findings.filter((f) => f.status === "open" || f.status === "progress");
+    const resolvedFindings = findings.filter((f) => f.status === "resolved");
+    const pendingActions = findings.filter((f) => (f.status === "open" || f.status === "progress") && f.correctiveAction);
+    const complianceRate = findings.length > 0 ? round2((resolvedFindings.length / findings.length) * 100) : 100;
+
+    // تجميع الملاحظات بالخطورة
+    const sevMap = { high: 0, medium: 0, low: 0 };
+    openFindings.forEach((f) => { const sv = f.severity || "medium"; sevMap[sv] = (sevMap[sv] || 0) + 1; });
+
+    return {
+      audits,
+      findings,
+      summary: {
+        doneCount: doneAudits.length,
+        totalAudits: audits.length,
+        openFindings: openFindings.length,
+        resolvedFindings: resolvedFindings.length,
+        pendingActions: pendingActions.length,
+        complianceRate: complianceRate,
+        severityBreakdown: sevMap,
+      },
+    };
+  } catch (err) {
+    if (err instanceof HttpsError) throw err;
+    console.error("getAuditData failed:", err);
+    throw new HttpsError("internal", "تعذّر تحميل بيانات التدقيق.");
+  }
+});
+
+// ═══════════════════════════════════════════════════════
+// ===== التميز والجودة: رضا العملاء (NPS) =====
+// ═══════════════════════════════════════════════════════
+
+// تسجيل تقييم عميل
+exports.createRating = onCall(async (request) => {
+  try {
+    const callerTenantId = await requireModule(request.auth, MODULES.QUALITY);
+    const data = request.data || {};
+    const score = Number(data.score);
+    if (!Number.isFinite(score) || score < 0 || score > 10) throw new HttpsError("invalid-argument", "الدرجة من 0 إلى 10.");
+
+    const docRef = db.collection(COLLECTIONS.RATINGS).doc();
+    await docRef.set(buildRatingDoc({
+      tenantId: callerTenantId,
+      customerName: typeof data.customerName === "string" ? data.customerName.trim() : null,
+      score: Math.round(score),
+      comment: typeof data.comment === "string" ? data.comment.trim() : null,
+      surveyName: typeof data.surveyName === "string" ? data.surveyName.trim() : null,
+      date: typeof data.date === "string" && isValidDate(data.date) ? data.date : new Date().toISOString().slice(0, 10),
+      createdBy: request.auth.uid,
+      createdAt: FieldValue.serverTimestamp(),
+    }));
+    return { id: docRef.id, created: true };
+  } catch (err) {
+    if (err instanceof HttpsError) throw err;
+    console.error("createRating failed:", err);
+    throw new HttpsError("internal", "تعذّر تسجيل التقييم.");
+  }
+});
+
+// حذف تقييم
+exports.deleteRating = onCall(async (request) => {
+  try {
+    const callerTenantId = await requireModule(request.auth, MODULES.QUALITY);
+    const data = request.data || {};
+    const ratingId = typeof data.ratingId === "string" ? data.ratingId.trim() : "";
+    if (!ratingId) throw new HttpsError("invalid-argument", "يجب تحديد التقييم.");
+    const ref = db.collection(COLLECTIONS.RATINGS).doc(ratingId);
+    const doc = await ref.get();
+    if (!doc.exists || doc.data().tenantId !== callerTenantId) throw new HttpsError("invalid-argument", "التقييم غير موجود.");
+    await ref.delete();
+    return { id: ratingId, deleted: true };
+  } catch (err) {
+    if (err instanceof HttpsError) throw err;
+    console.error("deleteRating failed:", err);
+    throw new HttpsError("internal", "تعذّر حذف التقييم.");
+  }
+});
+
+// بيانات رضا العملاء: NPS + التوزيع + CSAT + حسب العميل + الاتجاه
+exports.getNPSData = onCall(async (request) => {
+  try {
+    const callerTenantId = await requireModule(request.auth, MODULES.QUALITY);
+    const round2 = (n) => Math.round((Number(n) || 0) * 100) / 100;
+
+    const snap = await db.collection(COLLECTIONS.RATINGS).where("tenantId", "==", callerTenantId).get();
+    const ratings = snap.docs.map((d) => ({ id: d.id, ...d.data() }));
+    ratings.sort((a, b) => {
+      const ad = a.date || ""; const bd = b.date || "";
+      return bd.localeCompare(ad);
+    });
+
+    const total = ratings.length;
+    const promoters = ratings.filter((r) => r.score >= 9).length;
+    const passives = ratings.filter((r) => r.score >= 7 && r.score <= 8).length;
+    const detractors = ratings.filter((r) => r.score <= 6).length;
+
+    // NPS = %مروّجين − %منتقدين (من -100 إلى +100)
+    const nps = total > 0 ? Math.round(((promoters - detractors) / total) * 100) : 0;
+    // CSAT = متوسط الدرجات على مقياس 100
+    const avgScore = total > 0 ? ratings.reduce((s, r) => s + (Number(r.score) || 0), 0) / total : 0;
+    const csat = round2(avgScore * 10);
+
+    const distribution = {
+      promoters: { count: promoters, pct: total > 0 ? round2((promoters / total) * 100) : 0 },
+      passives: { count: passives, pct: total > 0 ? round2((passives / total) * 100) : 0 },
+      detractors: { count: detractors, pct: total > 0 ? round2((detractors / total) * 100) : 0 },
+    };
+
+    // حسب العميل (متوسط الدرجة)
+    const custMap = {};
+    ratings.forEach((r) => {
+      if (!r.customerName) return;
+      if (!custMap[r.customerName]) custMap[r.customerName] = { sum: 0, count: 0 };
+      custMap[r.customerName].sum += Number(r.score) || 0;
+      custMap[r.customerName].count += 1;
+    });
+    const byCustomer = Object.entries(custMap).map(([name, v]) => ({
+      name, avgScore: round2(v.sum / v.count), count: v.count, score100: round2((v.sum / v.count) * 10),
+    })).sort((a, b) => b.avgScore - a.avgScore);
+
+    // الاتجاه الشهري (متوسط CSAT لكل شهر، آخر 6 أشهر بترتيب زمني)
+    const monthMap = {};
+    ratings.forEach((r) => {
+      if (!r.date) return;
+      const m = r.date.slice(0, 7);
+      if (!monthMap[m]) monthMap[m] = { sum: 0, count: 0 };
+      monthMap[m].sum += Number(r.score) || 0;
+      monthMap[m].count += 1;
+    });
+    const trend = Object.entries(monthMap)
+      .map(([month, v]) => ({ month, csat: round2((v.sum / v.count) * 10), count: v.count }))
+      .sort((a, b) => a.month.localeCompare(b.month))
+      .slice(-6);
+
+    // الاتجاه (فرق آخر شهرين)
+    let trendDelta = 0;
+    if (trend.length >= 2) trendDelta = round2(trend[trend.length - 1].csat - trend[trend.length - 2].csat);
+
+    return {
+      ratings: ratings.slice(0, 50),
+      distribution,
+      byCustomer,
+      trend,
+      summary: {
+        nps,
+        csat,
+        total,
+        trendDelta,
+        promoters,
+        detractors,
+      },
+    };
+  } catch (err) {
+    if (err instanceof HttpsError) throw err;
+    console.error("getNPSData failed:", err);
+    throw new HttpsError("internal", "تعذّر تحميل بيانات رضا العملاء.");
   }
 });
 
