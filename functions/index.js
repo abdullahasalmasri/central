@@ -11451,6 +11451,16 @@ exports.updateTenantSubscription = onCall(async (request) => {
     if (typeof data.plan === "string") update.plan = data.plan.trim() || "free";
     if (typeof data.contactEmail === "string") update.contactEmail = data.contactEmail.trim() || null;
     if (typeof data.contactPhone === "string") update.contactPhone = data.contactPhone.trim() || null;
+    if (data.subscriptionEndsAt !== undefined) {
+      const raw = data.subscriptionEndsAt;
+      if (raw === null || raw === "") {
+        update.subscriptionEndsAt = null;
+      } else if (typeof raw === "string" && raw.trim()) {
+        const d = new Date(raw.trim());
+        if (isNaN(d.getTime())) throw new HttpsError("invalid-argument", "تاريخ غير صحيح.");
+        update.subscriptionEndsAt = admin.firestore.Timestamp.fromDate(d);
+      }
+    }
 
     if (Object.keys(update).length === 0) throw new HttpsError("invalid-argument", "لا تغييرات.");
     await ref.update(update);
@@ -11468,7 +11478,13 @@ exports.getPlatformPricing = onCall(async (request) => {
     await requirePlatformOwner(request.auth);
     const doc = await db.collection(COLLECTIONS.PLATFORM_CONFIG).doc("pricing").get();
     const data = doc.exists ? doc.data() : {};
-    return { prices: data.prices || {}, updatedAt: data.updatedAt && data.updatedAt.toMillis ? data.updatedAt.toMillis() : null };
+    return {
+      prices: data.prices || {},
+      workerDepts: data.workerDepts || {},
+      userPrice: Number(data.userPrice) || 0,
+      workerPrice: Number(data.workerPrice) || 0,
+      updatedAt: data.updatedAt && data.updatedAt.toMillis ? data.updatedAt.toMillis() : null,
+    };
   } catch (err) {
     if (err instanceof HttpsError) throw err;
     console.error("getPlatformPricing failed:", err);
@@ -11476,36 +11492,113 @@ exports.getPlatformPricing = onCall(async (request) => {
   }
 });
 
-// حفظ أسعار المنصة (المالك فقط)
-// data: { prices: { "fin_acc": 0.30, "fin_inv": 0.20, ... } }
+// حفظ أسعار المنصة (المالك فقط) — تسعير ثلاثي
+// data: { userPrice, workerPrice, prices:{sub_id:num}, workerDepts:{sub_id:true} }
 exports.setPlatformPricing = onCall(async (request) => {
   try {
     await requirePlatformOwner(request.auth);
     const data = request.data || {};
-    const raw = data.prices;
-    if (!raw || typeof raw !== "object" || Array.isArray(raw)) {
-      throw new HttpsError("invalid-argument", "صيغة الأسعار غير صحيحة.");
-    }
-    // تنظيف: مفاتيح نصية + قيم أرقام موجبة
-    const clean = {};
-    for (const key of Object.keys(raw)) {
-      if (typeof key !== "string" || !key.trim()) continue;
-      const val = Number(raw[key]);
-      if (Number.isFinite(val) && val >= 0) {
-        clean[key.trim()] = Math.round(val * 1000) / 1000; // حتى 3 خانات عشرية
-      }
-    }
-    if (Object.keys(clean).length > 500) throw new HttpsError("invalid-argument", "عدد الأقسام كبير جدًا.");
+    const round3 = (n) => Math.round((Number(n) || 0) * 1000) / 1000;
+    const update = {};
 
-    await db.collection(COLLECTIONS.PLATFORM_CONFIG).doc("pricing").set({
-      prices: clean,
-      updatedAt: FieldValue.serverTimestamp(),
-      updatedBy: request.auth.uid,
-    }, { merge: true });
-    return { saved: true, count: Object.keys(clean).length };
+    // أسعار الأقسام (لكل قسم سعر ثابت)
+    if (data.prices && typeof data.prices === "object" && !Array.isArray(data.prices)) {
+      const clean = {};
+      for (const key of Object.keys(data.prices)) {
+        if (typeof key !== "string" || !key.trim()) continue;
+        const val = Number(data.prices[key]);
+        if (Number.isFinite(val) && val >= 0) clean[key.trim()] = round3(val);
+      }
+      if (Object.keys(clean).length > 500) throw new HttpsError("invalid-argument", "عدد الأقسام كبير جدًا.");
+      update.prices = clean;
+    }
+
+    // الأقسام المُسعّرة بالعامل (مثل الحضور)
+    if (data.workerDepts && typeof data.workerDepts === "object" && !Array.isArray(data.workerDepts)) {
+      const wd = {};
+      for (const key of Object.keys(data.workerDepts)) {
+        if (typeof key === "string" && key.trim() && data.workerDepts[key]) wd[key.trim()] = true;
+      }
+      update.workerDepts = wd;
+    }
+
+    // سعر المستخدم الإداري الأساس
+    if (data.userPrice !== undefined) {
+      const up = Number(data.userPrice);
+      if (!(up >= 0)) throw new HttpsError("invalid-argument", "سعر المستخدم غير صحيح.");
+      update.userPrice = round3(up);
+    }
+    // سعر العامل الواحد (للأقسام المُسعّرة بالعمالة)
+    if (data.workerPrice !== undefined) {
+      const wp = Number(data.workerPrice);
+      if (!(wp >= 0)) throw new HttpsError("invalid-argument", "سعر العامل غير صحيح.");
+      update.workerPrice = round3(wp);
+    }
+
+    if (Object.keys(update).length === 0) throw new HttpsError("invalid-argument", "لا تغييرات.");
+    update.updatedAt = FieldValue.serverTimestamp();
+    update.updatedBy = request.auth.uid;
+
+    await db.collection(COLLECTIONS.PLATFORM_CONFIG).doc("pricing").set(update, { merge: true });
+    return { saved: true };
   } catch (err) {
     if (err instanceof HttpsError) throw err;
     console.error("setPlatformPricing failed:", err);
     throw new HttpsError("internal", "تعذّر حفظ الأسعار.");
+  }
+});
+
+// تفاصيل عميل واحد: بياناته الكاملة + كل مستخدميه وصلاحياتهم (للمالك فقط)
+exports.getTenantDetails = onCall(async (request) => {
+  try {
+    await requirePlatformOwner(request.auth);
+    const data = request.data || {};
+    const tenantId = typeof data.tenantId === "string" ? data.tenantId.trim() : "";
+    if (!tenantId) throw new HttpsError("invalid-argument", "يجب تحديد العميل.");
+    const toMs = (ts) => (ts && ts.toMillis ? ts.toMillis() : null);
+
+    const tenantDoc = await db.collection(COLLECTIONS.TENANTS).doc(tenantId).get();
+    if (!tenantDoc.exists) throw new HttpsError("invalid-argument", "العميل غير موجود.");
+    const t = tenantDoc.data();
+
+    const usersSnap = await db.collection(COLLECTIONS.USERS).where("tenantId", "==", tenantId).get();
+    const users = usersSnap.docs.map((d) => {
+      const u = d.data();
+      return {
+        id: d.id,
+        name: u.name || "—",
+        email: u.email || null,
+        phone: u.phone || null,
+        role: u.role || "staff",
+        permissions: Array.isArray(u.permissions) ? u.permissions : [],
+        createdAt: toMs(u.createdAt),
+      };
+    });
+    // المالك أولًا ثم بقية المستخدمين
+    users.sort((a, b) => (a.role === "owner" ? -1 : b.role === "owner" ? 1 : 0));
+
+    return {
+      tenant: {
+        id: tenantId,
+        name: t.name || "—",
+        subscriptionStatus: t.subscriptionStatus || "pending",
+        plan: t.plan || "free",
+        maxUsers: Number(t.maxUsers) || 0,
+        subscriptionAmount: Number(t.subscriptionAmount) || 0,
+        contactEmail: t.contactEmail || null,
+        contactPhone: t.contactPhone || null,
+        activeModules: Array.isArray(t.activeModules) ? t.activeModules : [], // الأقسام المفعّلة (تُبنى مع بناء النظام)
+        createdAt: toMs(t.createdAt),
+        activatedAt: toMs(t.activatedAt),
+        suspendedAt: toMs(t.suspendedAt),
+        subscriptionEndsAt: toMs(t.subscriptionEndsAt),
+      },
+      users,
+      userCount: users.length,
+    };
+  } catch (err) {
+    if (err instanceof HttpsError) throw err;
+    console.error("getTenantDetails failed:", err);
+    throw new HttpsError("internal", "تعذّر تحميل تفاصيل العميل.");
   }
 });

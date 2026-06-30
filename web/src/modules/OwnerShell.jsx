@@ -154,6 +154,7 @@ function OwnerDashboard({ user }) {
   const [search, setSearch] = useState("");
   const [filter, setFilter] = useState("all");
   const [modal, setModal] = useState(null);
+  const [detailsTenant, setDetailsTenant] = useState(null);
   const [busyId, setBusyId] = useState("");
 
   useEffect(() => { loadData(); }, []);
@@ -267,6 +268,7 @@ function OwnerDashboard({ user }) {
                         </div>
                       </div>
                       <div style={styles.tActions}>
+                        <button style={styles.detailsBtn} onClick={() => setDetailsTenant(t)} disabled={busy}>👁 تفاصيل</button>
                         {t.subscriptionStatus === "active" ? (
                           <button style={styles.suspendBtn} onClick={() => { if (window.confirm(`إيقاف اشتراك «${t.name}»؟ سيُقفل النظام عنهم.`)) changeStatus(t.id, "suspended"); }} disabled={busy}>{busy ? "..." : "⏸ إيقاف"}</button>
                         ) : (
@@ -285,13 +287,17 @@ function OwnerDashboard({ user }) {
       )}
 
       {modal ? <EditModal tenant={modal} onClose={() => setModal(null)} onSaved={() => { setModal(null); loadData(); }} /> : null}
+      {detailsTenant ? <DetailsModal tenantBrief={detailsTenant} onClose={() => setDetailsTenant(null)} /> : null}
     </div>
   );
 }
 
-// ═══════════ تبويب التسعير ═══════════
+// ═══════════ تبويب التسعير (ثلاثي: مستخدم + قسم + عامل) ═══════════
 function PricingTab() {
-  const [prices, setPrices] = useState({}); // { sub_id: number }
+  const [userPrice, setUserPrice] = useState("");
+  const [workerPrice, setWorkerPrice] = useState("");
+  const [prices, setPrices] = useState({});        // { sub_id: string } سعر القسم الثابت
+  const [workerDepts, setWorkerDepts] = useState({}); // { sub_id: true } الأقسام المُسعّرة بالعامل
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState("");
@@ -304,10 +310,14 @@ function PricingTab() {
     setError("");
     try {
       const res = await httpsCallable(functions, "getPlatformPricing")({});
-      const p = res.data.prices || {};
+      const d = res.data || {};
+      setUserPrice(d.userPrice ? String(d.userPrice) : "");
+      setWorkerPrice(d.workerPrice ? String(d.workerPrice) : "");
+      const p = d.prices || {};
       const asStr = {};
       Object.keys(p).forEach((k) => { asStr[k] = String(p[k]); });
       setPrices(asStr);
+      setWorkerDepts(d.workerDepts || {});
     } catch (e) {
       setError(e.message || "تعذّر تحميل الأسعار.");
     } finally {
@@ -315,9 +325,14 @@ function PricingTab() {
     }
   }
 
-  function setPrice(subId, val) {
+  function setPrice(subId, val) { setSavedMsg(""); setPrices((p) => ({ ...p, [subId]: val })); }
+  function toggleWorker(subId) {
     setSavedMsg("");
-    setPrices((p) => ({ ...p, [subId]: val }));
+    setWorkerDepts((w) => {
+      const n = { ...w };
+      if (n[subId]) delete n[subId]; else n[subId] = true;
+      return n;
+    });
   }
 
   async function save() {
@@ -325,13 +340,18 @@ function PricingTab() {
     setSavedMsg("");
     setSaving(true);
     try {
-      const clean = {};
+      const cleanPrices = {};
       Object.keys(prices).forEach((k) => {
         const v = Number(prices[k]);
-        if (Number.isFinite(v) && v > 0) clean[k] = v;
+        if (Number.isFinite(v) && v > 0) cleanPrices[k] = v;
       });
-      const res = await httpsCallable(functions, "setPlatformPricing")({ prices: clean });
-      setSavedMsg(`تم الحفظ (${res.data.count} قسم مُسعّر).`);
+      await httpsCallable(functions, "setPlatformPricing")({
+        userPrice: Number(userPrice) || 0,
+        workerPrice: Number(workerPrice) || 0,
+        prices: cleanPrices,
+        workerDepts: workerDepts,
+      });
+      setSavedMsg("تم حفظ الأسعار بنجاح.");
     } catch (e) {
       setError(e.message || "تعذّر الحفظ.");
     } finally {
@@ -339,50 +359,71 @@ function PricingTab() {
     }
   }
 
-  // سعر الإدارة = مجموع أسعار أقسامها
-  const deptTotal = (dept) => dept.subs.reduce((sum, sub) => sum + (Number(prices[sub.id]) || 0), 0);
-  const grandTotal = PRICING_STRUCTURE.reduce((sum, d) => sum + deptTotal(d), 0);
+  // سعر الإدارة = مجموع أقسامها الثابتة (المُسعّرة بالعامل تُحسب بالعمالة لاحقًا)
+  const deptTotal = (dept) => dept.subs.reduce((sum, sub) => sum + (workerDepts[sub.id] ? 0 : (Number(prices[sub.id]) || 0)), 0);
 
   return (
     <div style={styles.body}>
       <h1 style={styles.pageTitle}>تسعير الأقسام</h1>
-      <p style={styles.pageSub}>حدّد سعر كل قسم بالريال لكل عامل شهريًا. سعر الإدارة = مجموع أقسامها. العميل يدفع للأقسام التي يفعّلها × عدد العمالة.</p>
+      <p style={styles.pageSub}>التسعير من ٣ اتجاهات: سعر المستخدم الإداري + سعر كل قسم يفعّله العميل + سعر العامل للأقسام المرتبطة بالعمالة (مثل الحضور).</p>
 
       {error ? <div style={styles.error}>{error}</div> : null}
       {savedMsg ? <div style={styles.savedBox}>✓ {savedMsg}</div> : null}
 
       {loading ? <p style={styles.muted}>جارٍ التحميل...</p> : (
         <>
-          <div style={styles.priceSummary}>
-            <span style={styles.priceSummaryLabel}>السعر الكامل (كل الأقسام) للعامل الواحد شهريًا:</span>
-            <span style={styles.priceSummaryVal} dir="ltr">{fmt(grandTotal)} ر.س</span>
+          {/* الأسعار الأساسية: المستخدم + العامل */}
+          <div style={styles.baseGrid}>
+            <div style={styles.baseCard}>
+              <div style={styles.baseTop}><span style={styles.baseIcon}>💼</span><div><div style={styles.baseLabel}>سعر المستخدم الإداري</div><div style={styles.baseDesc}>لكل مستخدم يصل للنظام شهريًا</div></div></div>
+              <div style={styles.baseInputWrap}>
+                <input style={styles.baseInput} type="number" min="0" step="50" value={userPrice} onChange={(e) => { setSavedMsg(""); setUserPrice(e.target.value); }} placeholder="0" dir="ltr" disabled={saving} />
+                <span style={styles.baseUnit}>ر.س / مستخدم</span>
+              </div>
+            </div>
+            <div style={styles.baseCard}>
+              <div style={styles.baseTop}><span style={styles.baseIcon}>👷</span><div><div style={styles.baseLabel}>سعر العامل</div><div style={styles.baseDesc}>يُطبّق على الأقسام المُعلّمة بـ«عامل» أدناه</div></div></div>
+              <div style={styles.baseInputWrap}>
+                <input style={styles.baseInput} type="number" min="0" step="0.25" value={workerPrice} onChange={(e) => { setSavedMsg(""); setWorkerPrice(e.target.value); }} placeholder="0.00" dir="ltr" disabled={saving} />
+                <span style={styles.baseUnit}>ر.س / عامل</span>
+              </div>
+            </div>
           </div>
 
+          <div style={styles.pricingHint}>
+            <b>كيف يعمل؟</b> كل قسم تختار نوع تسعيره: <b>💼 قسم</b> = سعر ثابت يدفعه العميل عند تفعيله · <b>👷 عامل</b> = يُحسب بسعر العامل × عدد العمالة (يُجبر العميل على تحديد العدد، مثل الحضور).
+          </div>
+
+          {/* الإدارات والأقسام */}
           <div style={styles.deptList}>
             {PRICING_STRUCTURE.map((dept) => (
               <div key={dept.id} style={styles.deptCard}>
                 <div style={{ ...styles.deptHead, borderRightColor: dept.color }}>
                   <span style={{ ...styles.deptName, color: dept.color }}>{dept.name}</span>
-                  <span style={styles.deptTotal} dir="ltr">{fmt(deptTotal(dept))} ر.س/عامل</span>
+                  <span style={styles.deptTotal} dir="ltr">{fmt(deptTotal(dept))} ر.س/مستخدم</span>
                 </div>
                 <div style={styles.subGrid}>
-                  {dept.subs.map((sub) => (
-                    <div key={sub.id} style={styles.subRow}>
-                      <span style={styles.subName}>{sub.name}</span>
-                      <div style={styles.priceInputWrap}>
-                        <input
-                          style={styles.priceInput}
-                          type="number" min="0" step="0.05"
-                          value={prices[sub.id] || ""}
-                          onChange={(e) => setPrice(sub.id, e.target.value)}
-                          placeholder="0.00"
-                          dir="ltr"
-                          disabled={saving}
-                        />
-                        <span style={styles.priceUnit}>ر.س</span>
+                  {dept.subs.map((sub) => {
+                    const isWorker = !!workerDepts[sub.id];
+                    return (
+                      <div key={sub.id} style={{ ...styles.subRow, ...(isWorker ? styles.subRowWorker : {}) }}>
+                        <span style={styles.subName}>{sub.name}</span>
+                        <div style={styles.subControls}>
+                          <button style={isWorker ? styles.btWorker : styles.btDept} onClick={() => toggleWorker(sub.id)} disabled={saving} title="بدّل نوع التسعير">
+                            {isWorker ? "👷 عامل" : "💼 قسم"}
+                          </button>
+                          {isWorker ? (
+                            <span style={styles.workerTag} dir="ltr">× العمالة</span>
+                          ) : (
+                            <div style={styles.priceInputWrap}>
+                              <input style={styles.priceInput} type="number" min="0" step="0.05" value={prices[sub.id] || ""} onChange={(e) => setPrice(sub.id, e.target.value)} placeholder="0.00" dir="ltr" disabled={saving} />
+                              <span style={styles.priceUnit}>ر.س</span>
+                            </div>
+                          )}
+                        </div>
                       </div>
-                    </div>
-                  ))}
+                    );
+                  })}
                 </div>
               </div>
             ))}
@@ -393,6 +434,124 @@ function PricingTab() {
           </div>
         </>
       )}
+    </div>
+  );
+}
+
+// ═══════════ تفاصيل العميل الكاملة ═══════════
+const ROLE_LABEL = { owner: "المالك", staff: "موظف", worker: "عامل" };
+// خريطة الموديول → اسم عربي (لعرض صلاحيات المستخدم)
+const MODULE_LABEL = {
+  finance: "المالية", hr: "الموارد البشرية", operations: "العمليات", projects: "المشاريع",
+  assets: "الأصول", procurement: "المشتريات", sales: "المبيعات", legal: "القانونية",
+  quality: "الجودة", attendance: "الحضور", reviews: "التقييمات", inventory: "المخزون", pos: "نقاط البيع",
+};
+
+function DetailsModal({ tenantBrief, onClose }) {
+  const [data, setData] = useState(null);
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState("");
+
+  useEffect(() => {
+    (async () => {
+      try {
+        const res = await httpsCallable(functions, "getTenantDetails")({ tenantId: tenantBrief.id });
+        setData(res.data);
+      } catch (e) {
+        setError(e.message || "تعذّر تحميل التفاصيل.");
+      } finally {
+        setLoading(false);
+      }
+    })();
+  }, [tenantBrief.id]);
+
+  const t = data ? data.tenant : null;
+  const users = data ? data.users : [];
+  const st = t ? (STATUS[t.subscriptionStatus] || STATUS.pending) : STATUS.pending;
+
+  return (
+    <div style={styles.overlay} onClick={onClose}>
+      <div style={styles.detailsModal} onClick={(e) => e.stopPropagation()}>
+        <div style={styles.modalHead}>
+          <h2 style={styles.modalTitle}>تفاصيل العميل</h2>
+          <button style={styles.close} onClick={onClose}>✕</button>
+        </div>
+
+        {loading ? <p style={styles.muted}>جارٍ التحميل...</p> : error ? <div style={styles.error}>{error}</div> : !t ? null : (
+          <>
+            {/* بيانات الشركة */}
+            <div style={styles.dSection}>
+              <div style={styles.dCompanyHead}>
+                <span style={styles.dCompanyName}>{t.name}</span>
+                <span style={{ ...styles.chip, color: st.color, background: st.bg }}>{st.label}</span>
+              </div>
+              <div style={styles.dGrid}>
+                <DRow label="البريد" value={t.contactEmail} ltr />
+                <DRow label="رقم التواصل" value={t.contactPhone} ltr />
+                <DRow label="تاريخ التسجيل" value={fmtDate(t.createdAt)} />
+                <DRow label="الباقة" value={t.plan} />
+                <DRow label="المبلغ الشهري" value={t.subscriptionAmount > 0 ? `${fmt(t.subscriptionAmount)} ر.س` : "—"} />
+                <DRow label="الحد الأقصى للمستخدمين" value={t.maxUsers > 0 ? t.maxUsers : "—"} />
+                {t.subscriptionStatus === "active" || t.activatedAt ? <DRow label="تاريخ التفعيل" value={fmtDate(t.activatedAt)} /> : null}
+                {t.subscriptionEndsAt ? <DRow label="تاريخ الانتهاء" value={fmtDate(t.subscriptionEndsAt)} /> : null}
+                {t.suspendedAt && t.subscriptionStatus === "suspended" ? <DRow label="تاريخ الإيقاف" value={fmtDate(t.suspendedAt)} /> : null}
+              </div>
+            </div>
+
+            {/* الأقسام المشترك فيها */}
+            <div style={styles.dSection}>
+              <div style={styles.dSectionTitle}>الأقسام المُفعّلة</div>
+              {t.activeModules && t.activeModules.length > 0 ? (
+                <div style={styles.dModules}>
+                  {t.activeModules.map((m) => <span key={m} style={styles.dModuleChip}>{MODULE_LABEL[m] || m}</span>)}
+                </div>
+              ) : (
+                <p style={styles.dEmpty}>لم يُفعّل أي قسم بعد (تظهر بعد بناء نظام الاشتراكات).</p>
+              )}
+            </div>
+
+            {/* المستخدمون */}
+            <div style={styles.dSection}>
+              <div style={styles.dSectionTitle}>المستخدمون الفعليون ({users.length})</div>
+              {users.length === 0 ? <p style={styles.dEmpty}>لا يوجد مستخدمون.</p> : (
+                <div style={styles.dUserList}>
+                  {users.map((u) => (
+                    <div key={u.uid} style={styles.dUserCard}>
+                      <div style={styles.dUserTop}>
+                        <span style={styles.dUserName}>{u.name || "—"}</span>
+                        <span style={{ ...styles.dRoleChip, ...(u.role === "owner" ? styles.dRoleOwner : {}) }}>{ROLE_LABEL[u.role] || u.role}</span>
+                      </div>
+                      <div style={styles.dUserMeta}>
+                        {u.email ? <span dir="ltr">✉ {u.email}</span> : null}
+                        {u.phone ? <span dir="ltr">📞 {u.phone}</span> : null}
+                      </div>
+                      <div style={styles.dUserPerms}>
+                        <span style={styles.dPermsLabel}>مسؤول عن:</span>
+                        {u.role === "owner" ? (
+                          <span style={styles.dPermAll}>كل الأقسام (المالك)</span>
+                        ) : u.permissions && u.permissions.length > 0 ? (
+                          u.permissions.map((p) => <span key={p} style={styles.dPermChip}>{MODULE_LABEL[p] || p}</span>)
+                        ) : (
+                          <span style={styles.dPermNone}>لا صلاحيات محدّدة</span>
+                        )}
+                      </div>
+                    </div>
+                  ))}
+                </div>
+              )}
+            </div>
+          </>
+        )}
+      </div>
+    </div>
+  );
+}
+
+function DRow({ label, value, ltr }) {
+  return (
+    <div style={styles.dRow}>
+      <span style={styles.dRowLabel}>{label}</span>
+      <span style={styles.dRowValue} dir={ltr ? "ltr" : "rtl"}>{value || "—"}</span>
     </div>
   );
 }
@@ -544,4 +703,48 @@ const styles = {
   priceUnit: { fontSize: 12, color: "#94a3b8" },
   saveBar: { display: "flex", justifyContent: "flex-start", marginTop: 22, position: "sticky", bottom: 16 },
   saveAllBtn: { padding: "13px 30px", fontSize: 15, fontWeight: 700, color: "#fff", background: "#6366f1", border: "none", borderRadius: 10, cursor: "pointer", boxShadow: "0 4px 12px rgba(99,102,241,.3)" },
+
+  // التسعير الثلاثي
+  baseGrid: { display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(280px, 1fr))", gap: 14, marginBottom: 16 },
+  baseCard: { background: "#fff", border: "1px solid #e2e8f0", borderRadius: 12, padding: "16px 18px" },
+  baseTop: { display: "flex", gap: 10, alignItems: "flex-start", marginBottom: 12 },
+  baseIcon: { fontSize: 22 },
+  baseLabel: { fontSize: 15, fontWeight: 800, color: "#0f172a" },
+  baseDesc: { fontSize: 12, color: "#64748b", marginTop: 2 },
+  baseInputWrap: { display: "flex", alignItems: "center", gap: 8 },
+  baseInput: { width: 100, padding: "9px 11px", fontSize: 15, fontWeight: 700, border: "1px solid #cbd5e1", borderRadius: 8, textAlign: "center", fontFamily: "monospace" },
+  baseUnit: { fontSize: 13, color: "#64748b", fontWeight: 600 },
+  pricingHint: { background: "#f8fafc", border: "1px solid #e2e8f0", borderRadius: 10, padding: "12px 16px", fontSize: 13, color: "#475569", marginBottom: 20, lineHeight: 1.7 },
+  subControls: { display: "flex", alignItems: "center", gap: 8, flexShrink: 0 },
+  subRowWorker: { background: "#fff7ed", border: "1px solid #fed7aa" },
+  btDept: { padding: "6px 12px", fontSize: 12, fontWeight: 700, color: "#4f46e5", background: "#eef2ff", border: "1px solid #c7d2fe", borderRadius: 7, cursor: "pointer", whiteSpace: "nowrap" },
+  btWorker: { padding: "6px 12px", fontSize: 12, fontWeight: 700, color: "#ea580c", background: "#ffedd5", border: "1px solid #fed7aa", borderRadius: 7, cursor: "pointer", whiteSpace: "nowrap" },
+  workerTag: { fontSize: 12, fontWeight: 700, color: "#ea580c", fontFamily: "monospace", minWidth: 70, textAlign: "center" },
+
+  // تفاصيل العميل
+  detailsModal: { background: "#fff", borderRadius: 16, width: "100%", maxWidth: 640, maxHeight: "92vh", overflowY: "auto", padding: 24, direction: "rtl", fontFamily: "'IBM Plex Sans Arabic', system-ui, sans-serif" },
+  dSection: { marginBottom: 22 },
+  dCompanyHead: { display: "flex", alignItems: "center", gap: 10, marginBottom: 14, flexWrap: "wrap" },
+  dCompanyName: { fontSize: 19, fontWeight: 800, color: "#0f172a" },
+  dGrid: { display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(220px, 1fr))", gap: 10 },
+  dRow: { display: "flex", justifyContent: "space-between", alignItems: "center", gap: 10, padding: "9px 13px", background: "#f8fafc", borderRadius: 8 },
+  dRowLabel: { fontSize: 13, color: "#64748b", fontWeight: 600 },
+  dRowValue: { fontSize: 13, color: "#0f172a", fontWeight: 700 },
+  dSectionTitle: { fontSize: 15, fontWeight: 800, color: "#334155", marginBottom: 12, paddingBottom: 8, borderBottom: "2px solid #f1f5f9" },
+  dModules: { display: "flex", gap: 8, flexWrap: "wrap" },
+  dModuleChip: { fontSize: 13, fontWeight: 600, color: "#4f46e5", background: "#eef2ff", borderRadius: 7, padding: "5px 14px" },
+  dEmpty: { fontSize: 13, color: "#94a3b8", margin: 0 },
+  dUserList: { display: "flex", flexDirection: "column", gap: 10 },
+  dUserCard: { background: "#f8fafc", border: "1px solid #e2e8f0", borderRadius: 10, padding: "13px 16px" },
+  dUserTop: { display: "flex", alignItems: "center", gap: 10, marginBottom: 8 },
+  dUserName: { fontSize: 15, fontWeight: 700, color: "#0f172a" },
+  dRoleChip: { fontSize: 11, fontWeight: 700, color: "#64748b", background: "#e2e8f0", borderRadius: 5, padding: "2px 10px" },
+  dRoleOwner: { color: "#7c2d12", background: "#fed7aa" },
+  dUserMeta: { display: "flex", gap: 16, flexWrap: "wrap", fontSize: 13, color: "#64748b", marginBottom: 10 },
+  dUserPerms: { display: "flex", gap: 6, flexWrap: "wrap", alignItems: "center" },
+  dPermsLabel: { fontSize: 12, color: "#94a3b8", fontWeight: 600, marginLeft: 4 },
+  dPermChip: { fontSize: 12, fontWeight: 600, color: "#475569", background: "#fff", border: "1px solid #e2e8f0", borderRadius: 6, padding: "3px 10px" },
+  dPermAll: { fontSize: 12, fontWeight: 700, color: "#16a34a", background: "#dcfce7", borderRadius: 6, padding: "3px 12px" },
+  dPermNone: { fontSize: 12, color: "#cbd5e1" },
+  detailsBtn: { padding: "9px 16px", fontSize: 13, fontWeight: 600, color: "#4f46e5", background: "#eef2ff", border: "none", borderRadius: 8, cursor: "pointer" },
 };
