@@ -1,44 +1,23 @@
-import React, { useState } from "react";
+import React, { useState, useEffect } from "react";
 import {
   Banknote, TrendingUp, Receipt, Wallet, HardHat, Gauge,
   FolderKanban, UserRoundCheck, ArrowUpRight, ArrowDownRight,
   Calendar, ChevronDown, Crown
 } from "lucide-react";
+import { collection, query, where, getDocs, doc, getDoc } from "firebase/firestore";
+import { httpsCallable } from "firebase/functions";
+import { db, auth, functions } from "../firebase";
 
 /* ============================================================
    لوحة المؤشرات — الإدارة العليا
    البيانات هنا تجريبية. نقاط الربط بدوالك مكتوبة بجانب كل مجموعة.
    ============================================================ */
 
-// 📊 البطاقات العلوية — مصدرها: getEnterpriseProfitability + getFinancialStatements
-const KPIS = [
-  { id: "rev",    label: "إيرادات الشهر",    value: "1,250,000", unit: "ر.س", delta: "8.5%",  up: true,  good: true,  icon: Banknote,  color: "#059669" },
-  { id: "profit", label: "صافي الربح",        value: "312,000",   unit: "ر.س", sub: "هامش 25%", delta: "3.2%",  up: true,  good: true,  icon: TrendingUp, color: "#16a34a" },
-  { id: "exp",    label: "إجمالي المصروفات",  value: "938,000",   unit: "ر.س", delta: "5.1%",  up: true,  good: false, icon: Receipt,   color: "#ea580c" },
-  { id: "cash",   label: "التدفق النقدي",     value: "540,000",   unit: "ر.س", sub: "الرصيد المتاح", delta: "12%", up: true, good: true, icon: Wallet,    color: "#0891b2" },
-];
-
-// ⚙️ المؤشرات التشغيلية — مصدرها: عدّادات العمّال + الإسناد + getWorkerProfitabilityByMonth
-const OPS = [
-  { id: "workers",  label: "العمّال النشطون",     value: "142", sub: "من 150",       icon: HardHat,        color: "#ea580c" },
-  { id: "util",     label: "نسبة الإشغال",        value: "88",  suffix: "%", bar: 88, icon: Gauge,          color: "#7c3aed" },
-  { id: "projects", label: "المشاريع النشطة",     value: "12",  sub: "قيد التنفيذ",  icon: FolderKanban,   color: "#2563eb" },
-  { id: "wprofit",  label: "متوسط ربحية العامل",  value: "2,200", unit: "ر.س/شهر",   icon: UserRoundCheck, color: "#16a34a" },
-];
-
-// 📈 منحنى 6 أشهر (بالألف ريال) — مصدره: getEnterpriseProfitability عبر الزمن
-const MONTHS  = ["ينا", "فبر", "مار", "أبر", "ماي", "يون"];
-const REVENUE = [980, 1050, 1120, 1080, 1180, 1250];
-const PROFIT  = [210, 245, 270, 250, 290, 312];
-
-// 🏆 أعلى المشاريع ربحية — مصدره: getProjectProfitability
-const TOP_PROJECTS = [
-  { name: "عقد أرامكو — الجبيل",     value: "82,000", pct: 100 },
-  { name: "مدينة الملك عبدالله",     value: "64,000", pct: 78  },
-  { name: "مشروع البحر الأحمر",      value: "51,000", pct: 62  },
-  { name: "مشروع نيوم — الإسكان",    value: "43,000", pct: 52  },
-  { name: "القدية — المرحلة الثانية", value: "37,000", pct: 45  },
-];
+// helpers — البيانات تأتي من getEnterpriseProfitability + Range + getDepreciation
+const fmt = (n) => Math.round(Number(n) || 0).toLocaleString("en-US");
+const MONTH_NAMES = ["ينا", "فبر", "مار", "أبر", "ماي", "يون", "يول", "أغس", "سبت", "أكت", "نوف", "ديس"];
+const monthName = (m) => { const [, mo] = m.split("-").map(Number); return MONTH_NAMES[mo - 1] || m; };
+const thisMonthStr = () => new Date().toISOString().slice(0, 7);
 
 const STYLES = `
   *{margin:0;padding:0;box-sizing:border-box}
@@ -131,18 +110,107 @@ const STYLES = `
 `;
 
 export default function ExecutiveDashboard() {
-  const [period, setPeriod] = useState("month");
+  const [tenantId, setTenantId] = useState("");
+  const [month, setMonth] = useState(thisMonthStr());
+  const [ent, setEnt] = useState(null);
+  const [trend, setTrend] = useState([]);
+  const [assetsValue, setAssetsValue] = useState(0);
+  const [totalEmployees, setTotalEmployees] = useState(0);
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState("");
+
+  useEffect(() => {
+    (async () => {
+      try {
+        const uid = auth.currentUser && auth.currentUser.uid;
+        if (!uid) { setError("لم يتم تسجيل الدخول."); setLoading(false); return; }
+        const userSnap = await getDoc(doc(db, "users", uid));
+        const tid = userSnap.exists() ? userSnap.data().tenantId : null;
+        if (!tid) { setError("تعذّر تحديد المنشأة."); setLoading(false); return; }
+        setTenantId(tid);
+      } catch (e) {
+        setError("تعذّر تحميل بيانات المستخدم."); setLoading(false);
+      }
+    })();
+  }, []);
+
+  useEffect(() => {
+    if (tenantId) loadData();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [tenantId, month]);
+
+  async function loadData() {
+    setLoading(true);
+    setError("");
+    try {
+      const [ty, tm] = month.split("-").map(Number);
+      const fromDate = new Date(ty, tm - 1 - 5, 1);
+      const fromMonth = fromDate.toISOString().slice(0, 7);
+      const [entRes, rangeRes, depRes, empSnap] = await Promise.all([
+        httpsCallable(functions, "getEnterpriseProfitability")({ month }),
+        httpsCallable(functions, "getEnterpriseProfitabilityRange")({ fromMonth, toMonth: month }),
+        httpsCallable(functions, "getDepreciation")({}).catch(() => ({ data: { kpis: { totalCost: 0 } } })),
+        getDocs(query(collection(db, "employees"), where("tenantId", "==", tenantId))).catch(() => ({ size: 0 })),
+      ]);
+      setEnt(entRes.data);
+      setTrend((rangeRes.data && rangeRes.data.monthly) || []);
+      setAssetsValue((depRes.data && depRes.data.kpis && depRes.data.kpis.totalCost) || 0);
+      setTotalEmployees(empSnap.size || 0);
+    } catch (e) {
+      setError(e.message || "تعذّر تحميل اللوحة.");
+      setEnt(null);
+    } finally {
+      setLoading(false);
+    }
+  }
+
+  // المؤشرات المحسوبة
+  const t = ent ? ent.totals : { revenue: 0, cost: 0, profit: 0, margin: 0 };
+  const workersCount = ent ? ent.workersCount : 0;
+  const projectsCount = ent ? ent.projectsCount : 0;
+  const util = totalEmployees > 0 ? Math.round((workersCount / totalEmployees) * 100) : 0;
+  const avgWorkerProfit = workersCount > 0 ? Math.round(t.profit / workersCount) : 0;
+
+  // delta من الشهر السابق
+  const curIdx = trend.findIndex((m) => m.month === month);
+  const prev = curIdx > 0 ? trend[curIdx - 1] : null;
+  const pct = (cur, old) => (old && old !== 0 ? Math.round(((cur - old) / Math.abs(old)) * 1000) / 10 : null);
+  const revDelta = prev ? pct(t.revenue, prev.revenue) : null;
+  const profitDelta = prev ? pct(t.profit, prev.profit) : null;
+
+  const KPIS = [
+    { id: "rev", label: "إيرادات الشهر", value: fmt(t.revenue), unit: "ر.س", delta: revDelta, up: revDelta >= 0, good: revDelta >= 0, icon: Banknote, color: "#059669" },
+    { id: "profit", label: "صافي الربح", value: fmt(t.profit), unit: "ر.س", sub: `هامش ${Math.round(t.margin)}%`, delta: profitDelta, up: profitDelta >= 0, good: profitDelta >= 0, icon: TrendingUp, color: "#16a34a" },
+    { id: "exp", label: "إجمالي التكلفة", value: fmt(t.cost), unit: "ر.س", icon: Receipt, color: "#ea580c" },
+    { id: "assets", label: "قيمة الأصول", value: fmt(assetsValue), unit: "ر.س", sub: "المملوكة", icon: Wallet, color: "#0891b2" },
+  ];
+
+  const OPS = [
+    { id: "workers", label: "العمّال النشطون", value: String(workersCount), sub: totalEmployees > 0 ? `من ${totalEmployees}` : "", icon: HardHat, color: "#ea580c" },
+    { id: "util", label: "نسبة الإشغال", value: String(util), suffix: "%", bar: Math.min(100, util), icon: Gauge, color: "#7c3aed" },
+    { id: "projects", label: "المشاريع النشطة", value: String(projectsCount), sub: "بنشاط", icon: FolderKanban, color: "#2563eb" },
+    { id: "wprofit", label: "متوسط ربحية العامل", value: fmt(avgWorkerProfit), unit: "ر.س/شهر", icon: UserRoundCheck, color: "#16a34a" },
+  ];
+
+  // المنحنى
+  const MONTHS = trend.map((m) => monthName(m.month));
+  const REVENUE = trend.map((m) => Math.round(m.revenue / 1000));
+  const PROFIT = trend.map((m) => Math.round(m.profit / 1000));
+
+  // أعلى المشاريع
+  const topRaw = ent ? ent.projects.filter((p) => p.profit > 0).slice(0, 5) : [];
+  const maxProfit = topRaw.length > 0 ? Math.max(...topRaw.map((p) => p.profit), 1) : 1;
+  const TOP_PROJECTS = topRaw.map((p) => ({ name: p.projectName || `مشروع #${p.projectNumber}`, value: fmt(p.profit), pct: Math.round((p.profit / maxProfit) * 100) }));
 
   // حساب مسارات المنحنى
   const W = 600, H = 175, PAD = 8;
-  const max = Math.max(...REVENUE) * 1.12;
-  const xAt = (i) => PAD + (i * (W - 2 * PAD)) / (MONTHS.length - 1);
+  const max = REVENUE.length > 0 ? Math.max(...REVENUE, 1) * 1.12 : 1;
+  const xAt = (i) => PAD + (i * (W - 2 * PAD)) / (Math.max(1, MONTHS.length - 1));
   const yAt = (v) => H - PAD - (v / max) * (H - 2 * PAD);
   const pts = (arr) => arr.map((v, i) => `${xAt(i)},${yAt(v)}`).join(" ");
-  const revArea =
-    `M ${xAt(0)},${H - PAD} L ` +
-    REVENUE.map((v, i) => `${xAt(i)},${yAt(v)}`).join(" L ") +
-    ` L ${xAt(MONTHS.length - 1)},${H - PAD} Z`;
+  const revArea = REVENUE.length > 0
+    ? `M ${xAt(0)},${H - PAD} L ` + REVENUE.map((v, i) => `${xAt(i)},${yAt(v)}`).join(" L ") + ` L ${xAt(MONTHS.length - 1)},${H - PAD} Z`
+    : "";
 
   return (
     <div className="ed-root">
@@ -155,121 +223,129 @@ export default function ExecutiveDashboard() {
           <div className="ed-title">لوحة المؤشرات</div>
           <div className="ed-sub">نظرة تنفيذية شاملة · الإدارة العليا</div>
         </div>
-        <button className="ed-period" onClick={() => setPeriod(period)}>
-          <Calendar size={16} /> هذا الشهر <ChevronDown size={15} />
-        </button>
+        <div className="ed-period" style={{ padding: 0, border: "none", background: "none" }}>
+          <input type="month" value={month} onChange={(e) => setMonth(e.target.value)} dir="ltr"
+            style={{ height: 42, padding: "0 15px", background: "#fff", border: "1px solid #dde2ec", borderRadius: 11, fontFamily: "inherit", fontSize: 13.5, fontWeight: 600, color: "#161b26", cursor: "pointer" }} />
+        </div>
       </div>
 
-      {/* KPI CARDS */}
-      <div className="ed-kpis">
-        {KPIS.map((k) => {
-          const Icon = k.icon;
-          return (
-            <div className="ed-kpi" key={k.id} style={{ "--c": k.color }}>
-              <div className="ed-kpi-top">
-                <div className="ed-kpi-ic"><Icon size={20} /></div>
-                <span className={`ed-delta ${k.good ? "good" : "bad"}`}>
-                  {k.up ? <ArrowUpRight size={13} /> : <ArrowDownRight size={13} />}
-                  {k.delta}
-                </span>
-              </div>
-              <div className="ed-kpi-label">{k.label}</div>
-              <div className="ed-kpi-val ed-num">
-                {k.value}<span className="u">{k.unit}</span>
-              </div>
-              {k.sub && <div className="ed-kpi-sub">{k.sub}</div>}
-            </div>
-          );
-        })}
-      </div>
+      {loading ? (
+        <p style={{ color: "#94a0b8", fontSize: 14 }}>جارٍ تحميل اللوحة...</p>
+      ) : error ? (
+        <div style={{ padding: "12px 16px", background: "#fee2e2", color: "#b91c1c", borderRadius: 10, fontSize: 14 }}>{error}</div>
+      ) : (
+        <>
+          {/* KPI CARDS */}
+          <div className="ed-kpis">
+            {KPIS.map((k) => {
+              const Icon = k.icon;
+              return (
+                <div className="ed-kpi" key={k.id} style={{ "--c": k.color }}>
+                  <div className="ed-kpi-top">
+                    <div className="ed-kpi-ic"><Icon size={20} /></div>
+                    {k.delta != null ? (
+                      <span className={`ed-delta ${k.good ? "good" : "bad"}`}>
+                        {k.up ? <ArrowUpRight size={13} /> : <ArrowDownRight size={13} />}
+                        {Math.abs(k.delta)}%
+                      </span>
+                    ) : null}
+                  </div>
+                  <div className="ed-kpi-label">{k.label}</div>
+                  <div className="ed-kpi-val ed-num">
+                    {k.value}<span className="u">{k.unit}</span>
+                  </div>
+                  {k.sub && <div className="ed-kpi-sub">{k.sub}</div>}
+                </div>
+              );
+            })}
+          </div>
 
-      {/* OPS */}
-      <div className="ed-ops">
-        {OPS.map((o) => {
-          const Icon = o.icon;
-          return (
-            <div className="ed-op" key={o.id} style={{ "--c": o.color }}>
-              <div className="ed-op-top">
-                <div className="ed-op-ic"><Icon size={18} /></div>
-                <span className="ed-op-label">{o.label}</span>
+          {/* OPS */}
+          <div className="ed-ops">
+            {OPS.map((o) => {
+              const Icon = o.icon;
+              return (
+                <div className="ed-op" key={o.id} style={{ "--c": o.color }}>
+                  <div className="ed-op-top">
+                    <div className="ed-op-ic"><Icon size={18} /></div>
+                    <span className="ed-op-label">{o.label}</span>
+                  </div>
+                  <div className="ed-op-val ed-num">
+                    {o.value}{o.suffix && <span>{o.suffix}</span>}
+                    {o.unit && <span className="s">{o.unit}</span>}
+                    {o.sub && <span className="s">{o.sub}</span>}
+                  </div>
+                  {o.bar != null && (
+                    <div className="ed-op-bar"><i style={{ width: `${o.bar}%` }} /></div>
+                  )}
+                </div>
+              );
+            })}
+          </div>
+
+          {/* CHARTS ROW */}
+          <div className="ed-row">
+            {/* المنحنى */}
+            <div className="ed-card">
+              <div className="ed-card-head">
+                <span className="ed-card-title">الإيراد والربح — آخر ٦ أشهر</span>
+                <div className="ed-legend">
+                  <span className="ed-leg"><b style={{ background: "#2563eb" }} /> الإيراد</span>
+                  <span className="ed-leg"><b style={{ background: "#16a34a" }} /> الربح</span>
+                </div>
               </div>
-              <div className="ed-op-val ed-num">
-                {o.value}{o.suffix && <span>{o.suffix}</span>}
-                {o.unit && <span className="s">{o.unit}</span>}
-                {o.sub && <span className="s">{o.sub}</span>}
-              </div>
-              {o.bar != null && (
-                <div className="ed-op-bar"><i style={{ width: `${o.bar}%` }} /></div>
+              {MONTHS.length === 0 ? <p style={{ color: "#94a0b8", fontSize: 13, padding: "20px 0" }}>لا توجد بيانات.</p> : (
+                <div className="ed-chart-wrap">
+                  <svg viewBox={`0 0 ${W} ${H}`} preserveAspectRatio="none">
+                    <defs>
+                      <linearGradient id="revFill" x1="0" y1="0" x2="0" y2="1">
+                        <stop offset="0" stopColor="#2563eb" stopOpacity="0.16" />
+                        <stop offset="1" stopColor="#2563eb" stopOpacity="0" />
+                      </linearGradient>
+                    </defs>
+                    {[0.25, 0.5, 0.75].map((g) => (
+                      <line key={g} x1={PAD} y1={H * g} x2={W - PAD} y2={H * g} stroke="#eef1f6" strokeWidth="1" />
+                    ))}
+                    {revArea ? <path d={revArea} fill="url(#revFill)" /> : null}
+                    <polyline points={pts(REVENUE)} fill="none" stroke="#2563eb" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round" />
+                    <polyline points={pts(PROFIT)} fill="none" stroke="#16a34a" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round" />
+                    {REVENUE.map((v, i) => (
+                      <circle key={"r" + i} cx={xAt(i)} cy={yAt(v)} r="3.5" fill="#fff" stroke="#2563eb" strokeWidth="2" />
+                    ))}
+                    {PROFIT.map((v, i) => (
+                      <circle key={"p" + i} cx={xAt(i)} cy={yAt(v)} r="3.5" fill="#fff" stroke="#16a34a" strokeWidth="2" />
+                    ))}
+                  </svg>
+                  <div className="ed-xlabels">
+                    {MONTHS.map((m, i) => <span key={i}>{m}</span>)}
+                  </div>
+                </div>
               )}
             </div>
-          );
-        })}
-      </div>
 
-      {/* CHARTS ROW */}
-      <div className="ed-row">
-
-        {/* المنحنى */}
-        <div className="ed-card">
-          <div className="ed-card-head">
-            <span className="ed-card-title">الإيراد والربح — آخر ٦ أشهر</span>
-            <div className="ed-legend">
-              <span className="ed-leg"><b style={{ background: "#2563eb" }} /> الإيراد</span>
-              <span className="ed-leg"><b style={{ background: "#16a34a" }} /> الربح</span>
-            </div>
-          </div>
-          <div className="ed-chart-wrap">
-            <svg viewBox={`0 0 ${W} ${H}`} preserveAspectRatio="none">
-              <defs>
-                <linearGradient id="revFill" x1="0" y1="0" x2="0" y2="1">
-                  <stop offset="0" stopColor="#2563eb" stopOpacity="0.16" />
-                  <stop offset="1" stopColor="#2563eb" stopOpacity="0" />
-                </linearGradient>
-              </defs>
-              {[0.25, 0.5, 0.75].map((g) => (
-                <line key={g} x1={PAD} y1={H * g} x2={W - PAD} y2={H * g}
-                  stroke="#eef1f6" strokeWidth="1" />
-              ))}
-              <path d={revArea} fill="url(#revFill)" />
-              <polyline points={pts(REVENUE)} fill="none" stroke="#2563eb"
-                strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round" />
-              <polyline points={pts(PROFIT)} fill="none" stroke="#16a34a"
-                strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round" />
-              {REVENUE.map((v, i) => (
-                <circle key={"r" + i} cx={xAt(i)} cy={yAt(v)} r="3.5" fill="#fff" stroke="#2563eb" strokeWidth="2" />
-              ))}
-              {PROFIT.map((v, i) => (
-                <circle key={"p" + i} cx={xAt(i)} cy={yAt(v)} r="3.5" fill="#fff" stroke="#16a34a" strokeWidth="2" />
-              ))}
-            </svg>
-            <div className="ed-xlabels">
-              {MONTHS.map((m) => <span key={m}>{m}</span>)}
-            </div>
-          </div>
-        </div>
-
-        {/* أعلى المشاريع */}
-        <div className="ed-card">
-          <div className="ed-card-head">
-            <span className="ed-card-title">أعلى ٥ مشاريع ربحية</span>
-          </div>
-          <div className="ed-proj">
-            {TOP_PROJECTS.map((p, i) => (
-              <div className="ed-proj-item" key={i}>
-                <div className="ed-proj-top">
-                  <div className="ed-proj-rank">
-                    <span className="ed-proj-n">{i + 1}</span>
-                    <span className="ed-proj-name">{p.name}</span>
-                  </div>
-                  <span className="ed-proj-val">{p.value}</span>
-                </div>
-                <div className="ed-proj-bar"><i style={{ width: `${p.pct}%` }} /></div>
+            {/* أعلى المشاريع */}
+            <div className="ed-card">
+              <div className="ed-card-head">
+                <span className="ed-card-title">أعلى ٥ مشاريع ربحية</span>
               </div>
-            ))}
+              <div className="ed-proj">
+                {TOP_PROJECTS.length === 0 ? <p style={{ color: "#94a0b8", fontSize: 13 }}>لا توجد مشاريع رابحة في هذا الشهر.</p> : TOP_PROJECTS.map((p, i) => (
+                  <div className="ed-proj-item" key={i}>
+                    <div className="ed-proj-top">
+                      <div className="ed-proj-rank">
+                        <span className="ed-proj-n">{i + 1}</span>
+                        <span className="ed-proj-name">{p.name}</span>
+                      </div>
+                      <span className="ed-proj-val">{p.value}</span>
+                    </div>
+                    <div className="ed-proj-bar"><i style={{ width: `${p.pct}%` }} /></div>
+                  </div>
+                ))}
+              </div>
+            </div>
           </div>
-        </div>
-
-      </div>
+        </>
+      )}
     </div>
   );
 }
