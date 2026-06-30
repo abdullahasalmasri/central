@@ -211,10 +211,11 @@ function OwnerDashboard({ user }) {
       {/* التبويبات */}
       <div style={styles.tabsBar}>
         <button style={tab === "clients" ? styles.tabOn : styles.tabOff} onClick={() => setTab("clients")}>👥 العملاء</button>
+        <button style={tab === "revenue" ? styles.tabOn : styles.tabOff} onClick={() => setTab("revenue")}>📈 الإيرادات</button>
         <button style={tab === "pricing" ? styles.tabOn : styles.tabOff} onClick={() => setTab("pricing")}>💲 التسعير</button>
       </div>
 
-      {tab === "pricing" ? <PricingTab /> : (
+      {tab === "pricing" ? <PricingTab /> : tab === "revenue" ? <RevenueTab data={data} loading={loading} /> : (
       <div style={styles.body}>
         <h1 style={styles.pageTitle}>لوحة العملاء</h1>
         <p style={styles.pageSub}>إدارة الشركات المشتركة وحالات اشتراكها.</p>
@@ -288,6 +289,101 @@ function OwnerDashboard({ user }) {
 
       {modal ? <EditModal tenant={modal} onClose={() => setModal(null)} onSaved={() => { setModal(null); loadData(); }} /> : null}
       {detailsTenant ? <DetailsModal tenantBrief={detailsTenant} onClose={() => setDetailsTenant(null)} /> : null}
+    </div>
+  );
+}
+
+// ═══════════ تبويب الإيرادات ═══════════
+function RevenueTab({ data, loading }) {
+  if (loading) return <div style={styles.body}><p style={styles.muted}>جارٍ التحميل...</p></div>;
+  if (!data) return <div style={styles.body}><div style={styles.warnBox}>تعذّر تحميل البيانات.</div></div>;
+
+  const tenants = data.tenants || [];
+  const s = data.summary || {};
+  const sumBy = (status) => tenants.filter((t) => t.subscriptionStatus === status).reduce((sum, t) => sum + (Number(t.subscriptionAmount) || 0), 0);
+
+  const activeRev = sumBy("active");      // محقّق فعليًا
+  const pendingRev = sumBy("pending");    // متوقّع (لو فُعّل)
+  const suspendedRev = sumBy("suspended"); // مفقود (موقوف)
+  const mrr = activeRev;                   // الإيراد الشهري المتكرر
+  const arr = mrr * 12;                    // السنوي المتكرر
+  const arpu = s.activeCount > 0 ? mrr / s.activeCount : 0; // متوسط لكل عميل
+
+  const totalPotential = activeRev + pendingRev + suspendedRev;
+  const barPct = (v) => (totalPotential > 0 ? (v / totalPotential) * 100 : 0);
+
+  // أكبر العملاء بالإيراد
+  const topClients = [...tenants].filter((t) => (Number(t.subscriptionAmount) || 0) > 0)
+    .sort((a, b) => (b.subscriptionAmount || 0) - (a.subscriptionAmount || 0)).slice(0, 10);
+  const maxAmount = topClients.length > 0 ? (topClients[0].subscriptionAmount || 0) : 0;
+
+  return (
+    <div style={styles.body}>
+      <h1 style={styles.pageTitle}>الإيرادات</h1>
+      <p style={styles.pageSub}>نظرة على دخلك المتكرر من اشتراكات العملاء.</p>
+
+      {/* KPIs */}
+      <div style={styles.kpiGrid}>
+        <div style={styles.kpiCard}><span style={styles.kpiLabel}>الإيراد الشهري المتكرر (MRR)</span><span style={{ ...styles.kpiValue, color: "#16a34a" }} dir="ltr">{fmt(mrr)}</span><span style={styles.kpiUnit}>ر.س / شهر</span></div>
+        <div style={styles.kpiCard}><span style={styles.kpiLabel}>الإيراد السنوي المتكرر (ARR)</span><span style={{ ...styles.kpiValue, color: "#0891b2" }} dir="ltr">{fmt(arr)}</span><span style={styles.kpiUnit}>ر.س / سنة</span></div>
+        <div style={styles.kpiCard}><span style={styles.kpiLabel}>متوسط الإيراد لكل عميل (ARPU)</span><span style={{ ...styles.kpiValue, color: "#6366f1" }} dir="ltr">{fmt(arpu)}</span><span style={styles.kpiUnit}>ر.س / عميل</span></div>
+        <div style={styles.kpiCard}><span style={styles.kpiLabel}>عملاء مدفوعون</span><span style={{ ...styles.kpiValue, color: "#16a34a" }}>{s.activeCount || 0}</span><span style={styles.kpiUnit}>من {s.totalTenants || 0}</span></div>
+      </div>
+
+      {/* توزيع الإيراد حسب الحالة */}
+      <div style={styles.revBlock}>
+        <div style={styles.revBlockTitle}>توزيع الإيراد حسب حالة الاشتراك</div>
+        <div style={styles.revRows}>
+          <RevStatusRow label="محقّق (نشط)" amount={activeRev} pct={barPct(activeRev)} color="#16a34a" />
+          <RevStatusRow label="متوقّع (قيد التفعيل)" amount={pendingRev} pct={barPct(pendingRev)} color="#ea580c" />
+          <RevStatusRow label="مفقود (موقوف)" amount={suspendedRev} pct={barPct(suspendedRev)} color="#dc2626" />
+        </div>
+        <div style={styles.revTotalRow}>
+          <span style={styles.revTotalLabel}>إجمالي الإمكانية (لو فُعّل الكل):</span>
+          <span style={styles.revTotalVal} dir="ltr">{fmt(totalPotential)} ر.س/شهر</span>
+        </div>
+      </div>
+
+      {/* أكبر العملاء */}
+      <div style={styles.revBlock}>
+        <div style={styles.revBlockTitle}>أكبر العملاء بالإيراد</div>
+        {topClients.length === 0 ? <p style={styles.dEmpty}>لا يوجد عملاء بمبالغ محدّدة بعد.</p> : (
+          <div style={styles.topList}>
+            {topClients.map((t, i) => {
+              const st = STATUS[t.subscriptionStatus] || STATUS.pending;
+              return (
+                <div key={t.id} style={styles.topRow}>
+                  <span style={styles.topRank}>{i + 1}</span>
+                  <div style={styles.topInfo}>
+                    <div style={styles.topName}>
+                      <span>{t.name}</span>
+                      <span style={{ ...styles.miniDot, background: st.dot }} />
+                    </div>
+                    <div style={styles.topBarTrack}>
+                      <div style={{ ...styles.topBarFill, width: `${maxAmount > 0 ? ((t.subscriptionAmount || 0) / maxAmount) * 100 : 0}%`, background: st.dot }} />
+                    </div>
+                  </div>
+                  <span style={styles.topAmount} dir="ltr">{fmt(t.subscriptionAmount)} ر.س</span>
+                </div>
+              );
+            })}
+          </div>
+        )}
+      </div>
+    </div>
+  );
+}
+
+function RevStatusRow({ label, amount, pct, color }) {
+  return (
+    <div style={styles.revRow}>
+      <div style={styles.revRowHead}>
+        <span style={styles.revRowLabel}>{label}</span>
+        <span style={{ ...styles.revRowAmount, color }} dir="ltr">{fmt(amount)} ر.س</span>
+      </div>
+      <div style={styles.revBarTrack}>
+        <div style={{ ...styles.revBarFill, width: `${pct}%`, background: color }} />
+      </div>
     </div>
   );
 }
@@ -641,6 +737,30 @@ const styles = {
   kpiCard: { background: "#fff", border: "1px solid #e2e8f0", borderRadius: 14, padding: "18px 22px", display: "flex", flexDirection: "column", gap: 8 },
   kpiLabel: { fontSize: 13, color: "#64748b", fontWeight: 600 },
   kpiValue: { fontSize: 28, fontWeight: 800, fontFamily: "monospace" },
+  kpiUnit: { fontSize: 12, color: "#94a3b8", fontWeight: 500 },
+
+  // الإيرادات
+  revBlock: { background: "#fff", border: "1px solid #e2e8f0", borderRadius: 14, padding: "20px 24px", marginBottom: 18 },
+  revBlockTitle: { fontSize: 16, fontWeight: 800, color: "#334155", marginBottom: 18 },
+  revRows: { display: "flex", flexDirection: "column", gap: 16 },
+  revRow: { display: "flex", flexDirection: "column", gap: 7 },
+  revRowHead: { display: "flex", justifyContent: "space-between", alignItems: "center" },
+  revRowLabel: { fontSize: 14, color: "#475569", fontWeight: 600 },
+  revRowAmount: { fontSize: 15, fontWeight: 800, fontFamily: "monospace" },
+  revBarTrack: { height: 12, background: "#f1f5f9", borderRadius: 6, overflow: "hidden" },
+  revBarFill: { height: "100%", borderRadius: 6, transition: "width .3s" },
+  revTotalRow: { display: "flex", justifyContent: "space-between", alignItems: "center", marginTop: 18, paddingTop: 16, borderTop: "2px solid #f1f5f9" },
+  revTotalLabel: { fontSize: 14, fontWeight: 700, color: "#334155" },
+  revTotalVal: { fontSize: 18, fontWeight: 800, color: "#0f172a", fontFamily: "monospace" },
+  topList: { display: "flex", flexDirection: "column", gap: 12 },
+  topRow: { display: "flex", alignItems: "center", gap: 14 },
+  topRank: { width: 26, height: 26, flexShrink: 0, borderRadius: "50%", background: "#eef2ff", color: "#6366f1", fontSize: 13, fontWeight: 800, display: "flex", alignItems: "center", justifyContent: "center", fontFamily: "monospace" },
+  topInfo: { flex: 1, minWidth: 0 },
+  topName: { display: "flex", alignItems: "center", gap: 8, fontSize: 14, fontWeight: 700, color: "#0f172a", marginBottom: 6 },
+  miniDot: { width: 8, height: 8, borderRadius: "50%", flexShrink: 0 },
+  topBarTrack: { height: 8, background: "#f1f5f9", borderRadius: 5, overflow: "hidden" },
+  topBarFill: { height: "100%", borderRadius: 5, opacity: 0.75 },
+  topAmount: { fontSize: 14, fontWeight: 800, color: "#16a34a", fontFamily: "monospace", flexShrink: 0, minWidth: 90, textAlign: "left" },
 
   tools: { display: "flex", gap: 12, marginBottom: 18, flexWrap: "wrap", alignItems: "center" },
   search: { flex: 1, minWidth: 200, padding: "11px 14px", fontSize: 14, border: "1px solid #cbd5e1", borderRadius: 10, boxSizing: "border-box", fontFamily: "inherit" },
