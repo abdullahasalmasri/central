@@ -34,6 +34,7 @@ import DepreciationView         from "./DepreciationView";
 import AssetsView              from "./AssetsView";
 import CostProfitabilityView   from "./CostProfitabilityView";
 import CostOverviewView        from "./CostOverviewView";
+import CostAllocationView      from "./CostAllocationView";
 import SalesView                from "./SalesView";
 import MarketingView            from "./MarketingView";
 import CustomerServiceView      from "./CustomerServiceView";
@@ -85,6 +86,7 @@ const views = {
   as_dep:        DepreciationView,
   cost_full:     CostOverviewView,
   cost_prof:     CostProfitabilityView,
+  cost_alloc:    CostAllocationView,
 
   // المبيعات والتسويق
   sal_dir:       SalesView,
