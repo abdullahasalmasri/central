@@ -40,6 +40,7 @@ const COLLECTIONS = {
   OPERATION_TASKS: "operationTasks",
   PROJECT_MILESTONES: "projectMilestones",
   QUALITY_INSPECTIONS: "qualityInspections",
+  PROJECT_BUDGETS: "projectBudgets",
 };
 
 const ROLES = {
@@ -1494,6 +1495,23 @@ function buildInspectionDoc({
   };
 }
 
+// ===== موازنة المشروع المخطّطة (مفصّلة لكل بند) =====
+function buildBudgetDoc({
+  tenantId, projectId, budgetPeople, budgetFacilities, budgetMaterials, targetRevenue,
+  updatedBy, updatedAt,
+}) {
+  return {
+    tenantId,
+    projectId: projectId,
+    budgetPeople: Number(budgetPeople) || 0,        // ميزانية الأفراد
+    budgetFacilities: Number(budgetFacilities) || 0, // ميزانية المرافق
+    budgetMaterials: Number(budgetMaterials) || 0,   // ميزانية المواد
+    targetRevenue: Number(targetRevenue) || 0,       // الإيراد المستهدف
+    updatedBy: updatedBy || null,
+    updatedAt,
+  };
+}
+
 function buildProjectTypeDoc({ tenantId, name, code, description, isSystem, createdBy, createdAt }) {
   return {
     tenantId,
@@ -1877,6 +1895,7 @@ module.exports = {
   buildOperationTaskDoc,
   buildMilestoneDoc,
   buildInspectionDoc,
+  buildBudgetDoc,
   computeInvoiceTotals,
   buildProjectTypeDoc,
   buildProjectDoc,

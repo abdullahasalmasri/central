@@ -28,6 +28,7 @@ import PeopleView              from "./PeopleView";
 import FacilitiesView          from "./FacilitiesView";
 import MaterialsView           from "./MaterialsView";
 import ProcessesView           from "./ProcessesView";
+import PlanningView            from "./PlanningView";
 import QualitySafetyView        from "./QualitySafetyView";
 import DepreciationView         from "./DepreciationView";
 import SalesView                from "./SalesView";
@@ -70,6 +71,7 @@ const views = {
   ops_facilities: FacilitiesView,
   ops_materials: MaterialsView,
   ops_process:   ProcessesView,
+  ops_planning:  PlanningView,
   ops_qs:        QualitySafetyView,
 
   // الأصول والمرافق

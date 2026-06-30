@@ -56,6 +56,7 @@ const {
   buildOperationTaskDoc,
   buildMilestoneDoc,
   buildInspectionDoc,
+  buildBudgetDoc,
   computeInvoiceTotals,
   validatePermissions,
   isValidTime,
@@ -4536,6 +4537,147 @@ exports.deleteInspection = onCall(async (request) => {
     if (err instanceof HttpsError) throw err;
     console.error("deleteInspection failed:", err);
     throw new HttpsError("internal", "تعذّر حذف الفحص، حاول مرة أخرى.");
+  }
+});
+
+// ═══════════════════════════════════════════════════════
+// ===== التخطيط والرقابة (ربحية المشروع + الموازنة) =====
+// ═══════════════════════════════════════════════════════
+
+// helper داخلي: تكاليف وإيرادات الأفراد لكل مشروع (مع التوزيع و OT)
+async function computePeopleByProject(tenantId) {
+  const round2 = (n) => Math.round((Number(n) || 0) * 100) / 100;
+  const cap = 26 * 8; // السقف الشهري
+  const snap = await db.collection(COLLECTIONS.EMPLOYEE_ASSIGNMENTS)
+    .where("tenantId", "==", tenantId).where("status", "==", "active").get();
+  const all = snap.docs.map((d) => ({ id: d.id, ...d.data() }));
+  const byEmp = new Map();
+  for (const a of all) { if (!byEmp.has(a.employeeId)) byEmp.set(a.employeeId, []); byEmp.get(a.employeeId).push(a); }
+  const empData = new Map();
+  for (const eid of byEmp.keys()) {
+    const e = await db.collection(COLLECTIONS.EMPLOYEES).doc(eid).get();
+    if (e.exists && e.data().tenantId === tenantId) empData.set(eid, e.data());
+  }
+  const byProject = {};
+  for (const [eid, list] of byEmp.entries()) {
+    const emp = empData.get(eid) || {};
+    const baseCost = (emp.salary && emp.salary.total) || 0;
+    const govFees = (emp.costing && emp.costing.governmentFees) || 0;
+    const otRate = (emp.costing && emp.costing.otHourlyRate) || 0;
+    const N = list.length;
+    const totalHours = list.reduce((s, a) => s + (Number(a.monthlyHours) || 0), 0);
+    const otCost = Math.max(0, totalHours - cap) * otRate;
+    for (const a of list) {
+      const cost = baseCost / N + govFees / N + otCost / N + (Number(a.targetProfit) || 0);
+      if (!byProject[a.projectId]) byProject[a.projectId] = { cost: 0, revenue: 0 };
+      byProject[a.projectId].cost += cost;
+      byProject[a.projectId].revenue += Number(a.rentalPrice) || 0;
+    }
+  }
+  for (const k in byProject) { byProject[k].cost = round2(byProject[k].cost); byProject[k].revenue = round2(byProject[k].revenue); }
+  return byProject;
+}
+
+// helper داخلي: تكاليف وإيرادات المرافق لكل مشروع (مع التوزيع)
+async function computeAssetsByProject(tenantId) {
+  const round2 = (n) => Math.round((Number(n) || 0) * 100) / 100;
+  const snap = await db.collection(COLLECTIONS.ASSET_ASSIGNMENTS)
+    .where("tenantId", "==", tenantId).where("status", "==", "active").get();
+  const all = snap.docs.map((d) => ({ id: d.id, ...d.data() }));
+  const byAsset = new Map();
+  for (const a of all) { if (!byAsset.has(a.assetId)) byAsset.set(a.assetId, []); byAsset.get(a.assetId).push(a); }
+  const byProject = {};
+  for (const [, list] of byAsset.entries()) {
+    const N = list.length;
+    for (const a of list) {
+      if (!byProject[a.projectId]) byProject[a.projectId] = { cost: 0, revenue: 0 };
+      byProject[a.projectId].cost += (Number(a.monthlyCost) || 0) / N;
+      byProject[a.projectId].revenue += Number(a.rentalPrice) || 0;
+    }
+  }
+  for (const k in byProject) { byProject[k].cost = round2(byProject[k].cost); byProject[k].revenue = round2(byProject[k].revenue); }
+  return byProject;
+}
+
+// ===== حفظ/تحديث موازنة مشروع =====
+exports.setBudget = onCall(async (request) => {
+  try {
+    const callerTenantId = await requireModule(request.auth, MODULES.PROJECTS);
+    const data = request.data || {};
+    const projectId = typeof data.projectId === "string" ? data.projectId.trim() : "";
+    if (!projectId) throw new HttpsError("invalid-argument", "يجب تحديد المشروع.");
+    const proj = await db.collection(COLLECTIONS.PROJECTS).doc(projectId).get();
+    if (!proj.exists || proj.data().tenantId !== callerTenantId) throw new HttpsError("invalid-argument", "المشروع غير صحيح.");
+
+    const ref = db.collection(COLLECTIONS.PROJECT_BUDGETS).doc(projectId);
+    await ref.set(buildBudgetDoc({
+      tenantId: callerTenantId, projectId,
+      budgetPeople: data.budgetPeople, budgetFacilities: data.budgetFacilities,
+      budgetMaterials: data.budgetMaterials, targetRevenue: data.targetRevenue,
+      updatedBy: request.auth.uid, updatedAt: FieldValue.serverTimestamp(),
+    }));
+    return { projectId, saved: true };
+  } catch (err) {
+    if (err instanceof HttpsError) throw err;
+    console.error("setBudget failed:", err);
+    throw new HttpsError("internal", "تعذّر حفظ الموازنة، حاول مرة أخرى.");
+  }
+});
+
+// ===== ربحية المشروع: الفعلي (تلقائي) + الموازنة + الانحراف =====
+exports.getProjectProfitability = onCall(async (request) => {
+  try {
+    const callerTenantId = await requireModule(request.auth, MODULES.PROJECTS);
+    const data = request.data || {};
+    const projectId = typeof data.projectId === "string" ? data.projectId.trim() : "";
+    if (!projectId) throw new HttpsError("invalid-argument", "يجب تحديد المشروع.");
+    const round2 = (n) => Math.round((Number(n) || 0) * 100) / 100;
+
+    // الفعلي (تلقائي من الأفراد + المرافق + المواد)
+    const [peopleMap, assetsMap] = await Promise.all([
+      computePeopleByProject(callerTenantId),
+      computeAssetsByProject(callerTenantId),
+    ]);
+    const people = peopleMap[projectId] || { cost: 0, revenue: 0 };
+    const facilities = assetsMap[projectId] || { cost: 0, revenue: 0 };
+
+    const matSnap = await db.collection(COLLECTIONS.MATERIAL_ALLOCATIONS)
+      .where("tenantId", "==", callerTenantId).where("projectId", "==", projectId).where("status", "==", "active").get();
+    let matCost = 0, matRev = 0;
+    matSnap.docs.forEach((d) => { const m = d.data(); matCost += Number(m.totalCost) || 0; matRev += Number(m.totalSell) || 0; });
+    matCost = round2(matCost); matRev = round2(matRev);
+
+    const actual = {
+      people: people.cost, facilities: facilities.cost, materials: matCost,
+      totalCost: round2(people.cost + facilities.cost + matCost),
+      peopleRev: people.revenue, facilitiesRev: facilities.revenue, materialsRev: matRev,
+      totalRevenue: round2(people.revenue + facilities.revenue + matRev),
+    };
+    actual.netProfit = round2(actual.totalRevenue - actual.totalCost);
+    actual.margin = actual.totalRevenue > 0 ? round2((actual.netProfit / actual.totalRevenue) * 100) : 0;
+
+    // الموازنة المخطّطة
+    const budSnap = await db.collection(COLLECTIONS.PROJECT_BUDGETS).doc(projectId).get();
+    const b = budSnap.exists ? budSnap.data() : {};
+    const bp = Number(b.budgetPeople) || 0, bf = Number(b.budgetFacilities) || 0, bm = Number(b.budgetMaterials) || 0, tr = Number(b.targetRevenue) || 0;
+    const budgetTotalCost = round2(bp + bf + bm);
+
+    return {
+      projectId,
+      actual,
+      budget: { people: bp, facilities: bf, materials: bm, totalCost: budgetTotalCost, targetRevenue: tr, hasBudget: budSnap.exists },
+      variance: {
+        people: round2(bp - actual.people),           // موجب = تحت الميزانية (جيد)
+        facilities: round2(bf - actual.facilities),
+        materials: round2(bm - actual.materials),
+        totalCost: round2(budgetTotalCost - actual.totalCost),
+        revenue: round2(actual.totalRevenue - tr),     // موجب = فوق المستهدف (جيد)
+      },
+    };
+  } catch (err) {
+    if (err instanceof HttpsError) throw err;
+    console.error("getProjectProfitability failed:", err);
+    throw new HttpsError("internal", "تعذّر حساب الربحية، حاول مرة أخرى.");
   }
 });
 
