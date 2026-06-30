@@ -78,6 +78,10 @@ const {
   buildImprovementDoc,
   buildProductDoc,
   buildStockMovementDoc,
+  buildSalesOrderDoc,
+  ALL_PAYMENT_METHOD,
+  PAYMENT_METHOD,
+  POS_VAT_RATE,
   ALL_STOCK_MOVEMENT_TYPE,
   STOCK_MOVEMENT_TYPE,
   ALL_IMPROVEMENT_STATUS,
@@ -8983,6 +8987,191 @@ exports.getInventory = onCall(async (request) => {
     if (err instanceof HttpsError) throw err;
     console.error("getInventory failed:", err);
     throw new HttpsError("internal", "تعذّر تحميل بيانات المخزون.");
+  }
+});
+
+// ═══════════════════════════════════════════════════════
+// ===== نقاط البيع (POS) =====
+// ═══════════════════════════════════════════════════════
+
+// تنفيذ بيع: يخصم من المخزون وينشئ أمر بيع
+// data: { items:[{productId, qty}], discount, paymentMethod, amountPaid, customerName }
+exports.createSale = onCall(async (request) => {
+  try {
+    const callerTenantId = await requireModule(request.auth, MODULES.POS);
+    const data = request.data || {};
+    const round2 = (n) => Math.round((Number(n) || 0) * 100) / 100;
+
+    const rawItems = Array.isArray(data.items) ? data.items : [];
+    if (rawItems.length === 0) throw new HttpsError("invalid-argument", "السلّة فارغة.");
+    if (rawItems.length > 100) throw new HttpsError("invalid-argument", "عدد الأصناف كبير جدًا.");
+
+    // تجميع الكميات حسب الصنف (لو تكرّر)
+    const qtyByProduct = {};
+    for (const it of rawItems) {
+      const pid = typeof it.productId === "string" ? it.productId.trim() : "";
+      const qty = Number(it.qty);
+      if (!pid) throw new HttpsError("invalid-argument", "صنف غير صالح في السلّة.");
+      if (!Number.isFinite(qty) || qty <= 0) throw new HttpsError("invalid-argument", "كمية غير صحيحة في السلّة.");
+      qtyByProduct[pid] = (qtyByProduct[pid] || 0) + qty;
+    }
+    const productIds = Object.keys(qtyByProduct);
+
+    const discount = Number(data.discount) || 0;
+    if (discount < 0) throw new HttpsError("invalid-argument", "الخصم غير صحيح.");
+    const paymentMethod = ALL_PAYMENT_METHOD.includes(data.paymentMethod) ? data.paymentMethod : PAYMENT_METHOD.CASH;
+
+    // اسم الكاشير
+    let cashierName = null;
+    try {
+      const userDoc = await db.collection(COLLECTIONS.USERS).doc(request.auth.uid).get();
+      cashierName = userDoc.exists ? (userDoc.data().name || null) : null;
+    } catch (e) { cashierName = null; }
+
+    const tenantRef = db.collection(COLLECTIONS.TENANTS).doc(callerTenantId);
+    const orderRef = db.collection(COLLECTIONS.SALES_ORDERS).doc();
+
+    const result = await db.runTransaction(async (tx) => {
+      // === كل القراءات أولًا ===
+      const tenantSnap = await tx.get(tenantRef);
+      if (!tenantSnap.exists) throw new HttpsError("failed-precondition", "الشركة غير موجودة.");
+
+      const productRefs = productIds.map((id) => db.collection(COLLECTIONS.PRODUCTS).doc(id));
+      const productSnaps = await Promise.all(productRefs.map((r) => tx.get(r)));
+
+      const lineItems = [];
+      let subtotal = 0;
+      const stockUpdates = []; // {ref, newQty, name, qty}
+
+      for (let i = 0; i < productIds.length; i++) {
+        const snap = productSnaps[i];
+        const pid = productIds[i];
+        const qty = qtyByProduct[pid];
+        if (!snap.exists || snap.data().tenantId !== callerTenantId) throw new HttpsError("invalid-argument", "أحد الأصناف غير موجود.");
+        const p = snap.data();
+        if (p.active === false) throw new HttpsError("failed-precondition", `الصنف «${p.name}» غير متاح للبيع.`);
+
+        const unitPrice = Number(p.salePrice) || 0;
+        const lineTotal = round2(unitPrice * qty);
+        subtotal = round2(subtotal + lineTotal);
+        lineItems.push({ productId: pid, name: p.name, qty: qty, unitPrice: unitPrice, lineTotal: lineTotal, isService: !!p.isService });
+
+        // المنتجات تُخصم من المخزون (الخدمات لا)
+        if (!p.isService) {
+          const current = Number(p.quantity) || 0;
+          if (qty > current) throw new HttpsError("failed-precondition", `الكمية المطلوبة من «${p.name}» (${qty}) أكبر من المتوفّر (${current}).`);
+          stockUpdates.push({ ref: productRefs[i], newQty: round2(current - qty), name: p.name, qty: qty });
+        }
+      }
+
+      if (discount > subtotal) throw new HttpsError("invalid-argument", "الخصم أكبر من الإجمالي.");
+      const taxable = round2(subtotal - discount);
+      const vatAmount = round2(taxable * (POS_VAT_RATE / 100));
+      const total = round2(taxable + vatAmount);
+      const amountPaid = data.amountPaid != null ? Number(data.amountPaid) : total;
+      if (!Number.isFinite(amountPaid) || amountPaid < 0) throw new HttpsError("invalid-argument", "المبلغ المدفوع غير صحيح.");
+      const change = round2(Math.max(0, amountPaid - total));
+
+      const nextNumber = (tenantSnap.data().lastSaleNumber || 0) + 1;
+
+      // === كل الكتابات ===
+      tx.set(orderRef, buildSalesOrderDoc({
+        tenantId: callerTenantId,
+        orderNumber: nextNumber,
+        items: lineItems,
+        subtotal: subtotal,
+        discount: discount,
+        vatRate: POS_VAT_RATE,
+        vatAmount: vatAmount,
+        total: total,
+        paymentMethod: paymentMethod,
+        amountPaid: amountPaid,
+        change: change,
+        customerName: typeof data.customerName === "string" ? data.customerName : null,
+        cashierName: cashierName,
+        createdBy: request.auth.uid,
+        createdAt: FieldValue.serverTimestamp(),
+      }));
+      tx.update(tenantRef, { lastSaleNumber: nextNumber });
+
+      // خصم المخزون + حركات
+      for (const su of stockUpdates) {
+        tx.update(su.ref, { quantity: su.newQty, updatedAt: FieldValue.serverTimestamp() });
+        const mvRef = db.collection(COLLECTIONS.STOCK_MOVEMENTS).doc();
+        tx.set(mvRef, buildStockMovementDoc({
+          tenantId: callerTenantId,
+          productId: su.ref.id,
+          productName: su.name,
+          type: STOCK_MOVEMENT_TYPE.OUT,
+          quantity: su.qty,
+          balanceAfter: su.newQty,
+          reason: `بيع #${nextNumber}`,
+          source: "pos",
+          note: null,
+          createdBy: request.auth.uid,
+          createdAt: FieldValue.serverTimestamp(),
+        }));
+      }
+
+      return { orderNumber: nextNumber, total: total, change: change, vatAmount: vatAmount, subtotal: subtotal };
+    });
+
+    return { id: orderRef.id, ...result };
+  } catch (err) {
+    if (err instanceof HttpsError) throw err;
+    console.error("createSale failed:", err);
+    throw new HttpsError("internal", "تعذّر إتمام البيع.");
+  }
+});
+
+// بيانات POS: الأصناف المتاحة للبيع + مبيعات اليوم + الملخّص
+exports.getPOSData = onCall(async (request) => {
+  try {
+    const callerTenantId = await requireModule(request.auth, MODULES.POS);
+    const round2 = (n) => Math.round((Number(n) || 0) * 100) / 100;
+    const toMs = (ts) => (ts && ts.toMillis ? ts.toMillis() : null);
+    const todayStart = new Date(); todayStart.setHours(0, 0, 0, 0);
+    const todayMs = todayStart.getTime();
+
+    const [productSnap, orderSnap] = await Promise.all([
+      db.collection(COLLECTIONS.PRODUCTS).where("tenantId", "==", callerTenantId).get(),
+      db.collection(COLLECTIONS.SALES_ORDERS).where("tenantId", "==", callerTenantId).get(),
+    ]);
+
+    // الأصناف المتاحة للبيع (نشطة)
+    const products = productSnap.docs
+      .map((d) => {
+        const p = d.data();
+        return { id: d.id, name: p.name, sku: p.sku, category: p.category, unit: p.unit, salePrice: Number(p.salePrice) || 0, quantity: Number(p.quantity) || 0, isService: !!p.isService, active: p.active !== false };
+      })
+      .filter((p) => p.active)
+      .sort((a, b) => (a.name || "").localeCompare(b.name || ""));
+
+    const orders = orderSnap.docs.map((d) => {
+      const o = d.data();
+      return { id: d.id, ...o, createdAt: toMs(o.createdAt) };
+    });
+    orders.sort((a, b) => (b.orderNumber || 0) - (a.orderNumber || 0));
+
+    // مبيعات اليوم
+    const todayOrders = orders.filter((o) => o.createdAt && o.createdAt >= todayMs);
+    const todaySales = round2(todayOrders.reduce((s, o) => s + (Number(o.total) || 0), 0));
+    const todayVat = round2(todayOrders.reduce((s, o) => s + (Number(o.vatAmount) || 0), 0));
+
+    return {
+      products,
+      recentOrders: orders.slice(0, 20),
+      summary: {
+        todayCount: todayOrders.length,
+        todaySales: todaySales,
+        todayVat: todayVat,
+        totalOrders: orders.length,
+      },
+    };
+  } catch (err) {
+    if (err instanceof HttpsError) throw err;
+    console.error("getPOSData failed:", err);
+    throw new HttpsError("internal", "تعذّر تحميل بيانات نقاط البيع.");
   }
 });
 

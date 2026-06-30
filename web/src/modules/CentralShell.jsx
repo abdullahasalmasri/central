@@ -34,6 +34,7 @@ const NAV = [
     { id: "fin_treas", name: "الخزينة",           file: "TreasuryView.jsx" },
     { id: "fin_fpa",   name: "التخطيط والتحليل",  file: "FPAView.jsx" },
     { id: "fin_proc",  name: "المشتريات",         file: "ProcurementView.jsx" },
+    { id: "fin_pos",   name: "نقاط البيع (POS)",  file: "POSView.jsx" },
   ]},
   { type: "section", id: "hr", name: "الموارد البشرية", icon: Users, color: "#2563eb", children: [
     { id: "hr_emp",   name: "شؤون الموظفين",   file: null },

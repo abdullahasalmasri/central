@@ -2409,6 +2409,39 @@ function buildStockMovementDoc({
   };
 }
 
+// --- أوامر البيع (POS) ---
+const PAYMENT_METHOD = {
+  CASH: "cash",         // نقدي
+  CARD: "card",         // شبكة/بطاقة
+  TRANSFER: "transfer", // تحويل
+};
+const ALL_PAYMENT_METHOD = Object.values(PAYMENT_METHOD);
+const POS_VAT_RATE = 15; // ضريبة القيمة المضافة
+
+// بناء وثيقة أمر بيع
+function buildSalesOrderDoc({
+  tenantId, orderNumber, items, subtotal, discount, vatRate, vatAmount, total,
+  paymentMethod, amountPaid, change, customerName, cashierName, createdBy, createdAt,
+}) {
+  return {
+    tenantId: tenantId,
+    orderNumber: Number(orderNumber) || 0,
+    items: Array.isArray(items) ? items : [], // [{productId, name, qty, unitPrice, lineTotal, isService}]
+    subtotal: Number(subtotal) || 0,
+    discount: Number(discount) || 0,
+    vatRate: Number(vatRate) || 0,
+    vatAmount: Number(vatAmount) || 0,
+    total: Number(total) || 0,
+    paymentMethod: ALL_PAYMENT_METHOD.includes(paymentMethod) ? paymentMethod : PAYMENT_METHOD.CASH,
+    amountPaid: Number(amountPaid) || 0,
+    change: Number(change) || 0,
+    customerName: (customerName || "").trim() || null,
+    cashierName: cashierName || null,
+    createdBy: createdBy || null,
+    createdAt: createdAt,
+  };
+}
+
 module.exports = {
   COLLECTIONS,
   ROLES,
@@ -2521,6 +2554,10 @@ module.exports = {
   buildImprovementDoc,
   buildProductDoc,
   buildStockMovementDoc,
+  buildSalesOrderDoc,
+  PAYMENT_METHOD,
+  ALL_PAYMENT_METHOD,
+  POS_VAT_RATE,
   STOCK_MOVEMENT_TYPE,
   ALL_STOCK_MOVEMENT_TYPE,
   IMPROVEMENT_STATUS,
