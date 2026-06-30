@@ -41,6 +41,7 @@ const COLLECTIONS = {
   PROJECT_MILESTONES: "projectMilestones",
   QUALITY_INSPECTIONS: "qualityInspections",
   PROJECT_BUDGETS: "projectBudgets",
+  DEALS: "deals",
 };
 
 const ROLES = {
@@ -58,6 +59,7 @@ const MODULES = {
   PROJECTS: "projects",
   OPERATIONS: "operations",
   ASSETS: "assets",
+  SALES: "sales",
 };
 
 const ALL_MODULES = Object.values(MODULES);
@@ -1890,6 +1892,57 @@ function buildFinanceApprovalDoc({
   };
 }
 
+// ===== المبيعات: الصفقات (خط الأنابيب) =====
+const DEAL_STAGES = {
+  CONTACT: "contact",         // تواصل أولي
+  PROPOSAL: "proposal",       // عرض
+  NEGOTIATION: "negotiation", // تفاوض
+  CLOSING: "closing",         // إغلاق
+};
+const ALL_DEAL_STAGES = Object.values(DEAL_STAGES);
+
+const DEAL_STATUS = {
+  ACTIVE: "active", // قيد العمل
+  WON: "won",       // فوز (تحوّل لعقد)
+  LOST: "lost",     // خسارة
+};
+const ALL_DEAL_STATUS = Object.values(DEAL_STATUS);
+
+const DEAL_SOURCES = {
+  REFERRAL: "referral",     // توصية
+  WEBSITE: "website",       // الموقع
+  CAMPAIGN: "campaign",     // حملة تسويقية
+  COLD: "cold",             // تواصل بارد
+  EXISTING: "existing",     // عميل حالي
+  OTHER: "other",
+};
+const ALL_DEAL_SOURCES = Object.values(DEAL_SOURCES);
+
+// بناء وثيقة صفقة (عميل محتمل في خط الأنابيب)
+function buildDealDoc({
+  tenantId, dealNumber, name, customerName, contactPerson, contactPhone,
+  value, stage, rep, source, expectedCloseDate, notes, status,
+  createdBy, createdAt,
+}) {
+  return {
+    tenantId: tenantId,
+    dealNumber: Number(dealNumber) || 0,
+    name: (name || "").trim(),                  // "توريد عمالة — نيوم"
+    customerName: customerName || null,         // اسم العميل/الشركة المحتملة
+    contactPerson: contactPerson || null,       // الشخص المسؤول
+    contactPhone: contactPhone || null,
+    value: Number(value) || 0,                  // القيمة المتوقّعة
+    stage: ALL_DEAL_STAGES.includes(stage) ? stage : DEAL_STAGES.CONTACT,
+    rep: rep || null,                           // المندوب المسؤول
+    source: ALL_DEAL_SOURCES.includes(source) ? source : DEAL_SOURCES.OTHER,
+    expectedCloseDate: expectedCloseDate || null,
+    notes: notes || null,
+    status: ALL_DEAL_STATUS.includes(status) ? status : DEAL_STATUS.ACTIVE,
+    createdBy: createdBy || null,
+    createdAt: createdAt,
+  };
+}
+
 module.exports = {
   COLLECTIONS,
   ROLES,
@@ -1980,6 +2033,12 @@ module.exports = {
   buildMilestoneDoc,
   buildInspectionDoc,
   buildBudgetDoc,
+  buildDealDoc,
+  DEAL_STAGES,
+  ALL_DEAL_STAGES,
+  DEAL_STATUS,
+  ALL_DEAL_STATUS,
+  DEAL_SOURCES,
   computeInvoiceTotals,
   buildProjectTypeDoc,
   buildProjectDoc,

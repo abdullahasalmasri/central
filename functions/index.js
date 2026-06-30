@@ -57,6 +57,11 @@ const {
   buildMilestoneDoc,
   buildInspectionDoc,
   buildBudgetDoc,
+  buildDealDoc,
+  DEAL_STAGES,
+  ALL_DEAL_STAGES,
+  DEAL_STATUS,
+  ALL_DEAL_STATUS,
   computeInvoiceTotals,
   validatePermissions,
   isValidTime,
@@ -6817,6 +6822,176 @@ exports.setUserPermissions = onCall(async (request) => {
     if (err instanceof HttpsError) throw err;
     console.error("setUserPermissions failed:", err);
     throw new HttpsError("internal", "تعذّر تحديث الصلاحيات، حاول مرة أخرى.");
+  }
+});
+
+// ═══════════════════════════════════════════════════════
+// ===== المبيعات (الصفقات / خط الأنابيب) =====
+// ═══════════════════════════════════════════════════════
+
+// إنشاء صفقة
+exports.createDeal = onCall(async (request) => {
+  try {
+    const callerTenantId = await requireModule(request.auth, MODULES.SALES);
+    const data = request.data || {};
+    const name = typeof data.name === "string" ? data.name.trim() : "";
+    if (name.length < 2) throw new HttpsError("invalid-argument", "اسم الصفقة مطلوب (حرفان على الأقل).");
+    const value = Number(data.value) || 0;
+    if (value < 0) throw new HttpsError("invalid-argument", "القيمة غير صحيحة.");
+
+    const tenantRef = db.collection(COLLECTIONS.TENANTS).doc(callerTenantId);
+    const dealRef = db.collection(COLLECTIONS.DEALS).doc();
+    const result = await db.runTransaction(async (tx) => {
+      const tenantSnap = await tx.get(tenantRef);
+      if (!tenantSnap.exists) throw new HttpsError("failed-precondition", "الشركة غير موجودة.");
+      const nextNumber = (tenantSnap.data().lastDealNumber || 0) + 1;
+      const dealDoc = buildDealDoc({
+        tenantId: callerTenantId,
+        dealNumber: nextNumber,
+        name: name,
+        customerName: typeof data.customerName === "string" ? data.customerName.trim() : null,
+        contactPerson: typeof data.contactPerson === "string" ? data.contactPerson.trim() : null,
+        contactPhone: typeof data.contactPhone === "string" ? data.contactPhone.trim() : null,
+        value: value,
+        stage: data.stage,
+        rep: typeof data.rep === "string" ? data.rep.trim() : null,
+        source: data.source,
+        expectedCloseDate: typeof data.expectedCloseDate === "string" && isValidDate(data.expectedCloseDate) ? data.expectedCloseDate : null,
+        notes: typeof data.notes === "string" ? data.notes.trim() : null,
+        status: DEAL_STATUS.ACTIVE,
+        createdBy: request.auth.uid,
+        createdAt: FieldValue.serverTimestamp(),
+      });
+      tx.set(dealRef, dealDoc);
+      tx.update(tenantRef, { lastDealNumber: nextNumber });
+      return { dealNumber: nextNumber };
+    });
+    return { id: dealRef.id, dealNumber: result.dealNumber, name: name };
+  } catch (err) {
+    if (err instanceof HttpsError) throw err;
+    console.error("createDeal failed:", err);
+    throw new HttpsError("internal", "تعذّر إنشاء الصفقة.");
+  }
+});
+
+// تعديل صفقة (المرحلة، الحالة، البيانات)
+exports.updateDeal = onCall(async (request) => {
+  try {
+    const callerTenantId = await requireModule(request.auth, MODULES.SALES);
+    const data = request.data || {};
+    const dealId = typeof data.dealId === "string" ? data.dealId.trim() : "";
+    if (!dealId) throw new HttpsError("invalid-argument", "يجب تحديد الصفقة.");
+
+    const ref = db.collection(COLLECTIONS.DEALS).doc(dealId);
+    const doc = await ref.get();
+    if (!doc.exists || doc.data().tenantId !== callerTenantId) throw new HttpsError("invalid-argument", "الصفقة غير موجودة.");
+
+    const update = {};
+    if (typeof data.name === "string") {
+      const n = data.name.trim();
+      if (n.length < 2) throw new HttpsError("invalid-argument", "اسم الصفقة قصير.");
+      update.name = n;
+    }
+    if (typeof data.customerName === "string") update.customerName = data.customerName.trim() || null;
+    if (typeof data.contactPerson === "string") update.contactPerson = data.contactPerson.trim() || null;
+    if (typeof data.contactPhone === "string") update.contactPhone = data.contactPhone.trim() || null;
+    if (data.value !== undefined) {
+      const v = Number(data.value);
+      if (!(v >= 0)) throw new HttpsError("invalid-argument", "القيمة غير صحيحة.");
+      update.value = v;
+    }
+    if (typeof data.stage === "string") {
+      if (!ALL_DEAL_STAGES.includes(data.stage)) throw new HttpsError("invalid-argument", "مرحلة غير صحيحة.");
+      update.stage = data.stage;
+    }
+    if (typeof data.status === "string") {
+      if (!ALL_DEAL_STATUS.includes(data.status)) throw new HttpsError("invalid-argument", "حالة غير صحيحة.");
+      update.status = data.status;
+    }
+    if (typeof data.rep === "string") update.rep = data.rep.trim() || null;
+    if (typeof data.notes === "string") update.notes = data.notes.trim() || null;
+    if (typeof data.expectedCloseDate === "string") {
+      update.expectedCloseDate = isValidDate(data.expectedCloseDate) ? data.expectedCloseDate : null;
+    }
+
+    if (Object.keys(update).length === 0) throw new HttpsError("invalid-argument", "لا تغييرات.");
+    update.updatedBy = request.auth.uid;
+    update.updatedAt = FieldValue.serverTimestamp();
+    await ref.update(update);
+    return { id: dealId, updated: true };
+  } catch (err) {
+    if (err instanceof HttpsError) throw err;
+    console.error("updateDeal failed:", err);
+    throw new HttpsError("internal", "تعذّر تعديل الصفقة.");
+  }
+});
+
+// حذف صفقة
+exports.deleteDeal = onCall(async (request) => {
+  try {
+    const callerTenantId = await requireModule(request.auth, MODULES.SALES);
+    const data = request.data || {};
+    const dealId = typeof data.dealId === "string" ? data.dealId.trim() : "";
+    if (!dealId) throw new HttpsError("invalid-argument", "يجب تحديد الصفقة.");
+    const ref = db.collection(COLLECTIONS.DEALS).doc(dealId);
+    const doc = await ref.get();
+    if (!doc.exists || doc.data().tenantId !== callerTenantId) throw new HttpsError("invalid-argument", "الصفقة غير موجودة.");
+    await ref.delete();
+    return { id: dealId, deleted: true };
+  } catch (err) {
+    if (err instanceof HttpsError) throw err;
+    console.error("deleteDeal failed:", err);
+    throw new HttpsError("internal", "تعذّر حذف الصفقة.");
+  }
+});
+
+// بيانات المبيعات: الصفقات + خط الأنابيب + الملخّص + المندوبون
+exports.getSalesData = onCall(async (request) => {
+  try {
+    const callerTenantId = await requireModule(request.auth, MODULES.SALES);
+    const round2 = (n) => Math.round((Number(n) || 0) * 100) / 100;
+
+    const snap = await db.collection(COLLECTIONS.DEALS).where("tenantId", "==", callerTenantId).get();
+    const all = snap.docs.map((d) => ({ id: d.id, ...d.data() }));
+
+    const active = all.filter((d) => d.status === "active");
+    const won = all.filter((d) => d.status === "won");
+    const lost = all.filter((d) => d.status === "lost");
+
+    // خط الأنابيب: تجميع الصفقات النشطة حسب المرحلة
+    const stageOrder = ["contact", "proposal", "negotiation", "closing"];
+    const pipeline = stageOrder.map((stage) => {
+      const inStage = active.filter((d) => d.stage === stage);
+      return { stage, value: round2(inStage.reduce((s, d) => s + (Number(d.value) || 0), 0)), count: inStage.length };
+    });
+
+    // المندوبون: تجميع القيمة النشطة حسب المندوب
+    const repMap = {};
+    active.forEach((d) => { if (d.rep) repMap[d.rep] = (repMap[d.rep] || 0) + (Number(d.value) || 0); });
+    const reps = Object.entries(repMap).map(([name, value]) => ({ name, value: round2(value) })).sort((a, b) => b.value - a.value);
+
+    const pipelineValue = round2(active.reduce((s, d) => s + (Number(d.value) || 0), 0));
+    const wonValue = round2(won.reduce((s, d) => s + (Number(d.value) || 0), 0));
+    const totalClosed = won.length + lost.length;
+    const conversionRate = totalClosed > 0 ? round2((won.length / totalClosed) * 100) : 0;
+
+    return {
+      deals: active.sort((a, b) => (b.value || 0) - (a.value || 0)),
+      pipeline,
+      reps,
+      summary: {
+        pipelineValue,
+        activeCount: active.length,
+        wonCount: won.length,
+        wonValue,
+        lostCount: lost.length,
+        conversionRate,
+      },
+    };
+  } catch (err) {
+    if (err instanceof HttpsError) throw err;
+    console.error("getSalesData failed:", err);
+    throw new HttpsError("internal", "تعذّر تحميل بيانات المبيعات.");
   }
 });
 
