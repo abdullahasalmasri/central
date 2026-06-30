@@ -86,6 +86,8 @@ const {
   ALL_INCIDENT_SEVERITY,
   ALL_INCIDENT_STATUS,
   buildSafetyInspectionDoc,
+  buildStockRequestDoc,
+  ALL_STOCK_REQUEST_STATUS,
   ALL_INSPECTION_RESULT,
   ALL_PAYMENT_METHOD,
   PAYMENT_METHOD,
@@ -9716,6 +9718,244 @@ exports.getSafetyData = onCall(async (request) => {
     if (err instanceof HttpsError) throw err;
     console.error("getSafetyData failed:", err);
     throw new HttpsError("internal", "تعذّر تحميل بيانات السلامة.");
+  }
+});
+
+// ═══════════════════════════════════════════════════════
+// ===== طلبات المخزون الداخلية =====
+// ═══════════════════════════════════════════════════════
+
+// إنشاء طلب موارد
+// data: { items:[{productId, qty}], requestedBy, department, purpose, priority }
+exports.createStockRequest = onCall(async (request) => {
+  try {
+    const callerTenantId = await requireModule(request.auth, MODULES.OPERATIONS);
+    const data = request.data || {};
+
+    const rawItems = Array.isArray(data.items) ? data.items : [];
+    if (rawItems.length === 0) throw new HttpsError("invalid-argument", "أضف صنفًا واحدًا على الأقل.");
+    if (rawItems.length > 50) throw new HttpsError("invalid-argument", "عدد الأصناف كبير جدًا.");
+
+    // التحقق من الأصناف وبناء لقطة
+    const productIds = [];
+    const qtyById = {};
+    for (const it of rawItems) {
+      const pid = typeof it.productId === "string" ? it.productId.trim() : "";
+      const qty = Number(it.qty);
+      if (!pid) throw new HttpsError("invalid-argument", "صنف غير صالح.");
+      if (!Number.isFinite(qty) || qty <= 0) throw new HttpsError("invalid-argument", "كمية غير صحيحة.");
+      if (!qtyById[pid]) productIds.push(pid);
+      qtyById[pid] = (qtyById[pid] || 0) + qty;
+    }
+    const productRefs = productIds.map((id) => db.collection(COLLECTIONS.PRODUCTS).doc(id));
+    const productSnaps = await Promise.all(productRefs.map((r) => r.get()));
+    const lineItems = [];
+    for (let i = 0; i < productIds.length; i++) {
+      const snap = productSnaps[i];
+      if (!snap.exists || snap.data().tenantId !== callerTenantId) throw new HttpsError("invalid-argument", "أحد الأصناف غير موجود.");
+      const p = snap.data();
+      lineItems.push({ productId: productIds[i], name: p.name, qty: qtyById[productIds[i]], unit: p.unit || "قطعة", isService: !!p.isService });
+    }
+
+    // اسم الطالب
+    let requesterName = typeof data.requestedBy === "string" ? data.requestedBy.trim() : "";
+    if (!requesterName) {
+      try {
+        const userDoc = await db.collection(COLLECTIONS.USERS).doc(request.auth.uid).get();
+        requesterName = userDoc.exists ? (userDoc.data().name || null) : null;
+      } catch (e) { requesterName = null; }
+    }
+
+    const tenantRef = db.collection(COLLECTIONS.TENANTS).doc(callerTenantId);
+    const reqRef = db.collection(COLLECTIONS.STOCK_REQUESTS).doc();
+    const result = await db.runTransaction(async (tx) => {
+      const tenantSnap = await tx.get(tenantRef);
+      if (!tenantSnap.exists) throw new HttpsError("failed-precondition", "الشركة غير موجودة.");
+      const nextNumber = (tenantSnap.data().lastStockRequestNumber || 0) + 1;
+      tx.set(reqRef, buildStockRequestDoc({
+        tenantId: callerTenantId,
+        requestNumber: nextNumber,
+        items: lineItems,
+        requestedBy: requesterName,
+        department: typeof data.department === "string" ? data.department.trim() : null,
+        purpose: typeof data.purpose === "string" ? data.purpose.trim() : null,
+        priority: data.priority,
+        status: "pending",
+        notes: typeof data.notes === "string" ? data.notes.trim() : null,
+        createdBy: request.auth.uid,
+        createdAt: FieldValue.serverTimestamp(),
+      }));
+      tx.update(tenantRef, { lastStockRequestNumber: nextNumber });
+      return { requestNumber: nextNumber };
+    });
+    return { id: reqRef.id, requestNumber: result.requestNumber };
+  } catch (err) {
+    if (err instanceof HttpsError) throw err;
+    console.error("createStockRequest failed:", err);
+    throw new HttpsError("internal", "تعذّر إنشاء الطلب.");
+  }
+});
+
+// قرار على الطلب: موافقة أو رفض (للمدير)
+// data: { requestId, decision: "approve"|"reject", reason }
+exports.decideStockRequest = onCall(async (request) => {
+  try {
+    const callerTenantId = await requireModule(request.auth, MODULES.OPERATIONS);
+    const data = request.data || {};
+    const requestId = typeof data.requestId === "string" ? data.requestId.trim() : "";
+    if (!requestId) throw new HttpsError("invalid-argument", "يجب تحديد الطلب.");
+    const decision = data.decision;
+    if (decision !== "approve" && decision !== "reject") throw new HttpsError("invalid-argument", "قرار غير صحيح.");
+
+    const ref = db.collection(COLLECTIONS.STOCK_REQUESTS).doc(requestId);
+    const doc = await ref.get();
+    if (!doc.exists || doc.data().tenantId !== callerTenantId) throw new HttpsError("invalid-argument", "الطلب غير موجود.");
+    if (doc.data().status !== "pending") throw new HttpsError("failed-precondition", "تم البتّ في الطلب مسبقًا.");
+
+    let deciderName = null;
+    try {
+      const userDoc = await db.collection(COLLECTIONS.USERS).doc(request.auth.uid).get();
+      deciderName = userDoc.exists ? (userDoc.data().name || null) : null;
+    } catch (e) { deciderName = null; }
+
+    await ref.update({
+      status: decision === "approve" ? "approved" : "rejected",
+      decidedBy: request.auth.uid,
+      decidedByName: deciderName,
+      decisionReason: typeof data.reason === "string" ? data.reason.trim() || null : null,
+      decidedAt: FieldValue.serverTimestamp(),
+    });
+    return { id: requestId, status: decision === "approve" ? "approved" : "rejected" };
+  } catch (err) {
+    if (err instanceof HttpsError) throw err;
+    console.error("decideStockRequest failed:", err);
+    throw new HttpsError("internal", "تعذّر تنفيذ القرار.");
+  }
+});
+
+// صرف الطلب: يخصم الأصناف من المخزون (للطلبات الموافق عليها)
+exports.fulfillStockRequest = onCall(async (request) => {
+  try {
+    const callerTenantId = await requireModule(request.auth, MODULES.OPERATIONS);
+    const data = request.data || {};
+    const requestId = typeof data.requestId === "string" ? data.requestId.trim() : "";
+    if (!requestId) throw new HttpsError("invalid-argument", "يجب تحديد الطلب.");
+    const round2 = (n) => Math.round((Number(n) || 0) * 100) / 100;
+
+    const reqRef = db.collection(COLLECTIONS.STOCK_REQUESTS).doc(requestId);
+
+    const result = await db.runTransaction(async (tx) => {
+      const reqSnap = await tx.get(reqRef);
+      if (!reqSnap.exists || reqSnap.data().tenantId !== callerTenantId) throw new HttpsError("invalid-argument", "الطلب غير موجود.");
+      const req = reqSnap.data();
+      if (req.status !== "approved") throw new HttpsError("failed-precondition", "يجب الموافقة على الطلب قبل الصرف.");
+
+      const items = Array.isArray(req.items) ? req.items : [];
+      // الأصناف القابلة للصرف من المخزون (المنتجات فقط)
+      const stockItems = items.filter((it) => it.productId && !it.isService);
+      const productRefs = stockItems.map((it) => db.collection(COLLECTIONS.PRODUCTS).doc(it.productId));
+      const productSnaps = await Promise.all(productRefs.map((r) => tx.get(r)));
+
+      const updates = [];
+      for (let i = 0; i < stockItems.length; i++) {
+        const snap = productSnaps[i];
+        const it = stockItems[i];
+        if (!snap.exists || snap.data().tenantId !== callerTenantId) throw new HttpsError("invalid-argument", `الصنف «${it.name}» غير موجود.`);
+        const p = snap.data();
+        const current = Number(p.quantity) || 0;
+        const qty = Number(it.qty) || 0;
+        if (qty > current) throw new HttpsError("failed-precondition", `الكمية المطلوبة من «${it.name}» (${qty}) أكبر من المتوفّر (${current}).`);
+        updates.push({ ref: productRefs[i], newQty: round2(current - qty), name: it.name, qty: qty });
+      }
+
+      // الكتابات
+      for (const u of updates) {
+        tx.update(u.ref, { quantity: u.newQty, updatedAt: FieldValue.serverTimestamp() });
+        const mvRef = db.collection(COLLECTIONS.STOCK_MOVEMENTS).doc();
+        tx.set(mvRef, buildStockMovementDoc({
+          tenantId: callerTenantId,
+          productId: u.ref.id,
+          productName: u.name,
+          type: STOCK_MOVEMENT_TYPE.OUT,
+          quantity: u.qty,
+          balanceAfter: u.newQty,
+          reason: `صرف طلب #${req.requestNumber}`,
+          source: "request",
+          note: null,
+          createdBy: request.auth.uid,
+          createdAt: FieldValue.serverTimestamp(),
+        }));
+      }
+      tx.update(reqRef, { status: "fulfilled", fulfilledAt: FieldValue.serverTimestamp(), fulfilledBy: request.auth.uid });
+      return { fulfilledCount: updates.length };
+    });
+    return { id: requestId, status: "fulfilled", ...result };
+  } catch (err) {
+    if (err instanceof HttpsError) throw err;
+    console.error("fulfillStockRequest failed:", err);
+    throw new HttpsError("internal", "تعذّر صرف الطلب.");
+  }
+});
+
+// حذف طلب
+exports.deleteStockRequest = onCall(async (request) => {
+  try {
+    const callerTenantId = await requireModule(request.auth, MODULES.OPERATIONS);
+    const data = request.data || {};
+    const requestId = typeof data.requestId === "string" ? data.requestId.trim() : "";
+    if (!requestId) throw new HttpsError("invalid-argument", "يجب تحديد الطلب.");
+    const ref = db.collection(COLLECTIONS.STOCK_REQUESTS).doc(requestId);
+    const doc = await ref.get();
+    if (!doc.exists || doc.data().tenantId !== callerTenantId) throw new HttpsError("invalid-argument", "الطلب غير موجود.");
+    if (doc.data().status === "fulfilled") throw new HttpsError("failed-precondition", "لا يمكن حذف طلب تم صرفه.");
+    await ref.delete();
+    return { id: requestId, deleted: true };
+  } catch (err) {
+    if (err instanceof HttpsError) throw err;
+    console.error("deleteStockRequest failed:", err);
+    throw new HttpsError("internal", "تعذّر حذف الطلب.");
+  }
+});
+
+// بيانات الطلبات: الطلبات + الأصناف المتاحة + الملخّص
+exports.getStockRequests = onCall(async (request) => {
+  try {
+    const callerTenantId = await requireModule(request.auth, MODULES.OPERATIONS);
+    const toMs = (ts) => (ts && ts.toMillis ? ts.toMillis() : null);
+
+    const [reqSnap, productSnap] = await Promise.all([
+      db.collection(COLLECTIONS.STOCK_REQUESTS).where("tenantId", "==", callerTenantId).get(),
+      db.collection(COLLECTIONS.PRODUCTS).where("tenantId", "==", callerTenantId).get(),
+    ]);
+
+    const requests = reqSnap.docs.map((d) => {
+      const r = d.data();
+      return { id: d.id, ...r, createdAt: toMs(r.createdAt), decidedAt: toMs(r.decidedAt), fulfilledAt: toMs(r.fulfilledAt) };
+    });
+    requests.sort((a, b) => (b.requestNumber || 0) - (a.requestNumber || 0));
+
+    const products = productSnap.docs
+      .map((d) => {
+        const p = d.data();
+        return { id: d.id, name: p.name, unit: p.unit || "قطعة", quantity: Number(p.quantity) || 0, isService: !!p.isService, active: p.active !== false };
+      })
+      .filter((p) => p.active && !p.isService) // الطلبات للمنتجات القابلة للصرف
+      .sort((a, b) => (a.name || "").localeCompare(b.name || ""));
+
+    return {
+      requests,
+      products,
+      summary: {
+        pendingCount: requests.filter((r) => r.status === "pending").length,
+        approvedCount: requests.filter((r) => r.status === "approved").length,
+        fulfilledCount: requests.filter((r) => r.status === "fulfilled").length,
+        totalCount: requests.length,
+      },
+    };
+  } catch (err) {
+    if (err instanceof HttpsError) throw err;
+    console.error("getStockRequests failed:", err);
+    throw new HttpsError("internal", "تعذّر تحميل الطلبات.");
   }
 });
 

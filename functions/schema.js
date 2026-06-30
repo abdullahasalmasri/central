@@ -60,6 +60,7 @@ const COLLECTIONS = {
   SALES_RETURNS: "salesReturns",
   SAFETY_INCIDENTS: "safetyIncidents",
   SAFETY_INSPECTIONS: "safetyInspections",
+  STOCK_REQUESTS: "stockRequests",
 };
 
 const ROLES = {
@@ -2571,6 +2572,44 @@ function buildSafetyInspectionDoc({
   };
 }
 
+// ═══════════════════════════════════════════════════════
+// ===== طلبات المخزون الداخلية =====
+// ═══════════════════════════════════════════════════════
+
+const STOCK_REQUEST_STATUS = {
+  PENDING: "pending",     // بانتظار الموافقة
+  APPROVED: "approved",   // موافق عليه (جاهز للصرف)
+  REJECTED: "rejected",   // مرفوض
+  FULFILLED: "fulfilled", // تم الصرف
+};
+const ALL_STOCK_REQUEST_STATUS = Object.values(STOCK_REQUEST_STATUS);
+
+// بناء وثيقة طلب مخزون داخلي
+function buildStockRequestDoc({
+  tenantId, requestNumber, items, requestedBy, department, purpose, priority,
+  status, notes, createdBy, createdAt,
+}) {
+  return {
+    tenantId: tenantId,
+    requestNumber: Number(requestNumber) || 0,
+    items: Array.isArray(items) ? items : [], // [{productId, name, qty, unit}]
+    requestedBy: (requestedBy || "").trim() || null, // اسم الطالب
+    department: (department || "").trim() || null,
+    purpose: (purpose || "").trim() || null,         // الغرض
+    priority: priority === "high" || priority === "low" ? priority : "normal",
+    status: ALL_STOCK_REQUEST_STATUS.includes(status) ? status : STOCK_REQUEST_STATUS.PENDING,
+    notes: notes || null,
+    // قرار الموافقة:
+    decidedBy: null,
+    decidedByName: null,
+    decisionReason: null,
+    decidedAt: null,
+    fulfilledAt: null,
+    createdBy: createdBy || null,
+    createdAt: createdAt,
+  };
+}
+
 module.exports = {
   COLLECTIONS,
   ROLES,
@@ -2694,6 +2733,9 @@ module.exports = {
   INCIDENT_STATUS,
   ALL_INCIDENT_STATUS,
   buildSafetyInspectionDoc,
+  buildStockRequestDoc,
+  STOCK_REQUEST_STATUS,
+  ALL_STOCK_REQUEST_STATUS,
   INSPECTION_RESULT,
   ALL_INSPECTION_RESULT,
   PAYMENT_METHOD,
