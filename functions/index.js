@@ -60,6 +60,18 @@ const {
   buildDealDoc,
   buildQuoteDoc,
   buildCampaignDoc,
+  buildTicketDoc,
+  ALL_TICKET_CATEGORY,
+  ALL_TICKET_PRIORITY,
+  ALL_TICKET_STATUS,
+  TICKET_STATUS,
+  TICKET_PRIORITY,
+  buildInteractionDoc,
+  ALL_INTERACTION_TYPE,
+  buildContractDoc,
+  ALL_CONTRACT_TYPE,
+  ALL_CONTRACT_STATUS,
+  CONTRACT_STATUS,
   CAMPAIGN_STATUS,
   ALL_CAMPAIGN_STATUS,
   computeQuoteTotals,
@@ -7324,6 +7336,471 @@ exports.getMarketingData = onCall(async (request) => {
     if (err instanceof HttpsError) throw err;
     console.error("getMarketingData failed:", err);
     throw new HttpsError("internal", "تعذّر تحميل بيانات التسويق.");
+  }
+});
+
+// ═══════════════════════════════════════════════════════
+// ===== خدمة العملاء و CRM =====
+// ═══════════════════════════════════════════════════════
+
+// --- التذاكر ---
+
+// إنشاء تذكرة
+exports.createTicket = onCall(async (request) => {
+  try {
+    const callerTenantId = await requireModule(request.auth, MODULES.SALES);
+    const data = request.data || {};
+    const subject = typeof data.subject === "string" ? data.subject.trim() : "";
+    if (subject.length < 2) throw new HttpsError("invalid-argument", "موضوع التذكرة مطلوب (حرفان على الأقل).");
+
+    const tenantRef = db.collection(COLLECTIONS.TENANTS).doc(callerTenantId);
+    const ticketRef = db.collection(COLLECTIONS.TICKETS).doc();
+    const result = await db.runTransaction(async (tx) => {
+      const tenantSnap = await tx.get(tenantRef);
+      if (!tenantSnap.exists) throw new HttpsError("failed-precondition", "الشركة غير موجودة.");
+      const nextNumber = (tenantSnap.data().lastTicketNumber || 0) + 1;
+      const ticketDoc = buildTicketDoc({
+        tenantId: callerTenantId,
+        ticketNumber: nextNumber,
+        subject: subject,
+        customerName: typeof data.customerName === "string" ? data.customerName.trim() : null,
+        contactPerson: typeof data.contactPerson === "string" ? data.contactPerson.trim() : null,
+        contactPhone: typeof data.contactPhone === "string" ? data.contactPhone.trim() : null,
+        category: data.category,
+        priority: data.priority,
+        status: TICKET_STATUS.OPEN,
+        assignedTo: typeof data.assignedTo === "string" ? data.assignedTo.trim() : null,
+        description: typeof data.description === "string" ? data.description.trim() : null,
+        replies: [],
+        createdBy: request.auth.uid,
+        createdAt: FieldValue.serverTimestamp(),
+      });
+      tx.set(ticketRef, ticketDoc);
+      tx.update(tenantRef, { lastTicketNumber: nextNumber });
+      return { ticketNumber: nextNumber };
+    });
+    return { id: ticketRef.id, ticketNumber: result.ticketNumber };
+  } catch (err) {
+    if (err instanceof HttpsError) throw err;
+    console.error("createTicket failed:", err);
+    throw new HttpsError("internal", "تعذّر إنشاء التذكرة.");
+  }
+});
+
+// تعديل تذكرة (حالة، أولوية، تعيين، حل، رضا)
+exports.updateTicket = onCall(async (request) => {
+  try {
+    const callerTenantId = await requireModule(request.auth, MODULES.SALES);
+    const data = request.data || {};
+    const ticketId = typeof data.ticketId === "string" ? data.ticketId.trim() : "";
+    if (!ticketId) throw new HttpsError("invalid-argument", "يجب تحديد التذكرة.");
+
+    const ref = db.collection(COLLECTIONS.TICKETS).doc(ticketId);
+    const doc = await ref.get();
+    if (!doc.exists || doc.data().tenantId !== callerTenantId) throw new HttpsError("invalid-argument", "التذكرة غير موجودة.");
+
+    const update = {};
+    if (typeof data.subject === "string") {
+      const sub = data.subject.trim();
+      if (sub.length < 2) throw new HttpsError("invalid-argument", "موضوع التذكرة قصير.");
+      update.subject = sub;
+    }
+    if (typeof data.customerName === "string") update.customerName = data.customerName.trim() || null;
+    if (typeof data.contactPerson === "string") update.contactPerson = data.contactPerson.trim() || null;
+    if (typeof data.contactPhone === "string") update.contactPhone = data.contactPhone.trim() || null;
+    if (typeof data.description === "string") update.description = data.description.trim() || null;
+    if (typeof data.assignedTo === "string") update.assignedTo = data.assignedTo.trim() || null;
+    if (typeof data.resolution === "string") update.resolution = data.resolution.trim() || null;
+    if (typeof data.category === "string") {
+      if (!ALL_TICKET_CATEGORY.includes(data.category)) throw new HttpsError("invalid-argument", "فئة غير صحيحة.");
+      update.category = data.category;
+    }
+    if (typeof data.priority === "string") {
+      if (!ALL_TICKET_PRIORITY.includes(data.priority)) throw new HttpsError("invalid-argument", "أولوية غير صحيحة.");
+      update.priority = data.priority;
+    }
+    if (typeof data.status === "string") {
+      if (!ALL_TICKET_STATUS.includes(data.status)) throw new HttpsError("invalid-argument", "حالة غير صحيحة.");
+      update.status = data.status;
+      // ختم وقت الحل عند الانتقال لمحلولة/مغلقة
+      if ((data.status === "resolved" || data.status === "closed") && !doc.data().resolvedAt) {
+        update.resolvedAt = FieldValue.serverTimestamp();
+      }
+    }
+    if (data.satisfaction !== undefined) {
+      const sat = Number(data.satisfaction);
+      if (data.satisfaction === null) update.satisfaction = null;
+      else if (Number.isFinite(sat) && sat >= 1 && sat <= 5) update.satisfaction = sat;
+      else throw new HttpsError("invalid-argument", "تقييم الرضا من 1 إلى 5.");
+    }
+
+    if (Object.keys(update).length === 0) throw new HttpsError("invalid-argument", "لا تغييرات.");
+    update.updatedBy = request.auth.uid;
+    update.updatedAt = FieldValue.serverTimestamp();
+    await ref.update(update);
+    return { id: ticketId, updated: true };
+  } catch (err) {
+    if (err instanceof HttpsError) throw err;
+    console.error("updateTicket failed:", err);
+    throw new HttpsError("internal", "تعذّر تعديل التذكرة.");
+  }
+});
+
+// إضافة رد/تحديث على تذكرة
+exports.addTicketReply = onCall(async (request) => {
+  try {
+    const callerTenantId = await requireModule(request.auth, MODULES.SALES);
+    const data = request.data || {};
+    const ticketId = typeof data.ticketId === "string" ? data.ticketId.trim() : "";
+    const text = typeof data.text === "string" ? data.text.trim() : "";
+    if (!ticketId) throw new HttpsError("invalid-argument", "يجب تحديد التذكرة.");
+    if (text.length < 1) throw new HttpsError("invalid-argument", "نص الرد مطلوب.");
+
+    const ref = db.collection(COLLECTIONS.TICKETS).doc(ticketId);
+    const doc = await ref.get();
+    if (!doc.exists || doc.data().tenantId !== callerTenantId) throw new HttpsError("invalid-argument", "التذكرة غير موجودة.");
+
+    // اسم المُجيب
+    let byName = null;
+    try {
+      const userDoc = await db.collection(COLLECTIONS.USERS).doc(request.auth.uid).get();
+      byName = userDoc.exists ? (userDoc.data().name || null) : null;
+    } catch (e) { byName = null; }
+
+    const reply = {
+      text: text,
+      by: request.auth.uid,
+      byName: byName,
+      at: admin.firestore.Timestamp.now(),
+    };
+    await ref.update({ replies: FieldValue.arrayUnion(reply), updatedAt: FieldValue.serverTimestamp() });
+    return { id: ticketId, added: true };
+  } catch (err) {
+    if (err instanceof HttpsError) throw err;
+    console.error("addTicketReply failed:", err);
+    throw new HttpsError("internal", "تعذّر إضافة الرد.");
+  }
+});
+
+// حذف تذكرة
+exports.deleteTicket = onCall(async (request) => {
+  try {
+    const callerTenantId = await requireModule(request.auth, MODULES.SALES);
+    const data = request.data || {};
+    const ticketId = typeof data.ticketId === "string" ? data.ticketId.trim() : "";
+    if (!ticketId) throw new HttpsError("invalid-argument", "يجب تحديد التذكرة.");
+    const ref = db.collection(COLLECTIONS.TICKETS).doc(ticketId);
+    const doc = await ref.get();
+    if (!doc.exists || doc.data().tenantId !== callerTenantId) throw new HttpsError("invalid-argument", "التذكرة غير موجودة.");
+    await ref.delete();
+    return { id: ticketId, deleted: true };
+  } catch (err) {
+    if (err instanceof HttpsError) throw err;
+    console.error("deleteTicket failed:", err);
+    throw new HttpsError("internal", "تعذّر حذف التذكرة.");
+  }
+});
+
+// --- التفاعلات (CRM) ---
+
+// تسجيل تفاعل مع عميل
+exports.createInteraction = onCall(async (request) => {
+  try {
+    const callerTenantId = await requireModule(request.auth, MODULES.SALES);
+    const data = request.data || {};
+    const customerName = typeof data.customerName === "string" ? data.customerName.trim() : "";
+    if (customerName.length < 2) throw new HttpsError("invalid-argument", "اسم العميل مطلوب.");
+    if (typeof data.type === "string" && !ALL_INTERACTION_TYPE.includes(data.type)) {
+      throw new HttpsError("invalid-argument", "نوع التفاعل غير صحيح.");
+    }
+
+    const docRef = db.collection(COLLECTIONS.INTERACTIONS).doc();
+    await docRef.set(buildInteractionDoc({
+      tenantId: callerTenantId,
+      type: data.type,
+      customerName: customerName,
+      contactPerson: typeof data.contactPerson === "string" ? data.contactPerson.trim() : null,
+      subject: typeof data.subject === "string" ? data.subject.trim() : null,
+      summary: typeof data.summary === "string" ? data.summary.trim() : null,
+      outcome: typeof data.outcome === "string" ? data.outcome.trim() : null,
+      date: typeof data.date === "string" && isValidDate(data.date) ? data.date : null,
+      createdBy: request.auth.uid,
+      createdAt: FieldValue.serverTimestamp(),
+    }));
+    return { id: docRef.id, created: true };
+  } catch (err) {
+    if (err instanceof HttpsError) throw err;
+    console.error("createInteraction failed:", err);
+    throw new HttpsError("internal", "تعذّر تسجيل التفاعل.");
+  }
+});
+
+// حذف تفاعل
+exports.deleteInteraction = onCall(async (request) => {
+  try {
+    const callerTenantId = await requireModule(request.auth, MODULES.SALES);
+    const data = request.data || {};
+    const interactionId = typeof data.interactionId === "string" ? data.interactionId.trim() : "";
+    if (!interactionId) throw new HttpsError("invalid-argument", "يجب تحديد التفاعل.");
+    const ref = db.collection(COLLECTIONS.INTERACTIONS).doc(interactionId);
+    const doc = await ref.get();
+    if (!doc.exists || doc.data().tenantId !== callerTenantId) throw new HttpsError("invalid-argument", "التفاعل غير موجود.");
+    await ref.delete();
+    return { id: interactionId, deleted: true };
+  } catch (err) {
+    if (err instanceof HttpsError) throw err;
+    console.error("deleteInteraction failed:", err);
+    throw new HttpsError("internal", "تعذّر حذف التفاعل.");
+  }
+});
+
+// بيانات خدمة العملاء: التذاكر + التفاعلات + الملخّص + التصنيف + الفريق
+exports.getServiceData = onCall(async (request) => {
+  try {
+    const callerTenantId = await requireModule(request.auth, MODULES.SALES);
+    const round2 = (n) => Math.round((Number(n) || 0) * 100) / 100;
+    const toMs = (ts) => (ts && ts.toMillis ? ts.toMillis() : null);
+
+    const [ticketSnap, interSnap] = await Promise.all([
+      db.collection(COLLECTIONS.TICKETS).where("tenantId", "==", callerTenantId).get(),
+      db.collection(COLLECTIONS.INTERACTIONS).where("tenantId", "==", callerTenantId).get(),
+    ]);
+
+    const tickets = ticketSnap.docs.map((d) => {
+      const t = d.data();
+      const replies = Array.isArray(t.replies) ? t.replies.map((r) => ({ text: r.text, byName: r.byName || null, at: toMs(r.at) })) : [];
+      return {
+        id: d.id, ...t,
+        replies: replies,
+        repliesCount: replies.length,
+        createdAt: toMs(t.createdAt),
+        resolvedAt: toMs(t.resolvedAt),
+      };
+    });
+    tickets.sort((a, b) => (b.ticketNumber || 0) - (a.ticketNumber || 0));
+
+    const interactions = interSnap.docs.map((d) => {
+      const it = d.data();
+      return { id: d.id, ...it, createdAt: toMs(it.createdAt) };
+    });
+    interactions.sort((a, b) => {
+      const ad = a.date || ""; const bd = b.date || "";
+      if (ad !== bd) return bd.localeCompare(ad);
+      return (b.createdAt || 0) - (a.createdAt || 0);
+    });
+
+    // ملخّص
+    const openLike = tickets.filter((t) => t.status === "open" || t.status === "in_progress" || t.status === "pending");
+    const resolvedLike = tickets.filter((t) => t.status === "resolved" || t.status === "closed");
+    const resolutionRate = tickets.length > 0 ? round2((resolvedLike.length / tickets.length) * 100) : 0;
+    const satRatings = tickets.filter((t) => t.satisfaction != null).map((t) => t.satisfaction);
+    const avgSatisfaction = satRatings.length > 0 ? round2(satRatings.reduce((s, v) => s + v, 0) / satRatings.length) : null;
+
+    // التصنيف (حسب الفئة)
+    const catMap = {};
+    tickets.forEach((t) => { const c = t.category || "other"; catMap[c] = (catMap[c] || 0) + 1; });
+    const byCategory = Object.entries(catMap).map(([category, count]) => ({
+      category, count, pct: tickets.length > 0 ? round2((count / tickets.length) * 100) : 0,
+    })).sort((a, b) => b.count - a.count);
+
+    // أداء الفريق (التذاكر المحلولة حسب المسؤول)
+    const teamMap = {};
+    resolvedLike.forEach((t) => { if (t.assignedTo) teamMap[t.assignedTo] = (teamMap[t.assignedTo] || 0) + 1; });
+    const team = Object.entries(teamMap).map(([name, resolved]) => ({ name, resolved })).sort((a, b) => b.resolved - a.resolved);
+
+    return {
+      tickets,
+      interactions,
+      byCategory,
+      team,
+      summary: {
+        openCount: openLike.length,
+        totalCount: tickets.length,
+        resolvedCount: resolvedLike.length,
+        resolutionRate: resolutionRate,
+        avgSatisfaction: avgSatisfaction,
+        interactionsCount: interactions.length,
+      },
+    };
+  } catch (err) {
+    if (err instanceof HttpsError) throw err;
+    console.error("getServiceData failed:", err);
+    throw new HttpsError("internal", "تعذّر تحميل بيانات خدمة العملاء.");
+  }
+});
+
+// ═══════════════════════════════════════════════════════
+// ===== القانونية: العقود =====
+// ═══════════════════════════════════════════════════════
+
+// إنشاء عقد
+exports.createContract = onCall(async (request) => {
+  try {
+    const callerTenantId = await requireModule(request.auth, MODULES.LEGAL);
+    const data = request.data || {};
+    const name = typeof data.name === "string" ? data.name.trim() : "";
+    if (name.length < 2) throw new HttpsError("invalid-argument", "اسم العقد مطلوب (حرفان على الأقل).");
+    const value = Number(data.value) || 0;
+    if (value < 0) throw new HttpsError("invalid-argument", "القيمة غير صحيحة.");
+
+    const tenantRef = db.collection(COLLECTIONS.TENANTS).doc(callerTenantId);
+    const contractRef = db.collection(COLLECTIONS.CONTRACTS).doc();
+    const result = await db.runTransaction(async (tx) => {
+      const tenantSnap = await tx.get(tenantRef);
+      if (!tenantSnap.exists) throw new HttpsError("failed-precondition", "الشركة غير موجودة.");
+      const nextNumber = (tenantSnap.data().lastContractNumber || 0) + 1;
+      const contractDoc = buildContractDoc({
+        tenantId: callerTenantId,
+        contractNumber: nextNumber,
+        name: name,
+        party: typeof data.party === "string" ? data.party.trim() : null,
+        type: data.type,
+        value: value,
+        startDate: typeof data.startDate === "string" && isValidDate(data.startDate) ? data.startDate : null,
+        endDate: typeof data.endDate === "string" && isValidDate(data.endDate) ? data.endDate : null,
+        status: data.status,
+        autoRenew: data.autoRenew,
+        notes: typeof data.notes === "string" ? data.notes.trim() : null,
+        createdBy: request.auth.uid,
+        createdAt: FieldValue.serverTimestamp(),
+      });
+      tx.set(contractRef, contractDoc);
+      tx.update(tenantRef, { lastContractNumber: nextNumber });
+      return { contractNumber: nextNumber };
+    });
+    return { id: contractRef.id, contractNumber: result.contractNumber };
+  } catch (err) {
+    if (err instanceof HttpsError) throw err;
+    console.error("createContract failed:", err);
+    throw new HttpsError("internal", "تعذّر إنشاء العقد.");
+  }
+});
+
+// تعديل عقد
+exports.updateContract = onCall(async (request) => {
+  try {
+    const callerTenantId = await requireModule(request.auth, MODULES.LEGAL);
+    const data = request.data || {};
+    const contractId = typeof data.contractId === "string" ? data.contractId.trim() : "";
+    if (!contractId) throw new HttpsError("invalid-argument", "يجب تحديد العقد.");
+
+    const ref = db.collection(COLLECTIONS.CONTRACTS).doc(contractId);
+    const doc = await ref.get();
+    if (!doc.exists || doc.data().tenantId !== callerTenantId) throw new HttpsError("invalid-argument", "العقد غير موجود.");
+
+    const update = {};
+    if (typeof data.name === "string") {
+      const n = data.name.trim();
+      if (n.length < 2) throw new HttpsError("invalid-argument", "اسم العقد قصير.");
+      update.name = n;
+    }
+    if (typeof data.party === "string") update.party = data.party.trim() || null;
+    if (typeof data.type === "string") {
+      if (!ALL_CONTRACT_TYPE.includes(data.type)) throw new HttpsError("invalid-argument", "نوع غير صحيح.");
+      update.type = data.type;
+    }
+    if (typeof data.status === "string") {
+      if (!ALL_CONTRACT_STATUS.includes(data.status)) throw new HttpsError("invalid-argument", "حالة غير صحيحة.");
+      update.status = data.status;
+    }
+    if (data.value !== undefined) {
+      const v = Number(data.value);
+      if (!(v >= 0)) throw new HttpsError("invalid-argument", "القيمة غير صحيحة.");
+      update.value = v;
+    }
+    if (data.autoRenew !== undefined) update.autoRenew = !!data.autoRenew;
+    if (typeof data.startDate === "string") update.startDate = isValidDate(data.startDate) ? data.startDate : null;
+    if (typeof data.endDate === "string") update.endDate = isValidDate(data.endDate) ? data.endDate : null;
+    if (typeof data.notes === "string") update.notes = data.notes.trim() || null;
+
+    if (Object.keys(update).length === 0) throw new HttpsError("invalid-argument", "لا تغييرات.");
+    update.updatedBy = request.auth.uid;
+    update.updatedAt = FieldValue.serverTimestamp();
+    await ref.update(update);
+    return { id: contractId, updated: true };
+  } catch (err) {
+    if (err instanceof HttpsError) throw err;
+    console.error("updateContract failed:", err);
+    throw new HttpsError("internal", "تعذّر تعديل العقد.");
+  }
+});
+
+// حذف عقد
+exports.deleteContract = onCall(async (request) => {
+  try {
+    const callerTenantId = await requireModule(request.auth, MODULES.LEGAL);
+    const data = request.data || {};
+    const contractId = typeof data.contractId === "string" ? data.contractId.trim() : "";
+    if (!contractId) throw new HttpsError("invalid-argument", "يجب تحديد العقد.");
+    const ref = db.collection(COLLECTIONS.CONTRACTS).doc(contractId);
+    const doc = await ref.get();
+    if (!doc.exists || doc.data().tenantId !== callerTenantId) throw new HttpsError("invalid-argument", "العقد غير موجود.");
+    await ref.delete();
+    return { id: contractId, deleted: true };
+  } catch (err) {
+    if (err instanceof HttpsError) throw err;
+    console.error("deleteContract failed:", err);
+    throw new HttpsError("internal", "تعذّر حذف العقد.");
+  }
+});
+
+// قائمة العقود + الملخّص + الأنواع + متابعة التجديد
+exports.getContracts = onCall(async (request) => {
+  try {
+    const callerTenantId = await requireModule(request.auth, MODULES.LEGAL);
+    const round2 = (n) => Math.round((Number(n) || 0) * 100) / 100;
+    const todayStr = new Date().toISOString().slice(0, 10);
+    const daysBetween = (a, b) => Math.round((new Date(b) - new Date(a)) / (1000 * 60 * 60 * 24));
+
+    const snap = await db.collection(COLLECTIONS.CONTRACTS).where("tenantId", "==", callerTenantId).get();
+    const contracts = snap.docs.map((d) => {
+      const c = d.data();
+      // حساب الحالة الزمنية
+      let daysToEnd = null;
+      let computedStatus = c.status;
+      if (c.endDate && (c.status === "active" || c.status === "renewing")) {
+        daysToEnd = daysBetween(todayStr, c.endDate);
+        if (daysToEnd < 0) computedStatus = "expired";
+        else if (daysToEnd <= 30) computedStatus = "expiring";
+      }
+      return { id: d.id, ...c, daysToEnd, computedStatus };
+    });
+    contracts.sort((a, b) => (b.contractNumber || 0) - (a.contractNumber || 0));
+
+    // الملخّص
+    const activeLike = contracts.filter((c) => c.status === "active" || c.status === "renewing");
+    const expiringSoon = contracts.filter((c) => c.computedStatus === "expiring");
+    const renewing = contracts.filter((c) => c.status === "renewing");
+    const totalValue = round2(activeLike.reduce((s, c) => s + (Number(c.value) || 0), 0));
+
+    // الأنواع
+    const typeMap = {};
+    activeLike.forEach((c) => { const t = c.type || "other"; typeMap[t] = (typeMap[t] || 0) + 1; });
+    const byType = Object.entries(typeMap).map(([type, count]) => ({
+      type, count, pct: activeLike.length > 0 ? round2((count / activeLike.length) * 100) : 0,
+    })).sort((a, b) => b.count - a.count);
+
+    // متابعة التجديد (القريبة الانتهاء مرتّبة بالأيام)
+    const renewals = expiringSoon
+      .map((c) => ({ id: c.id, name: c.name, party: c.party, days: c.daysToEnd, value: c.value }))
+      .sort((a, b) => (a.days || 0) - (b.days || 0));
+
+    return {
+      contracts,
+      byType,
+      renewals,
+      summary: {
+        activeCount: activeLike.length,
+        totalValue: totalValue,
+        expiringCount: expiringSoon.length,
+        renewingCount: renewing.length,
+        totalCount: contracts.length,
+      },
+    };
+  } catch (err) {
+    if (err instanceof HttpsError) throw err;
+    console.error("getContracts failed:", err);
+    throw new HttpsError("internal", "تعذّر تحميل العقود.");
   }
 });
 

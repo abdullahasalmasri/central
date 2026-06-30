@@ -44,6 +44,9 @@ const COLLECTIONS = {
   DEALS: "deals",
   QUOTES: "quotes",
   CAMPAIGNS: "campaigns",
+  TICKETS: "tickets",
+  INTERACTIONS: "interactions",
+  CONTRACTS: "contracts",
 };
 
 const ROLES = {
@@ -62,6 +65,7 @@ const MODULES = {
   OPERATIONS: "operations",
   ASSETS: "assets",
   SALES: "sales",
+  LEGAL: "legal",
 };
 
 const ALL_MODULES = Object.values(MODULES);
@@ -2023,6 +2027,138 @@ function buildCampaignDoc({
   };
 }
 
+// ═══════════════════════════════════════════════════════
+// ===== خدمة العملاء و CRM =====
+// ═══════════════════════════════════════════════════════
+
+// --- التذاكر ---
+const TICKET_CATEGORY = {
+  COMPLAINT: "complaint",             // شكوى
+  INQUIRY: "inquiry",                 // استفسار
+  SERVICE_REQUEST: "service_request", // طلب خدمة
+  TECHNICAL: "technical",             // دعم فني
+  BILLING: "billing",                 // فوترة/مالي
+  OTHER: "other",
+};
+const ALL_TICKET_CATEGORY = Object.values(TICKET_CATEGORY);
+
+const TICKET_PRIORITY = {
+  URGENT: "urgent", // عاجلة
+  HIGH: "high",     // عالية
+  MEDIUM: "medium", // متوسطة
+  LOW: "low",       // منخفضة
+};
+const ALL_TICKET_PRIORITY = Object.values(TICKET_PRIORITY);
+
+const TICKET_STATUS = {
+  OPEN: "open",               // مفتوحة
+  IN_PROGRESS: "in_progress", // قيد المعالجة
+  PENDING: "pending",         // معلّقة (بانتظار العميل)
+  RESOLVED: "resolved",       // محلولة
+  CLOSED: "closed",           // مغلقة
+};
+const ALL_TICKET_STATUS = Object.values(TICKET_STATUS);
+
+// بناء وثيقة تذكرة دعم
+function buildTicketDoc({
+  tenantId, ticketNumber, subject, customerName, contactPerson, contactPhone,
+  category, priority, status, assignedTo, description, resolution, satisfaction,
+  replies, createdBy, createdAt,
+}) {
+  return {
+    tenantId: tenantId,
+    ticketNumber: Number(ticketNumber) || 0,
+    subject: (subject || "").trim(),
+    customerName: (customerName || "").trim() || null,
+    contactPerson: contactPerson || null,
+    contactPhone: contactPhone || null,
+    category: ALL_TICKET_CATEGORY.includes(category) ? category : TICKET_CATEGORY.OTHER,
+    priority: ALL_TICKET_PRIORITY.includes(priority) ? priority : TICKET_PRIORITY.MEDIUM,
+    status: ALL_TICKET_STATUS.includes(status) ? status : TICKET_STATUS.OPEN,
+    assignedTo: assignedTo || null,
+    description: (description || "").trim() || null,
+    resolution: resolution || null,
+    satisfaction: satisfaction != null && Number.isFinite(Number(satisfaction)) ? Number(satisfaction) : null, // 1-5
+    replies: Array.isArray(replies) ? replies : [],
+    createdBy: createdBy || null,
+    createdAt: createdAt,
+    resolvedAt: null,
+  };
+}
+
+// --- التفاعلات (سجل تواصل CRM) ---
+const INTERACTION_TYPE = {
+  CALL: "call",       // مكالمة
+  MEETING: "meeting", // اجتماع
+  EMAIL: "email",     // بريد
+  VISIT: "visit",     // زيارة
+  MESSAGE: "message", // رسالة
+};
+const ALL_INTERACTION_TYPE = Object.values(INTERACTION_TYPE);
+
+// بناء وثيقة تفاعل مع عميل
+function buildInteractionDoc({
+  tenantId, type, customerName, contactPerson, subject, summary, outcome, date,
+  createdBy, createdAt,
+}) {
+  return {
+    tenantId: tenantId,
+    type: ALL_INTERACTION_TYPE.includes(type) ? type : INTERACTION_TYPE.CALL,
+    customerName: (customerName || "").trim() || null,
+    contactPerson: contactPerson || null,
+    subject: (subject || "").trim() || null,
+    summary: (summary || "").trim() || null,
+    outcome: outcome || null,
+    date: date || null,
+    createdBy: createdBy || null,
+    createdAt: createdAt,
+  };
+}
+
+// ═══════════════════════════════════════════════════════
+// ===== القانونية والامتثال =====
+// ═══════════════════════════════════════════════════════
+
+// --- العقود ---
+const CONTRACT_TYPE = {
+  SUPPLY: "supply",   // توريد عمالة
+  SERVICE: "service", // خدمة
+  RENT: "rent",       // إيجار
+  OTHER: "other",
+};
+const ALL_CONTRACT_TYPE = Object.values(CONTRACT_TYPE);
+
+const CONTRACT_STATUS = {
+  DRAFT: "draft",         // مسودّة
+  ACTIVE: "active",       // نشط
+  RENEWING: "renewing",   // قيد التجديد
+  EXPIRED: "expired",     // منتهٍ
+  CANCELLED: "cancelled", // ملغى
+};
+const ALL_CONTRACT_STATUS = Object.values(CONTRACT_STATUS);
+
+// بناء وثيقة عقد
+function buildContractDoc({
+  tenantId, contractNumber, name, party, type, value,
+  startDate, endDate, status, autoRenew, notes, createdBy, createdAt,
+}) {
+  return {
+    tenantId: tenantId,
+    contractNumber: Number(contractNumber) || 0,
+    name: (name || "").trim(),
+    party: (party || "").trim() || null,       // الطرف الآخر
+    type: ALL_CONTRACT_TYPE.includes(type) ? type : CONTRACT_TYPE.OTHER,
+    value: Number(value) || 0,
+    startDate: startDate || null,
+    endDate: endDate || null,
+    status: ALL_CONTRACT_STATUS.includes(status) ? status : CONTRACT_STATUS.DRAFT,
+    autoRenew: !!autoRenew,
+    notes: notes || null,
+    createdBy: createdBy || null,
+    createdAt: createdAt,
+  };
+}
+
 module.exports = {
   COLLECTIONS,
   ROLES,
@@ -2116,6 +2252,21 @@ module.exports = {
   buildDealDoc,
   buildQuoteDoc,
   buildCampaignDoc,
+  buildTicketDoc,
+  TICKET_CATEGORY,
+  ALL_TICKET_CATEGORY,
+  TICKET_PRIORITY,
+  ALL_TICKET_PRIORITY,
+  TICKET_STATUS,
+  ALL_TICKET_STATUS,
+  buildInteractionDoc,
+  buildContractDoc,
+  CONTRACT_TYPE,
+  ALL_CONTRACT_TYPE,
+  CONTRACT_STATUS,
+  ALL_CONTRACT_STATUS,
+  INTERACTION_TYPE,
+  ALL_INTERACTION_TYPE,
   CAMPAIGN_STATUS,
   ALL_CAMPAIGN_STATUS,
   computeQuoteTotals,

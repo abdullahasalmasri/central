@@ -17,6 +17,7 @@ const MODULES = [
   { id: "assets", name: "الأصول", icon: "🏭", color: "#0e7490" },
   { id: "procurement", name: "المشتريات", icon: "🛒", color: "#db2777" },
   { id: "sales", name: "المبيعات والتسويق", icon: "📣", color: "#e11d48" },
+  { id: "legal", name: "القانونية والامتثال", icon: "⚖️", color: "#78716c" },
   { id: "attendance", name: "الحضور", icon: "🕐", color: "#7c3aed" },
   { id: "reviews", name: "التقييم", icon: "⭐", color: "#ca8a04" },
 ];
