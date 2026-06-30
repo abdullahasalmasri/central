@@ -43,6 +43,7 @@ const COLLECTIONS = {
   PROJECT_BUDGETS: "projectBudgets",
   DEALS: "deals",
   QUOTES: "quotes",
+  CAMPAIGNS: "campaigns",
 };
 
 const ROLES = {
@@ -1990,6 +1991,38 @@ function buildQuoteDoc({
   };
 }
 
+// ===== التسويق: الحملات =====
+const CAMPAIGN_STATUS = {
+  PLANNED: "planned", // مخطّطة
+  ACTIVE: "active",   // نشطة
+  ENDED: "ended",     // منتهية
+};
+const ALL_CAMPAIGN_STATUS = Object.values(CAMPAIGN_STATUS);
+
+// بناء وثيقة حملة تسويقية
+function buildCampaignDoc({
+  tenantId, campaignNumber, name, channel, status,
+  budget, spent, leads, reach, startDate, endDate, notes,
+  createdBy, createdAt,
+}) {
+  return {
+    tenantId: tenantId,
+    campaignNumber: Number(campaignNumber) || 0,
+    name: (name || "").trim(),
+    channel: (channel || "").trim() || null,   // القناة: لينكدإن، جوجل، فعالية...
+    status: ALL_CAMPAIGN_STATUS.includes(status) ? status : CAMPAIGN_STATUS.PLANNED,
+    budget: Number(budget) || 0,               // الميزانية المخصّصة
+    spent: Number(spent) || 0,                 // المصروف فعليًا
+    leads: Number(leads) || 0,                 // عملاء محتملون مكتسبون
+    reach: Number(reach) || 0,                 // الوصول
+    startDate: startDate || null,
+    endDate: endDate || null,
+    notes: notes || null,
+    createdBy: createdBy || null,
+    createdAt: createdAt,
+  };
+}
+
 module.exports = {
   COLLECTIONS,
   ROLES,
@@ -2082,6 +2115,9 @@ module.exports = {
   buildBudgetDoc,
   buildDealDoc,
   buildQuoteDoc,
+  buildCampaignDoc,
+  CAMPAIGN_STATUS,
+  ALL_CAMPAIGN_STATUS,
   computeQuoteTotals,
   QUOTE_STATUS,
   ALL_QUOTE_STATUS,

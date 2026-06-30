@@ -59,6 +59,9 @@ const {
   buildBudgetDoc,
   buildDealDoc,
   buildQuoteDoc,
+  buildCampaignDoc,
+  CAMPAIGN_STATUS,
+  ALL_CAMPAIGN_STATUS,
   computeQuoteTotals,
   QUOTE_STATUS,
   ALL_QUOTE_STATUS,
@@ -7155,6 +7158,172 @@ exports.getQuotes = onCall(async (request) => {
     if (err instanceof HttpsError) throw err;
     console.error("getQuotes failed:", err);
     throw new HttpsError("internal", "تعذّر تحميل عروض الأسعار.");
+  }
+});
+
+// ═══════════════════════════════════════════════════════
+// ===== التسويق (الحملات) =====
+// ═══════════════════════════════════════════════════════
+
+// إنشاء حملة
+exports.createCampaign = onCall(async (request) => {
+  try {
+    const callerTenantId = await requireModule(request.auth, MODULES.SALES);
+    const data = request.data || {};
+    const name = typeof data.name === "string" ? data.name.trim() : "";
+    if (name.length < 2) throw new HttpsError("invalid-argument", "اسم الحملة مطلوب (حرفان على الأقل).");
+
+    const tenantRef = db.collection(COLLECTIONS.TENANTS).doc(callerTenantId);
+    const campRef = db.collection(COLLECTIONS.CAMPAIGNS).doc();
+    const result = await db.runTransaction(async (tx) => {
+      const tenantSnap = await tx.get(tenantRef);
+      if (!tenantSnap.exists) throw new HttpsError("failed-precondition", "الشركة غير موجودة.");
+      const nextNumber = (tenantSnap.data().lastCampaignNumber || 0) + 1;
+      const campDoc = buildCampaignDoc({
+        tenantId: callerTenantId,
+        campaignNumber: nextNumber,
+        name: name,
+        channel: typeof data.channel === "string" ? data.channel.trim() : null,
+        status: data.status,
+        budget: Number(data.budget) || 0,
+        spent: Number(data.spent) || 0,
+        leads: Number(data.leads) || 0,
+        reach: Number(data.reach) || 0,
+        startDate: typeof data.startDate === "string" && isValidDate(data.startDate) ? data.startDate : null,
+        endDate: typeof data.endDate === "string" && isValidDate(data.endDate) ? data.endDate : null,
+        notes: typeof data.notes === "string" ? data.notes.trim() : null,
+        createdBy: request.auth.uid,
+        createdAt: FieldValue.serverTimestamp(),
+      });
+      tx.set(campRef, campDoc);
+      tx.update(tenantRef, { lastCampaignNumber: nextNumber });
+      return { campaignNumber: nextNumber };
+    });
+    return { id: campRef.id, campaignNumber: result.campaignNumber };
+  } catch (err) {
+    if (err instanceof HttpsError) throw err;
+    console.error("createCampaign failed:", err);
+    throw new HttpsError("internal", "تعذّر إنشاء الحملة.");
+  }
+});
+
+// تعديل حملة
+exports.updateCampaign = onCall(async (request) => {
+  try {
+    const callerTenantId = await requireModule(request.auth, MODULES.SALES);
+    const data = request.data || {};
+    const campaignId = typeof data.campaignId === "string" ? data.campaignId.trim() : "";
+    if (!campaignId) throw new HttpsError("invalid-argument", "يجب تحديد الحملة.");
+
+    const ref = db.collection(COLLECTIONS.CAMPAIGNS).doc(campaignId);
+    const doc = await ref.get();
+    if (!doc.exists || doc.data().tenantId !== callerTenantId) throw new HttpsError("invalid-argument", "الحملة غير موجودة.");
+
+    const update = {};
+    if (typeof data.name === "string") {
+      const n = data.name.trim();
+      if (n.length < 2) throw new HttpsError("invalid-argument", "اسم الحملة قصير.");
+      update.name = n;
+    }
+    if (typeof data.channel === "string") update.channel = data.channel.trim() || null;
+    if (typeof data.status === "string") {
+      if (!ALL_CAMPAIGN_STATUS.includes(data.status)) throw new HttpsError("invalid-argument", "حالة غير صحيحة.");
+      update.status = data.status;
+    }
+    ["budget", "spent", "leads", "reach"].forEach((k) => {
+      if (data[k] !== undefined) {
+        const v = Number(data[k]);
+        if (!(v >= 0)) throw new HttpsError("invalid-argument", `قيمة غير صحيحة (${k}).`);
+        update[k] = v;
+      }
+    });
+    if (typeof data.startDate === "string") update.startDate = isValidDate(data.startDate) ? data.startDate : null;
+    if (typeof data.endDate === "string") update.endDate = isValidDate(data.endDate) ? data.endDate : null;
+    if (typeof data.notes === "string") update.notes = data.notes.trim() || null;
+
+    if (Object.keys(update).length === 0) throw new HttpsError("invalid-argument", "لا تغييرات.");
+    update.updatedBy = request.auth.uid;
+    update.updatedAt = FieldValue.serverTimestamp();
+    await ref.update(update);
+    return { id: campaignId, updated: true };
+  } catch (err) {
+    if (err instanceof HttpsError) throw err;
+    console.error("updateCampaign failed:", err);
+    throw new HttpsError("internal", "تعذّر تعديل الحملة.");
+  }
+});
+
+// حذف حملة
+exports.deleteCampaign = onCall(async (request) => {
+  try {
+    const callerTenantId = await requireModule(request.auth, MODULES.SALES);
+    const data = request.data || {};
+    const campaignId = typeof data.campaignId === "string" ? data.campaignId.trim() : "";
+    if (!campaignId) throw new HttpsError("invalid-argument", "يجب تحديد الحملة.");
+    const ref = db.collection(COLLECTIONS.CAMPAIGNS).doc(campaignId);
+    const doc = await ref.get();
+    if (!doc.exists || doc.data().tenantId !== callerTenantId) throw new HttpsError("invalid-argument", "الحملة غير موجودة.");
+    await ref.delete();
+    return { id: campaignId, deleted: true };
+  } catch (err) {
+    if (err instanceof HttpsError) throw err;
+    console.error("deleteCampaign failed:", err);
+    throw new HttpsError("internal", "تعذّر حذف الحملة.");
+  }
+});
+
+// بيانات التسويق: الحملات + الملخّص + تجميع القنوات + الميزانية
+exports.getMarketingData = onCall(async (request) => {
+  try {
+    const callerTenantId = await requireModule(request.auth, MODULES.SALES);
+    const round2 = (n) => Math.round((Number(n) || 0) * 100) / 100;
+    const snap = await db.collection(COLLECTIONS.CAMPAIGNS).where("tenantId", "==", callerTenantId).get();
+    const campaigns = snap.docs.map((d) => ({ id: d.id, ...d.data() }));
+
+    let totalReach = 0, totalLeads = 0, totalBudget = 0, totalSpent = 0, activeCount = 0;
+    const channelMap = {};
+    campaigns.forEach((c) => {
+      totalReach += Number(c.reach) || 0;
+      totalLeads += Number(c.leads) || 0;
+      totalBudget += Number(c.budget) || 0;
+      totalSpent += Number(c.spent) || 0;
+      if (c.status === "active") activeCount += 1;
+      const ch = c.channel || "غير محدّد";
+      if (!channelMap[ch]) channelMap[ch] = { channel: ch, leads: 0, reach: 0, spent: 0, count: 0 };
+      channelMap[ch].leads += Number(c.leads) || 0;
+      channelMap[ch].reach += Number(c.reach) || 0;
+      channelMap[ch].spent += Number(c.spent) || 0;
+      channelMap[ch].count += 1;
+    });
+
+    const byChannel = Object.values(channelMap).map((ch) => ({
+      channel: ch.channel,
+      leads: ch.leads,
+      reach: round2(ch.reach),
+      spent: round2(ch.spent),
+      count: ch.count,
+      costPerLead: ch.leads > 0 ? round2(ch.spent / ch.leads) : 0,
+      sharePct: totalLeads > 0 ? round2((ch.leads / totalLeads) * 100) : 0,
+    })).sort((a, b) => b.leads - a.leads);
+
+    campaigns.sort((a, b) => (b.campaignNumber || 0) - (a.campaignNumber || 0));
+
+    return {
+      campaigns,
+      byChannel,
+      summary: {
+        totalReach: round2(totalReach),
+        totalLeads,
+        totalSpent: round2(totalSpent),
+        totalBudget: round2(totalBudget),
+        activeCount,
+        costPerLead: totalLeads > 0 ? round2(totalSpent / totalLeads) : 0,
+      },
+    };
+  } catch (err) {
+    if (err instanceof HttpsError) throw err;
+    console.error("getMarketingData failed:", err);
+    throw new HttpsError("internal", "تعذّر تحميل بيانات التسويق.");
   }
 });
 

@@ -1,290 +1,332 @@
-import React from "react";
-import {
-  Eye, Heart, UserPlus, Wallet, Share2, Search, Users,
-  Calendar, ChevronDown, Megaphone, Target
-} from "lucide-react";
+import { useState, useEffect } from "react";
+import { doc, getDoc } from "firebase/firestore";
+import { httpsCallable } from "firebase/functions";
+import { db, auth, functions } from "../firebase";
 
 /* ============================================================
    التسويق والتواصل — قسم المبيعات والتسويق
-   البيانات تجريبية. دوال backend المطلوبة (جديدة) مكتوبة بجانب كل مجموعة.
+   حملات تسويقية (قناة، وصول، عملاء، ميزانية) + تحليل القنوات.
+   getMarketingData / createCampaign / updateCampaign / deleteCampaign.
    ============================================================ */
 
-// 📊 البطاقات — مصدرها: getMarketingSummary (دالة backend جديدة)
-const KPIS = [
-  { id: "reach",  label: "الوصول",            value: "48,500", icon: Eye,      color: "#db2777" },
-  { id: "eng",    label: "معدل التفاعل",      value: "6.2", suffix: "%", icon: Heart,    color: "#e11d48" },
-  { id: "leads",  label: "عملاء جدد",         value: "34", sub: "محتمل", icon: UserPlus, color: "#16a34a" },
-  { id: "budget", label: "الميزانية المصروفة", value: "62,000", unit: "ر.س", icon: Wallet, color: "#ea580c" },
-];
-
-// 📢 الحملات التسويقية — مصدرها: getCampaigns
-// status: active=نشطة · ended=منتهية
-const CAMPAIGNS = [
-  { name: "حملة LinkedIn B2B",   channel: "لينكدإن", status: "active", leads: 18, reach: 22000 },
-  { name: "حملة جوجل للبحث",     channel: "جوجل",    status: "active", leads: 12, reach: 15000 },
-  { name: "معرض التوظيف السنوي", channel: "فعالية",  status: "ended",  leads: 9,  reach: 5000  },
-  { name: "رعاية مؤتمر صناعي",   channel: "رعاية",   status: "ended",  leads: 5,  reach: 6500  },
-];
-
-// 🎯 مصادر العملاء المحتملين — مصدرها: getLeadSources
-const SOURCES = [
-  { name: "لينكدإن",   value: 18, pct: 40, icon: Share2,   color: "#db2777" },
-  { name: "جوجل",      value: 12, pct: 27, icon: Search,   color: "#2563eb" },
-  { name: "الإحالات",  value: 8,  pct: 18, icon: Users,    color: "#16a34a" },
-  { name: "الفعاليات", value: 7,  pct: 15, icon: Calendar, color: "#ea580c" },
-];
-
-// 📈 أداء القنوات (معدل التحويل) — مصدرها: getLeadSources
-const CHANNELS = [
-  { name: "الإحالات",  conv: 45 },
-  { name: "لينكدإن",   conv: 32 },
-  { name: "جوجل",      conv: 28 },
-  { name: "الفعاليات", conv: 22 },
-];
-
-// 💰 ميزانية التسويق — مصدرها: getMarketingBudget
-const BUDGET = { spent: 62000, planned: 90000 };
-
-const STATUS = {
-  active: { label: "نشطة",   cls: "active" },
-  ended:  { label: "منتهية", cls: "ended"  },
+const fmt = (n) => (Math.round((Number(n) || 0) * 100) / 100).toLocaleString("en-US");
+const STATUS_INFO = {
+  planned: { label: "مخطّطة", color: "#64748b", bg: "#f1f5f9" },
+  active: { label: "نشطة", color: "#16a34a", bg: "#dcfce7" },
+  ended: { label: "منتهية", color: "#92400e", bg: "#fef3c7" },
 };
-
-const maxConv = Math.max(...CHANNELS.map((c) => c.conv));
-const budgetPct = Math.round((BUDGET.spent / BUDGET.planned) * 100);
-const fmt = (n) => n.toLocaleString("en-US");
-
-const STYLES = `
-  *{margin:0;padding:0;box-sizing:border-box}
-  .mkt-root{
-    --bg:#f4f6f9; --panel:#fff; --ink:#161b26; --ink2:#5a6580; --ink3:#94a0b8;
-    --line:#e7ebf1; --line2:#dde2ec;
-    font-family:'IBM Plex Sans Arabic','Segoe UI',Tahoma,sans-serif;
-    direction:rtl; background:var(--bg); color:var(--ink); min-height:100vh;
-    padding:26px 30px; -webkit-font-smoothing:antialiased;
-  }
-  .mkt-num{font-variant-numeric:tabular-nums; letter-spacing:-.3px}
-
-  .mkt-head{display:flex; align-items:center; gap:14px; margin-bottom:24px; flex-wrap:wrap}
-  .mkt-head-ic{width:50px; height:50px; border-radius:13px; display:grid; place-items:center;
-    background:#db27771a; color:#db2777; flex-shrink:0}
-  .mkt-title{font-size:23px; font-weight:700; letter-spacing:-.4px; line-height:1.1}
-  .mkt-sub{font-size:13px; color:var(--ink2); margin-top:2px}
-  .mkt-period{margin-right:auto; display:flex; align-items:center; gap:7px; height:42px; padding:0 15px;
-    background:var(--panel); border:1px solid var(--line2); border-radius:11px; cursor:pointer;
-    font-family:inherit; font-size:13.5px; font-weight:600; color:var(--ink)}
-  .mkt-period svg:first-child{color:#db2777}
-
-  .mkt-kpis{display:grid; grid-template-columns:repeat(4,1fr); gap:14px; margin-bottom:16px}
-  .mkt-kpi{background:var(--panel); border:1px solid var(--line); border-radius:15px; padding:17px 18px;
-    position:relative; overflow:hidden}
-  .mkt-kpi::after{content:""; position:absolute; top:0; right:0; width:3px; height:100%; background:var(--c)}
-  .mkt-kpi-ic{width:38px; height:38px; border-radius:10px; display:grid; place-items:center;
-    background:color-mix(in srgb,var(--c) 14%,transparent); color:var(--c); margin-bottom:12px}
-  .mkt-kpi-label{font-size:12.5px; color:var(--ink2); font-weight:500; margin-bottom:5px}
-  .mkt-kpi-val{font-size:24px; font-weight:700}
-  .mkt-kpi-val .u{font-size:13px; color:var(--ink3); font-weight:600; margin-right:3px}
-  .mkt-kpi-val .x{font-size:15px; color:var(--ink3); font-weight:600}
-  .mkt-kpi-val .s{font-size:13px; color:var(--ink3); font-weight:500; margin-right:4px}
-
-  .mkt-row{display:grid; gap:16px; margin-bottom:16px; align-items:start}
-  .mkt-row.a{grid-template-columns:1.6fr 1fr}
-  .mkt-row.b{grid-template-columns:1.4fr 1fr}
-  .mkt-card{background:var(--panel); border:1px solid var(--line); border-radius:16px; padding:20px}
-  .mkt-card-head{display:flex; align-items:center; justify-content:space-between; margin-bottom:18px}
-  .mkt-card-title{font-size:15.5px; font-weight:700}
-  .mkt-card-hint{font-size:12px; color:var(--ink3); font-weight:500}
-
-  /* CAMPAIGNS */
-  .mkt-camps{display:flex; flex-direction:column; gap:10px}
-  .mkt-camp{display:flex; align-items:center; gap:13px; padding:13px 14px; border-radius:12px; background:var(--bg); border:1px solid var(--line)}
-  .mkt-camp-ic{width:36px; height:36px; border-radius:10px; background:#db27771a; color:#db2777; display:grid; place-items:center; flex-shrink:0}
-  .mkt-camp-info{flex:1; min-width:0}
-  .mkt-camp-name{font-size:13.5px; font-weight:600}
-  .mkt-camp-meta{font-size:11.5px; color:var(--ink3); margin-top:2px}
-  .mkt-camp-stats{text-align:left; flex-shrink:0}
-  .mkt-camp-leads{font-size:15px; font-weight:800; font-variant-numeric:tabular-nums}
-  .mkt-camp-reach{font-size:11px; color:var(--ink3); font-variant-numeric:tabular-nums}
-  .mkt-cpill{font-size:10.5px; font-weight:700; padding:3px 9px; border-radius:999px; flex-shrink:0; white-space:nowrap}
-  .mkt-cpill.active{background:#dcfce7; color:#15803d}
-  .mkt-cpill.ended{background:#eef1f6; color:#64748b}
-
-  /* BUDGET */
-  .mkt-budget-cap{font-size:13px; color:var(--ink2); margin-bottom:8px; font-weight:500}
-  .mkt-budget-bar{height:11px; background:#eef1f6; border-radius:999px; overflow:hidden; margin-bottom:9px}
-  .mkt-budget-bar i{display:block; height:100%; border-radius:999px; background:linear-gradient(90deg,#ea580c,#fb923c)}
-  .mkt-budget-vals{display:flex; justify-content:space-between; font-size:12px; font-variant-numeric:tabular-nums}
-  .mkt-budget-vals .l{color:var(--ink3)} .mkt-budget-vals b{color:var(--ink); font-weight:700}
-  .mkt-divider{height:1px; background:var(--line); margin:18px 0}
-  .mkt-cpl{display:flex; align-items:center; justify-content:space-between}
-  .mkt-cpl-l{font-size:12.5px; color:var(--ink2); font-weight:600}
-  .mkt-cpl-v{font-size:18px; font-weight:700; font-variant-numeric:tabular-nums}
-
-  /* SOURCES */
-  .mkt-srcs{display:flex; flex-direction:column; gap:14px}
-  .mkt-src-top{display:flex; align-items:center; justify-content:space-between; margin-bottom:7px}
-  .mkt-src-name{display:flex; align-items:center; gap:8px; font-size:13px; font-weight:600}
-  .mkt-src-ic{width:26px; height:26px; border-radius:7px; display:grid; place-items:center; flex-shrink:0}
-  .mkt-src-val{font-size:13px; font-weight:700; font-variant-numeric:tabular-nums}
-  .mkt-src-val .p{font-size:11px; color:var(--ink3); font-weight:600; margin-right:5px}
-  .mkt-src-bar{height:8px; background:#eef1f6; border-radius:999px; overflow:hidden}
-  .mkt-src-bar i{display:block; height:100%; border-radius:999px}
-
-  /* CHANNELS */
-  .mkt-chans{display:flex; flex-direction:column; gap:13px}
-  .mkt-chan-top{display:flex; justify-content:space-between; font-size:12.5px; margin-bottom:6px}
-  .mkt-chan-name{color:var(--ink2); font-weight:600; display:flex; align-items:center; gap:6px}
-  .mkt-chan-best{font-size:9.5px; font-weight:700; padding:1px 7px; border-radius:999px; background:#dcfce7; color:#15803d}
-  .mkt-chan-val{font-weight:700; font-variant-numeric:tabular-nums}
-  .mkt-chan-bar{height:7px; background:#eef1f6; border-radius:999px; overflow:hidden}
-  .mkt-chan-bar i{display:block; height:100%; border-radius:999px; background:linear-gradient(90deg,#16a34a,#4ade80)}
-
-  @media(max-width:1000px){
-    .mkt-kpis{grid-template-columns:repeat(2,1fr)}
-    .mkt-row.a,.mkt-row.b{grid-template-columns:1fr}
-  }
-  @media(max-width:560px){
-    .mkt-root{padding:18px 14px}
-    .mkt-kpis{grid-template-columns:1fr}
-    .mkt-title{font-size:19px}
-  }
-`;
+const STATUS_ORDER = ["planned", "active", "ended"];
 
 export default function MarketingView() {
+  const [tenantId, setTenantId] = useState("");
+  const [data, setData] = useState(null);
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState("");
+  const [modal, setModal] = useState(null);
+
+  useEffect(() => {
+    (async () => {
+      try {
+        const uid = auth.currentUser && auth.currentUser.uid;
+        if (!uid) { setError("لم يتم تسجيل الدخول."); setLoading(false); return; }
+        const userSnap = await getDoc(doc(db, "users", uid));
+        const tid = userSnap.exists() ? userSnap.data().tenantId : null;
+        if (!tid) { setError("تعذّر تحديد المنشأة."); setLoading(false); return; }
+        setTenantId(tid);
+      } catch (e) {
+        setError("تعذّر تحميل بيانات المستخدم."); setLoading(false);
+      }
+    })();
+  }, []);
+
+  useEffect(() => {
+    if (tenantId) loadData();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [tenantId]);
+
+  async function loadData() {
+    setLoading(true);
+    setError("");
+    try {
+      const fn = httpsCallable(functions, "getMarketingData");
+      const res = await fn({});
+      setData(res.data);
+    } catch (e) {
+      setError(e.message || "تعذّر تحميل البيانات.");
+      setData(null);
+    } finally {
+      setLoading(false);
+    }
+  }
+
+  const s = data ? data.summary : { totalReach: 0, totalLeads: 0, totalSpent: 0, totalBudget: 0, activeCount: 0, costPerLead: 0 };
+  const campaigns = data ? data.campaigns : [];
+  const byChannel = data ? data.byChannel : [];
+  const maxLeads = Math.max(1, ...byChannel.map((c) => c.leads));
+  const budgetPct = s.totalBudget > 0 ? Math.min(100, Math.round((s.totalSpent / s.totalBudget) * 100)) : 0;
+
+  async function changeStatus(campaignId, status) {
+    try {
+      await httpsCallable(functions, "updateCampaign")({ campaignId, status });
+      loadData();
+    } catch (e) { alert(e.message || "تعذّر التحديث."); }
+  }
+
   return (
-    <div className="mkt-root">
-      <style>{STYLES}</style>
-
-      {/* HEAD */}
-      <div className="mkt-head">
-        <div className="mkt-head-ic"><Megaphone size={24} /></div>
+    <div style={styles.page}>
+      <div style={styles.topRow}>
         <div>
-          <div className="mkt-title">التسويق والتواصل</div>
-          <div className="mkt-sub">الحملات والقنوات ومصادر العملاء · المبيعات والتسويق</div>
+          <h1 style={styles.pageTitle}>التسويق والتواصل</h1>
+          <p style={styles.pageSub}>إدارة الحملات التسويقية وتحليل القنوات.</p>
         </div>
-        <button className="mkt-period">
-          <Calendar size={16} /> هذا الشهر <ChevronDown size={15} />
-        </button>
+        <button style={styles.addBtn} onClick={() => setModal("new")}>+ حملة جديدة</button>
       </div>
 
-      {/* KPIs */}
-      <div className="mkt-kpis">
-        {KPIS.map((k) => {
-          const Icon = k.icon;
-          return (
-            <div className="mkt-kpi" key={k.id} style={{ "--c": k.color }}>
-              <div className="mkt-kpi-ic"><Icon size={19} /></div>
-              <div className="mkt-kpi-label">{k.label}</div>
-              <div className="mkt-kpi-val mkt-num">
-                {k.value}
-                {k.unit && <span className="u">{k.unit}</span>}
-                {k.suffix && <span className="x">{k.suffix}</span>}
-                {k.sub && <span className="s">{k.sub}</span>}
+      {error ? <div style={styles.error}>{error}</div> : null}
+
+      {loading ? <p style={styles.muted}>جارٍ التحميل...</p> : !data ? (
+        <div style={styles.warnBox}>تعذّر تحميل البيانات.</div>
+      ) : (
+        <>
+          {/* KPIs */}
+          <div style={styles.kpiGrid}>
+            <div style={styles.kpiCard}><span style={styles.kpiLabel}>الوصول</span><span style={{ ...styles.kpiValue, color: "#db2777" }} dir="ltr">{fmt(s.totalReach)}</span></div>
+            <div style={styles.kpiCard}><span style={styles.kpiLabel}>عملاء محتملون</span><span style={{ ...styles.kpiValue, color: "#16a34a" }}>{s.totalLeads}</span></div>
+            <div style={styles.kpiCard}><span style={styles.kpiLabel}>المصروف</span><span style={{ ...styles.kpiValue, color: "#ea580c" }} dir="ltr">{fmt(s.totalSpent)}</span></div>
+            <div style={styles.kpiCard}><span style={styles.kpiLabel}>تكلفة العميل</span><span style={styles.kpiValue} dir="ltr">{fmt(s.costPerLead)}</span></div>
+          </div>
+
+          {/* الميزانية */}
+          {s.totalBudget > 0 ? (
+            <div style={styles.budgetCard}>
+              <div style={styles.budgetHead}>
+                <span style={styles.budgetTitle}>الميزانية: <span dir="ltr">{fmt(s.totalSpent)}</span> من <span dir="ltr">{fmt(s.totalBudget)}</span></span>
+                <span style={{ ...styles.budgetPct, color: budgetPct > 90 ? "#dc2626" : "#db2777" }}>{budgetPct}%</span>
               </div>
+              <div style={styles.budgetBar}><div style={{ ...styles.budgetFill, width: `${budgetPct}%`, background: budgetPct > 90 ? "#dc2626" : "#db2777" }} /></div>
             </div>
-          );
-        })}
-      </div>
+          ) : null}
 
-      {/* ROW A: CAMPAIGNS + BUDGET */}
-      <div className="mkt-row a">
-
-        <div className="mkt-card" style={{ marginBottom: 0 }}>
-          <div className="mkt-card-head">
-            <span className="mkt-card-title">الحملات التسويقية</span>
-            <span className="mkt-card-hint">{CAMPAIGNS.length} حملة</span>
-          </div>
-          <div className="mkt-camps">
-            {CAMPAIGNS.map((c, i) => {
-              const st = STATUS[c.status];
-              return (
-                <div className="mkt-camp" key={i}>
-                  <div className="mkt-camp-ic"><Megaphone size={16} /></div>
-                  <div className="mkt-camp-info">
-                    <div className="mkt-camp-name">{c.name}</div>
-                    <div className="mkt-camp-meta">{c.channel}</div>
-                  </div>
-                  <span className={`mkt-cpill ${st.cls}`}>{st.label}</span>
-                  <div className="mkt-camp-stats">
-                    <div className="mkt-camp-leads">{c.leads}</div>
-                    <div className="mkt-camp-reach">وصول {fmt(c.reach)}</div>
-                  </div>
+          <div style={styles.twoCol}>
+            {/* الحملات */}
+            <div style={styles.section}>
+              <h3 style={styles.sectionTitle}>الحملات ({campaigns.length})</h3>
+              {campaigns.length === 0 ? <p style={styles.muted}>لا توجد حملات. أضف حملة جديدة.</p> : (
+                <div style={styles.campList}>
+                  {campaigns.map((c) => {
+                    const st = STATUS_INFO[c.status] || STATUS_INFO.planned;
+                    return (
+                      <div key={c.id} style={styles.campCard}>
+                        <div style={styles.campTop}>
+                          <div style={{ flex: 1, minWidth: 0 }}>
+                            <div style={styles.campName}>{c.name}</div>
+                            {c.channel ? <span style={styles.channelChip}>{c.channel}</span> : null}
+                          </div>
+                          <span style={{ ...styles.statusChip, color: st.color, background: st.bg }}>{st.label}</span>
+                        </div>
+                        <div style={styles.campStats}>
+                          <div style={styles.statItem}><span style={styles.statLabel}>الوصول</span><span style={styles.statVal} dir="ltr">{fmt(c.reach)}</span></div>
+                          <div style={styles.statItem}><span style={styles.statLabel}>عملاء</span><span style={{ ...styles.statVal, color: "#16a34a" }}>{c.leads}</span></div>
+                          <div style={styles.statItem}><span style={styles.statLabel}>المصروف</span><span style={styles.statVal} dir="ltr">{fmt(c.spent)}</span></div>
+                        </div>
+                        <div style={styles.campActions}>
+                          <select style={styles.statusSelect} value={c.status} onChange={(e) => changeStatus(c.id, e.target.value)}>
+                            {STATUS_ORDER.map((st2) => <option key={st2} value={st2}>{STATUS_INFO[st2].label}</option>)}
+                          </select>
+                          <button style={styles.editBtn} onClick={() => setModal({ edit: c })}>✏️</button>
+                          <DeleteBtn campaignId={c.id} name={c.name} onDone={loadData} />
+                        </div>
+                      </div>
+                    );
+                  })}
                 </div>
-              );
-            })}
-          </div>
-        </div>
+              )}
+            </div>
 
-        <div className="mkt-card" style={{ marginBottom: 0 }}>
-          <div className="mkt-card-head">
-            <span className="mkt-card-title">ميزانية التسويق</span>
-          </div>
-          <div className="mkt-budget-cap">المصروف من المخطّط ({budgetPct}٪)</div>
-          <div className="mkt-budget-bar"><i style={{ width: `${budgetPct}%` }} /></div>
-          <div className="mkt-budget-vals">
-            <span className="l">مصروف <b>{fmt(BUDGET.spent)}</b></span>
-            <span className="l">مخطّط <b>{fmt(BUDGET.planned)}</b></span>
-          </div>
-          <div className="mkt-divider" />
-          <div className="mkt-cpl">
-            <span className="mkt-cpl-l">تكلفة العميل المحتمل</span>
-            <span className="mkt-cpl-v mkt-num">1,823 ر.س</span>
-          </div>
-        </div>
-
-      </div>
-
-      {/* ROW B: SOURCES + CHANNELS */}
-      <div className="mkt-row b">
-
-        <div className="mkt-card" style={{ marginBottom: 0 }}>
-          <div className="mkt-card-head">
-            <span className="mkt-card-title">مصادر العملاء المحتملين</span>
-            <Target size={17} style={{ color: "#94a0b8" }} />
-          </div>
-          <div className="mkt-srcs">
-            {SOURCES.map((s) => {
-              const Icon = s.icon;
-              return (
-                <div key={s.name}>
-                  <div className="mkt-src-top">
-                    <span className="mkt-src-name">
-                      <span className="mkt-src-ic" style={{ background: s.color + "1a", color: s.color }}>
-                        <Icon size={14} />
-                      </span>
-                      {s.name}
-                    </span>
-                    <span className="mkt-src-val mkt-num">{s.value}<span className="p">{s.pct}٪</span></span>
-                  </div>
-                  <div className="mkt-src-bar"><i style={{ width: `${s.pct}%`, background: s.color }} /></div>
+            {/* القنوات */}
+            <div style={styles.section}>
+              <h3 style={styles.sectionTitle}>أداء القنوات</h3>
+              {byChannel.length === 0 ? <p style={styles.muted}>لا توجد بيانات قنوات.</p> : (
+                <div style={styles.chList}>
+                  {byChannel.map((ch, i) => (
+                    <div key={i} style={styles.chItem}>
+                      <div style={styles.chTop}>
+                        <span style={styles.chName}>{ch.channel}</span>
+                        <span style={styles.chLeads}>{ch.leads} عميل</span>
+                      </div>
+                      <div style={styles.chBar}><div style={{ ...styles.chFill, width: `${(ch.leads / maxLeads) * 100}%` }} /></div>
+                      <div style={styles.chMeta}>
+                        <span>الوصول: <span dir="ltr">{fmt(ch.reach)}</span></span>
+                        {ch.costPerLead > 0 ? <span>تكلفة العميل: <span dir="ltr">{fmt(ch.costPerLead)}</span></span> : null}
+                      </div>
+                    </div>
+                  ))}
                 </div>
-              );
-            })}
+              )}
+            </div>
           </div>
-        </div>
+        </>
+      )}
 
-        <div className="mkt-card" style={{ marginBottom: 0 }}>
-          <div className="mkt-card-head">
-            <span className="mkt-card-title">أداء القنوات</span>
-            <span className="mkt-card-hint">معدل التحويل</span>
-          </div>
-          <div className="mkt-chans">
-            {CHANNELS.map((c, i) => (
-              <div key={c.name}>
-                <div className="mkt-chan-top">
-                  <span className="mkt-chan-name">
-                    {c.name}
-                    {i === 0 && <span className="mkt-chan-best">الأفضل</span>}
-                  </span>
-                  <span className="mkt-chan-val mkt-num">{c.conv}٪</span>
-                </div>
-                <div className="mkt-chan-bar"><i style={{ width: `${(c.conv / maxConv) * 100}%` }} /></div>
-              </div>
-            ))}
-          </div>
-        </div>
+      {modal === "new" ? <CampaignModal onClose={() => setModal(null)} onSaved={() => { setModal(null); loadData(); }} /> : null}
+      {modal && modal.edit ? <CampaignModal campaign={modal.edit} onClose={() => setModal(null)} onSaved={() => { setModal(null); loadData(); }} /> : null}
+    </div>
+  );
+}
 
+function DeleteBtn({ campaignId, name, onDone }) {
+  const [busy, setBusy] = useState(false);
+  async function del() {
+    if (!window.confirm(`حذف حملة «${name}»؟`)) return;
+    setBusy(true);
+    try {
+      await httpsCallable(functions, "deleteCampaign")({ campaignId });
+      onDone();
+    } catch (e) { alert(e.message || "تعذّر الحذف."); setBusy(false); }
+  }
+  return <button style={styles.delBtn} onClick={del} disabled={busy}>{busy ? "..." : "🗑"}</button>;
+}
+
+function CampaignModal({ campaign, onClose, onSaved }) {
+  const isEdit = !!campaign;
+  const c = campaign || {};
+  const [f, setF] = useState({
+    name: c.name || "", channel: c.channel || "", status: c.status || "planned",
+    budget: c.budget ? String(c.budget) : "", spent: c.spent ? String(c.spent) : "",
+    leads: c.leads ? String(c.leads) : "", reach: c.reach ? String(c.reach) : "",
+    startDate: c.startDate || "", endDate: c.endDate || "", notes: c.notes || "",
+  });
+  const [err, setErr] = useState(""); const [saving, setSaving] = useState(false);
+  const set = (k, v) => setF((p) => ({ ...p, [k]: v }));
+
+  async function save() {
+    setErr("");
+    if (f.name.trim().length < 2) { setErr("اسم الحملة مطلوب."); return; }
+    setSaving(true);
+    try {
+      const payload = {
+        name: f.name.trim(), channel: f.channel.trim(), status: f.status,
+        budget: Number(f.budget) || 0, spent: Number(f.spent) || 0,
+        leads: Number(f.leads) || 0, reach: Number(f.reach) || 0,
+        startDate: f.startDate, endDate: f.endDate, notes: f.notes.trim(),
+      };
+      if (isEdit) {
+        await httpsCallable(functions, "updateCampaign")({ campaignId: campaign.id, ...payload });
+      } else {
+        await httpsCallable(functions, "createCampaign")(payload);
+      }
+      onSaved();
+    } catch (e) {
+      setErr(e.message || "تعذّر الحفظ.");
+    } finally {
+      setSaving(false);
+    }
+  }
+
+  return (
+    <div style={styles.overlay} onClick={onClose}>
+      <div style={styles.modal} onClick={(e) => e.stopPropagation()}>
+        <div style={styles.modalHead}>
+          <h2 style={styles.modalTitle}>{isEdit ? "تعديل الحملة" : "حملة جديدة"}</h2>
+          <button style={styles.close} onClick={onClose}>✕</button>
+        </div>
+        {err ? <div style={styles.error}>{err}</div> : null}
+
+        <div style={styles.field}><label style={styles.label}>اسم الحملة *</label><input style={styles.input} value={f.name} onChange={(e) => set("name", e.target.value)} disabled={saving} placeholder="حملة لينكدإن للتوظيف" /></div>
+        <div style={styles.row}>
+          <div style={{ flex: 1 }}><div style={styles.field}><label style={styles.label}>القناة</label><input style={styles.input} value={f.channel} onChange={(e) => set("channel", e.target.value)} disabled={saving} placeholder="لينكدإن، جوجل، فعالية..." /></div></div>
+          <div style={{ flex: 1 }}><div style={styles.field}><label style={styles.label}>الحالة</label>
+            <select style={styles.input} value={f.status} onChange={(e) => set("status", e.target.value)} disabled={saving}>
+              {STATUS_ORDER.map((st) => <option key={st} value={st}>{STATUS_INFO[st].label}</option>)}
+            </select>
+          </div></div>
+        </div>
+        <div style={styles.row}>
+          <div style={{ flex: 1 }}><div style={styles.field}><label style={styles.label}>الميزانية</label><input style={styles.input} type="number" min="0" value={f.budget} onChange={(e) => set("budget", e.target.value)} disabled={saving} dir="ltr" /></div></div>
+          <div style={{ flex: 1 }}><div style={styles.field}><label style={styles.label}>المصروف</label><input style={styles.input} type="number" min="0" value={f.spent} onChange={(e) => set("spent", e.target.value)} disabled={saving} dir="ltr" /></div></div>
+        </div>
+        <div style={styles.row}>
+          <div style={{ flex: 1 }}><div style={styles.field}><label style={styles.label}>الوصول</label><input style={styles.input} type="number" min="0" value={f.reach} onChange={(e) => set("reach", e.target.value)} disabled={saving} dir="ltr" /></div></div>
+          <div style={{ flex: 1 }}><div style={styles.field}><label style={styles.label}>عملاء محتملون</label><input style={styles.input} type="number" min="0" value={f.leads} onChange={(e) => set("leads", e.target.value)} disabled={saving} dir="ltr" /></div></div>
+        </div>
+        <div style={styles.row}>
+          <div style={{ flex: 1 }}><div style={styles.field}><label style={styles.label}>تاريخ البداية</label><input style={styles.input} type="date" value={f.startDate} onChange={(e) => set("startDate", e.target.value)} disabled={saving} dir="ltr" /></div></div>
+          <div style={{ flex: 1 }}><div style={styles.field}><label style={styles.label}>تاريخ النهاية</label><input style={styles.input} type="date" value={f.endDate} onChange={(e) => set("endDate", e.target.value)} disabled={saving} dir="ltr" /></div></div>
+        </div>
+        <div style={styles.field}><label style={styles.label}>ملاحظات</label><textarea style={styles.textarea} value={f.notes} onChange={(e) => set("notes", e.target.value)} disabled={saving} rows={2} /></div>
+
+        <div style={styles.modalActions}>
+          <button style={styles.cancelBtn} onClick={onClose} disabled={saving}>إلغاء</button>
+          <button style={styles.saveBtn} onClick={save} disabled={saving}>{saving ? "جارٍ الحفظ..." : isEdit ? "حفظ" : "إضافة"}</button>
+        </div>
       </div>
     </div>
   );
 }
+
+const styles = {
+  page: { padding: "26px 30px 40px", minHeight: "100%", background: "#f4f6f9", fontFamily: "'IBM Plex Sans Arabic', system-ui, sans-serif", direction: "rtl" },
+  topRow: { display: "flex", justifyContent: "space-between", alignItems: "flex-start", marginBottom: 22, flexWrap: "wrap", gap: 12 },
+  pageTitle: { fontSize: 24, fontWeight: 800, color: "#db2777", margin: "0 0 4px" },
+  pageSub: { fontSize: 14, color: "#64748b", margin: 0 },
+  addBtn: { padding: "11px 20px", fontSize: 14, fontWeight: 700, color: "#fff", background: "#db2777", border: "none", borderRadius: 8, cursor: "pointer", whiteSpace: "nowrap" },
+
+  error: { padding: "10px 12px", background: "#fee2e2", color: "#b91c1c", borderRadius: 8, fontSize: 14, marginBottom: 16 },
+  warnBox: { padding: "12px 16px", background: "#fffbeb", border: "1px solid #fde68a", borderRadius: 10, fontSize: 14, color: "#92400e", marginBottom: 16 },
+  muted: { color: "#94a3b8", fontSize: 14, margin: 0 },
+
+  kpiGrid: { display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(170px, 1fr))", gap: 12, marginBottom: 16 },
+  kpiCard: { background: "#fff", border: "1px solid #e2e8f0", borderRadius: 12, padding: "16px 20px", display: "flex", flexDirection: "column", gap: 8 },
+  kpiLabel: { fontSize: 13, color: "#64748b", fontWeight: 600 },
+  kpiValue: { fontSize: 24, fontWeight: 800, color: "#0f172a", fontFamily: "monospace" },
+
+  budgetCard: { background: "#fff", border: "1px solid #e2e8f0", borderRadius: 12, padding: "16px 20px", marginBottom: 18 },
+  budgetHead: { display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 10 },
+  budgetTitle: { fontSize: 14, fontWeight: 700, color: "#334155" },
+  budgetPct: { fontSize: 18, fontWeight: 800, fontFamily: "monospace" },
+  budgetBar: { height: 10, background: "#fce7f3", borderRadius: 999, overflow: "hidden" },
+  budgetFill: { height: "100%", borderRadius: 999 },
+
+  twoCol: { display: "grid", gridTemplateColumns: "1.6fr 1fr", gap: 18, alignItems: "start" },
+
+  section: { background: "#fff", border: "1px solid #e2e8f0", borderRadius: 12, padding: "20px 22px", marginBottom: 18 },
+  sectionTitle: { fontSize: 16, fontWeight: 800, color: "#0f172a", margin: "0 0 16px" },
+
+  campList: { display: "flex", flexDirection: "column", gap: 12 },
+  campCard: { border: "1px solid #e2e8f0", borderRadius: 10, padding: "14px 16px" },
+  campTop: { display: "flex", justifyContent: "space-between", alignItems: "flex-start", gap: 10, marginBottom: 12 },
+  campName: { fontSize: 15, fontWeight: 700, color: "#0f172a", marginBottom: 6 },
+  channelChip: { fontSize: 12, color: "#db2777", background: "#fce7f3", borderRadius: 6, padding: "2px 10px", fontWeight: 600 },
+  statusChip: { fontSize: 12, fontWeight: 700, borderRadius: 6, padding: "3px 12px", whiteSpace: "nowrap" },
+  campStats: { display: "flex", gap: 20, marginBottom: 12, flexWrap: "wrap" },
+  statItem: { display: "flex", flexDirection: "column", gap: 3 },
+  statLabel: { fontSize: 11, color: "#94a3b8", fontWeight: 600 },
+  statVal: { fontSize: 15, fontWeight: 700, color: "#334155", fontFamily: "monospace" },
+  campActions: { display: "flex", gap: 8, alignItems: "center", flexWrap: "wrap" },
+  statusSelect: { padding: "6px 10px", fontSize: 12, fontWeight: 700, border: "1px solid #cbd5e1", borderRadius: 7, fontFamily: "inherit", background: "#fff", cursor: "pointer" },
+  editBtn: { padding: "6px 10px", fontSize: 12, background: "#f1f5f9", border: "none", borderRadius: 7, cursor: "pointer" },
+  delBtn: { padding: "6px 10px", fontSize: 12, background: "#fef2f2", border: "none", borderRadius: 7, cursor: "pointer" },
+
+  chList: { display: "flex", flexDirection: "column", gap: 16 },
+  chItem: {},
+  chTop: { display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 7 },
+  chName: { fontSize: 14, fontWeight: 700, color: "#334155" },
+  chLeads: { fontSize: 13, fontWeight: 700, color: "#16a34a" },
+  chBar: { height: 8, background: "#fce7f3", borderRadius: 999, overflow: "hidden", marginBottom: 7 },
+  chFill: { height: "100%", background: "linear-gradient(90deg, #db2777, #f472b6)", borderRadius: 999 },
+  chMeta: { display: "flex", gap: 16, fontSize: 12, color: "#94a3b8", flexWrap: "wrap" },
+
+  overlay: { position: "fixed", inset: 0, background: "rgba(15,23,42,.5)", display: "flex", alignItems: "center", justifyContent: "center", zIndex: 1000, padding: 16 },
+  modal: { background: "#fff", borderRadius: 16, width: "100%", maxWidth: 520, maxHeight: "92vh", overflowY: "auto", padding: 24, direction: "rtl", fontFamily: "'IBM Plex Sans Arabic', system-ui, sans-serif" },
+  modalHead: { display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 16 },
+  modalTitle: { fontSize: 17, fontWeight: 800, color: "#0f172a", margin: 0 },
+  close: { fontSize: 20, color: "#94a3b8", background: "none", border: "none", cursor: "pointer" },
+  field: { display: "flex", flexDirection: "column", marginBottom: 12 },
+  label: { display: "block", fontSize: 13, fontWeight: 600, color: "#334155", margin: "0 0 6px" },
+  input: { width: "100%", padding: "10px 12px", fontSize: 14, border: "1px solid #cbd5e1", borderRadius: 8, boxSizing: "border-box", fontFamily: "inherit" },
+  textarea: { width: "100%", padding: "10px 12px", fontSize: 14, border: "1px solid #cbd5e1", borderRadius: 8, boxSizing: "border-box", fontFamily: "inherit", resize: "vertical" },
+  row: { display: "flex", gap: 12 },
+  modalActions: { display: "flex", gap: 10, marginTop: 8 },
+  cancelBtn: { flex: 1, padding: "11px", fontSize: 14, fontWeight: 600, color: "#475569", background: "#f1f5f9", border: "none", borderRadius: 8, cursor: "pointer" },
+  saveBtn: { flex: 2, padding: "11px", fontSize: 14, fontWeight: 700, color: "#fff", background: "#db2777", border: "none", borderRadius: 8, cursor: "pointer" },
+};
