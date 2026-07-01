@@ -1,4 +1,5 @@
 import React, { useState, useEffect } from "react";
+import { LanguageProvider } from "./i18n";
 import CentralShell from "./CentralShell";
 import OwnerShell from "./OwnerShell";
 
@@ -136,6 +137,6 @@ export default function App() {
     return () => window.removeEventListener("hashchange", onHash);
   }, []);
 
-  if (isOwnerRoute) return <OwnerShell />;
-  return <CentralShell views={views} />;
+  if (isOwnerRoute) return <LanguageProvider><OwnerShell /></LanguageProvider>;
+  return <LanguageProvider><CentralShell views={views} /></LanguageProvider>;
 }

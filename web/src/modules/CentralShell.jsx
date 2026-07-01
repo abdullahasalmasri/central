@@ -5,6 +5,8 @@ import {
 } from "lucide-react";
 import { onAuthStateChanged, signInWithEmailAndPassword, signOut } from "firebase/auth";
 import { auth } from "../firebase";
+import { useT } from "./i18n";
+import LanguageSwitcher from "./LanguageSwitcher";
 
 /* ============================================================
    Central — الهيكل الرئيسي (App Shell)
@@ -94,9 +96,9 @@ const VIEW_INFO = {};
 NAV.forEach((node) => {
   if (node.type === "section") {
     node.children.forEach((c) =>
-      (VIEW_INFO[c.id] = { name: c.name, file: c.file, deptName: node.name, color: node.color, icon: node.icon }));
+      (VIEW_INFO[c.id] = { name: c.name, file: c.file, deptName: node.name, dept: node.id, color: node.color, icon: node.icon }));
   } else if (node.type === "item") {
-    VIEW_INFO[node.id] = { name: node.name, file: node.file, deptName: "إدارة المنصة", color: node.color, icon: node.icon };
+    VIEW_INFO[node.id] = { name: node.name, file: node.file, deptName: "إدارة المنصة", dept: null, color: node.color, icon: node.icon };
   }
 });
 
@@ -106,7 +108,7 @@ const STYLES = `
     --bg:#f4f6f9; --panel:#fff; --ink:#161b26; --ink2:#5a6580; --ink3:#94a0b8;
     --line:#e7ebf1; --line2:#dde2ec; --sb:#fff;
     font-family:'IBM Plex Sans Arabic','Segoe UI',Tahoma,sans-serif;
-    direction:rtl; background:var(--bg); color:var(--ink); min-height:100vh;
+    background:var(--bg); color:var(--ink); min-height:100vh;
     display:flex; -webkit-font-smoothing:antialiased;
   }
 
@@ -255,6 +257,7 @@ function viewFromHash() {
 }
 
 export default function CentralShell({ views = {} }) {
+  const { t, dir } = useT();
   // ===== المصادقة =====
   const [user, setUser] = useState(null);
   const [authLoading, setAuthLoading] = useState(true);
@@ -334,7 +337,7 @@ export default function CentralShell({ views = {} }) {
                 <button key={node.id} className={`sh-item-btn ${active ? "active" : ""}`}
                         style={{ "--c": node.color }} onClick={() => openView(node.id)}>
                   <span className="sh-sec-ic"><Icon size={17} /></span>
-                  <span className="sh-sec-name">{node.name}</span>
+                  <span className="sh-sec-name">{t(node.id)}</span>
                 </button>
               );
             }
@@ -346,7 +349,7 @@ export default function CentralShell({ views = {} }) {
               <div className="sh-sec" key={node.id} style={{ "--c": node.color }}>
                 <button className="sh-sec-btn" onClick={() => toggleSection(node.id)}>
                   <span className="sh-sec-ic"><Icon size={17} /></span>
-                  <span className="sh-sec-name" style={hasActive ? { color: node.color, fontWeight: 700 } : null}>{node.name}</span>
+                  <span className="sh-sec-name" style={hasActive ? { color: node.color, fontWeight: 700 } : null}>{t(node.id)}</span>
                   <ChevronDown size={16} className={`sh-sec-chev ${isOpen ? "open" : ""}`} />
                 </button>
                 <div className={`sh-children ${isOpen ? "open" : ""}`}>
@@ -357,7 +360,7 @@ export default function CentralShell({ views = {} }) {
                         <button key={c.id} className={`sh-child ${active ? "active" : ""}`}
                                 style={{ "--c": node.color }} onClick={() => openView(c.id)}>
                           <span className="sh-child-dot" />
-                          <span>{c.name}</span>
+                          <span>{t(c.id)}</span>
                           {c.file && <span className="sh-child-file" title="واجهة جاهزة" />}
                         </button>
                       );
@@ -381,16 +384,16 @@ export default function CentralShell({ views = {} }) {
             <button className="sh-back" onClick={goBack} title="رجوع"><ArrowRight size={18} /></button>
           ) : null}
           <div className="sh-crumb">
-            <span className="sh-crumb-dept">{cur.deptName}</span>
+            <span className="sh-crumb-dept">{cur.dept ? t(cur.dept) : t("platformAdmin")}</span>
             <ChevronDown size={14} className="sh-crumb-sep" style={{ transform: "rotate(90deg)" }} />
-            <span className="sh-crumb-cur">{cur.name}</span>
+            <span className="sh-crumb-cur">{t(activeView)}</span>
           </div>
           <div className="sh-top-actions">
             <button className="sh-top-btn"><Search size={17} /></button>
             <button className="sh-top-btn"><Bell size={17} /></button>
-            <button className="sh-lang"><Globe size={15} /><span>العربية</span></button>
+            <LanguageSwitcher />
             <div className="sh-avatar" title={user.email || ""}>{userInitial}</div>
-            <button className="sh-logout" onClick={handleLogout} title="تسجيل الخروج"><LogOut size={17} /></button>
+            <button className="sh-logout" onClick={handleLogout} title={t("logout")}><LogOut size={17} /></button>
           </div>
         </div>
 
@@ -402,8 +405,8 @@ export default function CentralShell({ views = {} }) {
             <div className="sh-ph" style={{ "--c": cur.color }}>
               <div className="sh-ph-card">
                 <div className="sh-ph-ic"><CurIcon size={34} /></div>
-                <div className="sh-ph-name">{cur.name}</div>
-                <div className="sh-ph-dept">{cur.deptName}</div>
+                <div className="sh-ph-name">{t(activeView)}</div>
+                <div className="sh-ph-dept">{cur.dept ? t(cur.dept) : t("platformAdmin")}</div>
                 {cur.file ? (
                   <div className="sh-ph-box ready">
                     <div className="sh-ph-status ready"><Package size={15} /> واجهة جاهزة للربط</div>
