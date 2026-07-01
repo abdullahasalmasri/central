@@ -1,6 +1,7 @@
 // ═══════════════════════════════════════════════════════════════
 // إعداد Firebase للإنتاج — مشروع ba9it-424c8 (المنطقة: europe-west1)
 // ═══════════════════════════════════════════════════════════════
+import { initializeAppCheck, ReCaptchaV3Provider } from "firebase/app-check";
 import { initializeApp } from "firebase/app";
 import { getAuth } from "firebase/auth";
 import { getFirestore } from "firebase/firestore";
@@ -16,7 +17,10 @@ const firebaseConfig = {
 };
 
 const app = initializeApp(firebaseConfig);
-
+initializeAppCheck(app, {
+  provider: new ReCaptchaV3Provider("ضع_SITE_KEY_هنا"),
+  isTokenAutoRefreshEnabled: true,
+});
 export const auth = getAuth(app);
 export const db = getFirestore(app);
 // المنطقة تطابق منطقة نشر الدوال (europe-west1)

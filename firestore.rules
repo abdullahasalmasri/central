@@ -1,82 +1,58 @@
 rules_version = '2';
 
-// ═══════════════════════════════════════════════════════════════
-// قواعد أمان Central ERP
-// المبدأ: كل الكتابة تمرّ عبر Cloud Functions (Admin SDK يتجاوز هذه القواعد).
-// لذا كل كتابة مباشرة من العميل ممنوعة (write: false).
-// القراءة: معزولة بـ tenantId (عزل المستأجرين). الإدارة (owner/staff) تقرأ
-// بيانات شركتها كاملة؛ العامل يقرأ ما يخصّه فقط (حماية الرواتب والمالية).
-// tenantId و role متوفّران في الـ token عبر custom claims.
-// ═══════════════════════════════════════════════════════════════
+// ============================================================
+//  قواعد حماية Central — عزل كامل بين الشركات (multi-tenant)
+//  المبدأ: كل الكتابات عبر Cloud Functions فقط (allow write: if false).
+//  القراءات المباشرة من العميل محصورة بنفس الشركة (tenantId).
+// ============================================================
 
 service cloud.firestore {
   match /databases/{database}/documents {
 
-    function signedIn() {
+    // هل المستخدم مسجّل دخول؟
+    function isSignedIn() {
       return request.auth != null;
     }
-    function myTenant() {
-      return request.auth.token.tenantId;
-    }
-    function myRole() {
-      return request.auth.token.role;
-    }
-    // الإدارة: المالك أو الموظف
-    function isStaff() {
-      return signedIn() && (myRole() == 'owner' || myRole() == 'staff');
-    }
-    // المستند يخصّ شركتي
-    function inMyTenant() {
-      return signedIn() && resource.data.tenantId == myTenant();
-    }
-    // المستند يخصّني (حقل uid معيّن يساوي هويتي)
-    function mine(field) {
-      return resource.data[field] == request.auth.uid;
+
+    // هل الوثيقة تخصّ شركة المستخدم؟ (tenantId من الـ token)
+    function belongsToTenant() {
+      return isSignedIn()
+        && request.auth.token.tenantId != null
+        && resource.data.tenantId == request.auth.token.tenantId;
     }
 
-    // ───── مستند الشركة ─────
-    // كل أعضاء الشركة يقرؤون اسمها وإعداداتها (لا يحمل حقل tenantId — نطابق بالمعرّف)
+    // ===== الوثائق الخاصة (لها قواعد مخصّصة) =====
+
+    // الشركات: المستخدم يقرأ وثيقة شركته فقط (المعرّف = tenantId)
     match /tenants/{tenantId} {
-      allow read: if signedIn() && tenantId == myTenant();
+      allow read: if isSignedIn() && request.auth.token.tenantId == tenantId;
       allow write: if false;
     }
 
-    // ───── المستخدمون ─────
-    // الإدارة تقرأ الجميع؛ العامل يقرأ مستنده فقط (حماية بيانات الرواتب costBase)
+    // المستخدمون: يقرأ وثيقته الشخصية أو زملاءه في نفس الشركة
     match /users/{userId} {
-      allow read: if inMyTenant() && (isStaff() || userId == request.auth.uid);
+      allow read: if isSignedIn() && (
+        request.auth.uid == userId ||
+        (request.auth.token.tenantId != null && resource.data.tenantId == request.auth.token.tenantId)
+      );
       allow write: if false;
     }
 
-    // ───── سجلّات الحضور ─────
-    // الإدارة + العامل صاحب السجل + مشرفه
-    match /records/{docId} {
-      allow read: if inMyTenant() && (isStaff() || mine('workerUid') || mine('supervisorUid'));
+    // مالكو المنصة: كل واحد يقرأ وثيقته فقط (التحقق الفعلي في الدوال)
+    match /platformOwners/{ownerId} {
+      allow read: if isSignedIn() && request.auth.uid == ownerId;
       allow write: if false;
     }
 
-    // ───── الجداول الزمنية ─────
-    match /schedules/{docId} {
-      allow read: if inMyTenant() && (isStaff() || mine('workerUid') || mine('supervisorUid'));
+    // إعدادات المنصة (الأسعار): أي مستخدم مسجّل يقرأ — يحتاجها بناء النظام
+    match /platformConfig/{docId} {
+      allow read: if isSignedIn();
       allow write: if false;
     }
 
-    // ───── استثناءات الحضور ─────
-    // الإدارة + العامل المعني + مشرفه
-    match /attendanceExceptions/{docId} {
-      allow read: if inMyTenant() && (isStaff() || mine('subjectUid') || mine('supervisorUid'));
-      allow write: if false;
-    }
-
-    // ───── باقي المجموعات (إدارية) ─────
-    // المالية، المشاريع، العمليات، الأصول، المشتريات، الملخّصات، المناوبات...
-    // الإدارة فقط تقرؤها؛ العامل ممنوع (ليس staff). الكتابة عبر Functions حصراً.
-    // يشمل: shifts, summaries, vendors, items, accounts, journalEntries,
-    // customers, invoices, projectTypes, projects, jobTitles, resourceRequests,
-    // workerAssignments, assets, assetExpenses, financeApprovals,
-    // monthlyDeductions, sharedAllocations
+    // ===== كل المجموعات الأخرى: قراءة لنفس الشركة فقط، الكتابة عبر الدوال =====
     match /{collection}/{docId} {
-      allow read: if inMyTenant() && isStaff();
+      allow read: if belongsToTenant();
       allow write: if false;
     }
   }
