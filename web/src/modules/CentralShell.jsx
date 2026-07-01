@@ -4,7 +4,8 @@ import {
   Award, CreditCard, Boxes, ChevronDown, Menu, X, Globe, Bell, Search, Package, LogOut, ArrowRight
 } from "lucide-react";
 import { onAuthStateChanged, signInWithEmailAndPassword, signOut } from "firebase/auth";
-import { auth } from "../firebase";
+import { httpsCallable } from "firebase/functions";
+import { auth, functions } from "../firebase";
 import { useT } from "./i18n";
 import LanguageSwitcher from "./LanguageSwitcher";
 
@@ -38,6 +39,7 @@ const NAV = [
     { id: "fin_proc",  name: "المشتريات",         file: "ProcurementView.jsx" },
     { id: "fin_pos",   name: "نقاط البيع (POS)",  file: "POSView.jsx" },
     { id: "fin_cash",  name: "الكاشير",           file: "CashierView.jsx" },
+    { id: "fin_review", name: "مراجعة عروض الأسعار", file: "FinanceQuoteReviewView.jsx" },
   ]},
   { type: "section", id: "hr", name: "الموارد البشرية", icon: Users, color: "#2563eb", children: [
     { id: "hr_emp",   name: "شؤون الموظفين",   file: null },
@@ -256,6 +258,91 @@ function viewFromHash() {
   return VIEW_INFO[h] ? h : "exec_kpi";
 }
 
+// جرس الإشعارات — تنبيهات فعلية موجّهة للإدارات لاتخاذ إجراء
+function NotificationBell() {
+  const { t } = useT();
+  const [open, setOpen] = useState(false);
+  const [notifs, setNotifs] = useState([]);
+  const [unread, setUnread] = useState(0);
+  const [loading, setLoading] = useState(false);
+
+  const load = async () => {
+    setLoading(true);
+    try {
+      const res = await httpsCallable(functions, "getMyNotifications")({});
+      setNotifs((res.data && res.data.notifications) || []);
+      setUnread((res.data && res.data.unreadCount) || 0);
+    } catch (e) { /* تجاهل */ }
+    setLoading(false);
+  };
+
+  useEffect(() => {
+    load();
+    const iv = setInterval(load, 60000); // تحديث كل دقيقة
+    return () => clearInterval(iv);
+  }, []);
+
+  const markRead = async (id) => {
+    try {
+      await httpsCallable(functions, "markNotificationRead")({ notifId: id });
+      setNotifs((arr) => arr.map((n) => (n.id === id ? { ...n, read: true } : n)));
+      setUnread((u) => Math.max(0, u - 1));
+    } catch (e) { /* تجاهل */ }
+  };
+
+  const goTo = (n) => {
+    if (!n.read) markRead(n.id);
+    if (n.relatedType === "price_quote") {
+      window.location.hash = n.targetModule === "SALES" ? "#sal_quote" : "#fin_review";
+    }
+    setOpen(false);
+  };
+
+  return (
+    <div style={{ position: "relative" }}>
+      <button className="sh-top-btn" onClick={() => { setOpen((o) => !o); if (!open) load(); }} style={{ position: "relative" }}>
+        <Bell size={17} />
+        {unread > 0 ? <span style={bellStyles.badge}>{unread > 9 ? "9+" : unread}</span> : null}
+      </button>
+      {open ? (
+        <>
+          <div style={bellStyles.overlay} onClick={() => setOpen(false)} />
+          <div style={bellStyles.panel}>
+            <div style={bellStyles.head}>{t("notifications")}</div>
+            {loading ? (
+              <div style={bellStyles.empty}>…</div>
+            ) : notifs.length === 0 ? (
+              <div style={bellStyles.empty}>{t("noNotifications")}</div>
+            ) : (
+              <div style={bellStyles.list}>
+                {notifs.map((n) => (
+                  <div key={n.id} style={{ ...bellStyles.item, ...(n.read ? {} : bellStyles.itemUnread) }} onClick={() => goTo(n)}>
+                    <div style={bellStyles.itemTitle}>{n.title}</div>
+                    <div style={bellStyles.itemMsg}>{n.message}</div>
+                  </div>
+                ))}
+              </div>
+            )}
+          </div>
+        </>
+      ) : null}
+    </div>
+  );
+}
+
+const bellStyles = {
+  badge: { position: "absolute", top: -4, insetInlineEnd: -4, minWidth: 16, height: 16, padding: "0 4px", background: "#dc2626", color: "#fff", fontSize: 10, fontWeight: 700, borderRadius: 10, display: "flex", alignItems: "center", justifyContent: "center", lineHeight: 1 },
+  overlay: { position: "fixed", inset: 0, zIndex: 998 },
+  panel: { position: "absolute", top: "calc(100% + 8px)", insetInlineEnd: 0, width: 340, maxHeight: 420, overflowY: "auto", background: "#fff", border: "1px solid #e2e8f0", borderRadius: 12, boxShadow: "0 12px 32px rgba(0,0,0,.15)", zIndex: 999 },
+  head: { padding: "14px 16px", fontSize: 14, fontWeight: 800, color: "#0f172a", borderBottom: "1px solid #f1f5f9" },
+  empty: { padding: "28px 16px", textAlign: "center", color: "#94a3b8", fontSize: 13 },
+  list: { display: "flex", flexDirection: "column" },
+  item: { padding: "12px 16px", borderBottom: "1px solid #f8fafc", cursor: "pointer", background: "#fff" },
+  itemUnread: { background: "#eff6ff" },
+  itemTitle: { fontSize: 13, fontWeight: 700, color: "#0f172a", marginBottom: 3 },
+  itemMsg: { fontSize: 12, color: "#64748b", lineHeight: 1.5 },
+};
+
 export default function CentralShell({ views = {} }) {
   const { t, dir } = useT();
   // ===== المصادقة =====
@@ -390,7 +477,7 @@ export default function CentralShell({ views = {} }) {
           </div>
           <div className="sh-top-actions">
             <button className="sh-top-btn"><Search size={17} /></button>
-            <button className="sh-top-btn"><Bell size={17} /></button>
+            <NotificationBell />
             <LanguageSwitcher />
             <div className="sh-avatar" title={user.email || ""}>{userInitial}</div>
             <button className="sh-logout" onClick={handleLogout} title={t("logout")}><LogOut size={17} /></button>

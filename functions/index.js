@@ -12177,6 +12177,14 @@ exports.createPriceQuote = onCall(async (request) => {
       return { quoteNumber: nextQuoteNumber };
     });
 
+    if (status === PQS.PENDING_FINANCE) {
+      await createNotification({
+        tenantId: callerTenantId, targetModule: MODULES.FINANCE, type: "quote_pending",
+        title: "عرض سعر بانتظار المراجعة",
+        message: `عرض السعر #${result.quoteNumber} بانتظار مراجعتك واعتماده.`,
+        relatedType: "price_quote", relatedId: quoteRef.id, createdBy: request.auth.uid,
+      });
+    }
     return { id: quoteRef.id, quoteNumber: result.quoteNumber, status, ...totals };
   } catch (err) {
     if (err instanceof HttpsError) throw err;
@@ -12261,5 +12269,195 @@ exports.getWorkforceOptions = onCall(async (request) => {
     if (err instanceof HttpsError) throw err;
     console.error("getWorkforceOptions failed:", err);
     throw new HttpsError("internal", "تعذّر تحميل خيارات القوى العاملة.");
+  }
+});
+
+// ═══════════════════════════════════════════════════════
+// ===== الإشعارات + مراجعة المالية لعرض السعر =====
+// ═══════════════════════════════════════════════════════
+const { buildNotificationDoc: buildNotifDoc } = require("./schema");
+
+// helper: إنشاء إشعار موجّه لإدارة
+async function createNotification({ tenantId, targetModule, type, title, message, relatedType, relatedId, createdBy }) {
+  try {
+    await db.collection(COLLECTIONS.NOTIFICATIONS).add(
+      buildNotifDoc({ tenantId, targetModule, type, title, message, relatedType, relatedId, createdBy, createdAt: FieldValue.serverTimestamp() })
+    );
+  } catch (e) { console.error("createNotification failed:", e && e.message); }
+}
+
+// إشعاراتي (حسب صلاحيات المستخدم — الإدارات اللي يقدر يشوفها)
+exports.getMyNotifications = onCall(async (request) => {
+  try {
+    const auth = request.auth;
+    if (!auth) throw new HttpsError("unauthenticated", "يجب تسجيل الدخول أولاً.");
+    const callerTenantId = auth.token.tenantId;
+    if (!callerTenantId) throw new HttpsError("failed-precondition", "حسابك غير مرتبط بشركة.");
+
+    // الإدارات اللي يقدر المستخدم يشوف إشعاراتها
+    let myModules = [];
+    if (auth.token.role === ROLES.OWNER) {
+      myModules = null; // المالك يشوف الكل
+    } else {
+      const uDoc = await db.collection(COLLECTIONS.USERS).doc(auth.uid).get();
+      myModules = uDoc.exists ? (uDoc.data().permissions || []) : [];
+    }
+
+    const snap = await db.collection(COLLECTIONS.NOTIFICATIONS)
+      .where("tenantId", "==", callerTenantId)
+      .get();
+    let notifs = snap.docs.map((d) => ({ id: d.id, ...d.data() }));
+    // فلترة حسب الإدارة (المالك يشوف الكل)
+    if (myModules !== null) {
+      notifs = notifs.filter((n) => !n.targetModule || myModules.includes(n.targetModule));
+    }
+    // ترتيب تنازلي بالوقت
+    notifs.sort((a, b) => {
+      const ta = a.createdAt && a.createdAt._seconds ? a.createdAt._seconds : 0;
+      const tb = b.createdAt && b.createdAt._seconds ? b.createdAt._seconds : 0;
+      return tb - ta;
+    });
+    const unreadCount = notifs.filter((n) => !n.read).length;
+    return { notifications: notifs.slice(0, 50), unreadCount };
+  } catch (err) {
+    if (err instanceof HttpsError) throw err;
+    console.error("getMyNotifications failed:", err);
+    throw new HttpsError("internal", "تعذّر تحميل الإشعارات.");
+  }
+});
+
+// تعليم إشعار كمقروء
+exports.markNotificationRead = onCall(async (request) => {
+  try {
+    const auth = request.auth;
+    if (!auth) throw new HttpsError("unauthenticated", "يجب تسجيل الدخول أولاً.");
+    const callerTenantId = auth.token.tenantId;
+    const data = request.data || {};
+    const notifId = typeof data.notifId === "string" ? data.notifId.trim() : "";
+    if (!notifId) throw new HttpsError("invalid-argument", "معرّف الإشعار مطلوب.");
+    const ref = db.collection(COLLECTIONS.NOTIFICATIONS).doc(notifId);
+    const doc = await ref.get();
+    if (!doc.exists || doc.data().tenantId !== callerTenantId) {
+      throw new HttpsError("invalid-argument", "الإشعار غير موجود.");
+    }
+    await ref.update({ read: true });
+    return { id: notifId, read: true };
+  } catch (err) {
+    if (err instanceof HttpsError) throw err;
+    console.error("markNotificationRead failed:", err);
+    throw new HttpsError("internal", "تعذّر تحديث الإشعار.");
+  }
+});
+
+// عروض الأسعار المعروضة على المالية (بانتظار المراجعة)
+exports.getFinanceQuotes = onCall(async (request) => {
+  try {
+    const callerTenantId = await requireModule(request.auth, MODULES.FINANCE);
+    const snap = await db.collection(COLLECTIONS.PRICE_QUOTES)
+      .where("tenantId", "==", callerTenantId)
+      .where("status", "==", "pending_finance")
+      .get();
+    const quotes = snap.docs.map((d) => ({ id: d.id, ...d.data() }));
+    quotes.sort((a, b) => (b.quoteNumber || 0) - (a.quoteNumber || 0));
+    return { quotes };
+  } catch (err) {
+    if (err instanceof HttpsError) throw err;
+    console.error("getFinanceQuotes failed:", err);
+    throw new HttpsError("internal", "تعذّر تحميل عروض المالية.");
+  }
+});
+
+// موافقة المالية على عرض السعر → رقم مرجعي + تاريخ + إشعار للمبيعات
+exports.approvePriceQuote = onCall(async (request) => {
+  try {
+    const callerTenantId = await requireModule(request.auth, MODULES.FINANCE);
+    const data = request.data || {};
+    const quoteId = typeof data.quoteId === "string" ? data.quoteId.trim() : "";
+    if (!quoteId) throw new HttpsError("invalid-argument", "يجب تحديد عرض السعر.");
+
+    const ref = db.collection(COLLECTIONS.PRICE_QUOTES).doc(quoteId);
+    const tenantRef = db.collection(COLLECTIONS.TENANTS).doc(callerTenantId);
+
+    const result = await db.runTransaction(async (tx) => {
+      const snap = await tx.get(ref);
+      if (!snap.exists || snap.data().tenantId !== callerTenantId) {
+        throw new HttpsError("invalid-argument", "عرض السعر غير موجود.");
+      }
+      if (snap.data().status !== "pending_finance") {
+        throw new HttpsError("failed-precondition", "عرض السعر ليس بانتظار مراجعة المالية.");
+      }
+      // رقم مرجعي تلقائي من المالية
+      const tenantSnap = await tx.get(tenantRef);
+      const nextRef = ((tenantSnap.data() || {}).lastFinanceRefNumber || 0) + 1;
+      const financeRefNumber = `FIN-${String(nextRef).padStart(4, "0")}`;
+
+      tx.update(ref, {
+        status: "approved_finance",
+        financeRefNumber,
+        financeReviewedBy: request.auth.uid,
+        financeReviewedAt: FieldValue.serverTimestamp(),
+        rejectionReason: null,
+        updatedAt: FieldValue.serverTimestamp(),
+      });
+      tx.update(tenantRef, { lastFinanceRefNumber: nextRef });
+      return { financeRefNumber, quoteNumber: snap.data().quoteNumber };
+    });
+
+    // إشعار المبيعات: العرض معتمد
+    await createNotification({
+      tenantId: callerTenantId, targetModule: MODULES.SALES, type: "quote_approved",
+      title: "اعتُمد عرض السعر",
+      message: `عرض السعر #${result.quoteNumber} اعتمدته المالية (${result.financeRefNumber}). يمكن إرساله للعميل.`,
+      relatedType: "price_quote", relatedId: quoteId, createdBy: request.auth.uid,
+    });
+
+    return { id: quoteId, status: "approved_finance", ...result };
+  } catch (err) {
+    if (err instanceof HttpsError) throw err;
+    console.error("approvePriceQuote failed:", err);
+    throw new HttpsError("internal", "تعذّر اعتماد عرض السعر.");
+  }
+});
+
+// رفض المالية → سبب + إشعار للمبيعات (العرض يبقى للتوثيق، المبيعات تنشئ نسخة معدّلة)
+exports.rejectPriceQuote = onCall(async (request) => {
+  try {
+    const callerTenantId = await requireModule(request.auth, MODULES.FINANCE);
+    const data = request.data || {};
+    const quoteId = typeof data.quoteId === "string" ? data.quoteId.trim() : "";
+    const reason = typeof data.reason === "string" ? data.reason.trim() : "";
+    if (!quoteId) throw new HttpsError("invalid-argument", "يجب تحديد عرض السعر.");
+    if (!reason) throw new HttpsError("invalid-argument", "يجب ذكر سبب الرفض (للتوثيق).");
+
+    const ref = db.collection(COLLECTIONS.PRICE_QUOTES).doc(quoteId);
+    const snap = await ref.get();
+    if (!snap.exists || snap.data().tenantId !== callerTenantId) {
+      throw new HttpsError("invalid-argument", "عرض السعر غير موجود.");
+    }
+    if (snap.data().status !== "pending_finance") {
+      throw new HttpsError("failed-precondition", "عرض السعر ليس بانتظار مراجعة المالية.");
+    }
+
+    await ref.update({
+      status: "rejected_finance",
+      rejectionReason: reason,
+      financeReviewedBy: request.auth.uid,
+      financeReviewedAt: FieldValue.serverTimestamp(),
+      updatedAt: FieldValue.serverTimestamp(),
+    });
+
+    // إشعار المبيعات: العرض مرفوض
+    await createNotification({
+      tenantId: callerTenantId, targetModule: MODULES.SALES, type: "quote_rejected",
+      title: "رُفض عرض السعر",
+      message: `عرض السعر #${snap.data().quoteNumber} رفضته المالية. السبب: ${reason}`,
+      relatedType: "price_quote", relatedId: quoteId, createdBy: request.auth.uid,
+    });
+
+    return { id: quoteId, status: "rejected_finance" };
+  } catch (err) {
+    if (err instanceof HttpsError) throw err;
+    console.error("rejectPriceQuote failed:", err);
+    throw new HttpsError("internal", "تعذّر رفض عرض السعر.");
   }
 });

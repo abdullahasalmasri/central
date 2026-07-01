@@ -46,6 +46,7 @@ import CostAllocationView      from "./CostAllocationView";
 import SalesView                from "./SalesView";
 import QuotesView               from "./QuotesView";
 import PriceQuotesView          from "./PriceQuotesView";
+import FinanceQuoteReviewView   from "./FinanceQuoteReviewView";
 import MarketingView            from "./MarketingView";
 import CustomerServiceView      from "./CustomerServiceView";
 import ContractsView            from "./ContractsView";
@@ -76,6 +77,7 @@ const views = {
   fin_proc:      ProcurementView,
   fin_pos:       POSView,
   fin_cash:      CashierView,
+  fin_review:    FinanceQuoteReviewView,
 
   // الموارد البشرية
   hr_emp:        StaffView,

@@ -47,6 +47,7 @@ const COLLECTIONS = {
   DEALS: "deals",
   QUOTES: "quotes",
   PRICE_QUOTES: "priceQuotes",
+  NOTIFICATIONS: "notifications",
   CAMPAIGNS: "campaigns",
   TICKETS: "tickets",
   INTERACTIONS: "interactions",
@@ -2757,6 +2758,24 @@ function buildPriceQuoteDoc({
   };
 }
 
+// بناء إشعار (تنبيه فعلي يُوجّه لإدارة لاتخاذ إجراء)
+function buildNotificationDoc({
+  tenantId, targetModule, type, title, message, relatedType, relatedId, createdBy, createdAt,
+}) {
+  return {
+    tenantId,
+    targetModule: targetModule || null,   // الإدارة المستهدفة (FINANCE, SALES, PROJECTS...)
+    type: type || null,                   // نوع الإشعار (quote_pending, quote_approved...)
+    title: title || null,
+    message: message || null,
+    relatedType: relatedType || null,     // نوع العنصر المرتبط (price_quote, project...)
+    relatedId: relatedId || null,         // معرّف العنصر
+    read: false,
+    createdBy: createdBy || null,
+    createdAt,
+  };
+}
+
 module.exports = {
   COLLECTIONS,
   ROLES,
@@ -2889,6 +2908,7 @@ module.exports = {
   normalizeQuoteEquipmentItem,
   computePriceQuoteTotals,
   buildPriceQuoteDoc,
+  buildNotificationDoc,
   PLATFORM_TICKET_STATUS,
   ALL_PLATFORM_TICKET_STATUS,
   PLATFORM_TICKET_CATEGORY,

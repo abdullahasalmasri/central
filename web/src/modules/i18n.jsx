@@ -47,6 +47,9 @@ const T = {
   amount: { ar: "المبلغ", en: "Amount", ur: "رقم", tl: "Halaga" },
   noData: { ar: "لا توجد بيانات", en: "No data", ur: "کوئی ڈیٹا نہیں", tl: "Walang data" },
   language: { ar: "اللغة", en: "Language", ur: "زبان", tl: "Wika" },
+  notifications: { ar: "الإشعارات", en: "Notifications", ur: "اطلاعات", tl: "Mga Abiso" },
+  noNotifications: { ar: "لا توجد إشعارات", en: "No notifications", ur: "کوئی اطلاع نہیں", tl: "Walang abiso" },
+  markAllRead: { ar: "تعليم الكل كمقروء", en: "Mark all read", ur: "سب پڑھا ہوا نشان زد کریں", tl: "Markahan lahat" },
 
   // ===== الإدارات (الأقسام الرئيسية التسعة) =====
   exec: { ar: "الإدارة العليا", en: "Executive", ur: "اعلیٰ انتظامیہ", tl: "Ehekutibo" },
@@ -81,6 +84,7 @@ const T = {
   fin_proc: { ar: "المشتريات", en: "Procurement", ur: "خریداری", tl: "Pagbili" },
   fin_pos: { ar: "نقاط البيع", en: "Point of Sale", ur: "پوائنٹ آف سیل", tl: "Point of Sale" },
   fin_cash: { ar: "الكاشير", en: "Cashier", ur: "کیشیئر", tl: "Cashier" },
+  fin_review: { ar: "مراجعة عروض الأسعار", en: "Quote Review", ur: "قیمت کا جائزہ", tl: "Pagsusuri ng Quote" },
 
   // ===== أقسام الموارد البشرية =====
   hr_emp: { ar: "شؤون الموظفين", en: "Employees", ur: "ملازمین", tl: "Mga Empleyado" },
