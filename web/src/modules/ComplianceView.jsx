@@ -2,6 +2,7 @@ import { useState, useEffect } from "react";
 import { doc, getDoc } from "firebase/firestore";
 import { httpsCallable } from "firebase/functions";
 import { db, auth, functions } from "../firebase";
+import { useT } from "./i18n";
 
 /* ============================================================
    الامتثال والتراخيص — قسم القانونية والامتثال
@@ -11,24 +12,25 @@ import { db, auth, functions } from "../firebase";
    ============================================================ */
 
 const STATUS_INFO = {
-  valid: { label: "ساري", color: "#16a34a", bg: "#dcfce7" },
-  expiring: { label: "ينتهي قريبًا", color: "#ea580c", bg: "#ffedd5" },
-  expired: { label: "منتهٍ", color: "#dc2626", bg: "#fee2e2" },
+  valid: { labelKey: "comp_validShort", color: "#16a34a", bg: "#dcfce7" },
+  expiring: { labelKey: "comp_expiringSoon", color: "#ea580c", bg: "#ffedd5" },
+  expired: { labelKey: "comp_expired", color: "#dc2626", bg: "#fee2e2" },
 };
 
 // متطلبات الامتثال للسوق السعودي (ثابتة)
 const REQUIREMENTS = [
-  { key: "cr", name: "السجل التجاري", note: "ساري المفعول" },
-  { key: "zatca", name: "فوترة ZATCA", note: "فوترة إلكترونية معتمدة" },
-  { key: "vat", name: "ضريبة القيمة المضافة", note: "إقرارات منتظمة" },
-  { key: "gosi", name: "التأمينات (GOSI)", note: "اشتراكات محدّثة" },
-  { key: "nitaqat", name: "نطاقات — السعودة", note: "النطاق الأخضر" },
-  { key: "wps", name: "حماية الأجور (WPS)", note: "الرواتب عبر النظام" },
-  { key: "mol", name: "رخصة مكتب العمل", note: "سارية ومحدّثة" },
-  { key: "safety", name: "اشتراطات السلامة", note: "الدفاع المدني" },
+  { key: "cr", nameKey: "comp_cr", noteKey: "comp_valid" },
+  { key: "zatca", nameKey: "comp_zatca", noteKey: "comp_eInvoice" },
+  { key: "vat", nameKey: "comp_vat", noteKey: "comp_regularDecl" },
+  { key: "gosi", nameKey: "comp_gosi", noteKey: "comp_updatedSubs" },
+  { key: "nitaqat", nameKey: "comp_nitaqat", noteKey: "comp_greenZone" },
+  { key: "wps", nameKey: "comp_wps", noteKey: "comp_payrollSystem" },
+  { key: "mol", nameKey: "comp_laborLicense", noteKey: "comp_validUpdated" },
+  { key: "safety", nameKey: "comp_safety", noteKey: "comp_civilDefense" },
 ];
 
 export default function ComplianceView() {
+  const { t } = useT();
   const [tenantId, setTenantId] = useState("");
   const [data, setData] = useState(null);
   const [loading, setLoading] = useState(true);
@@ -40,13 +42,13 @@ export default function ComplianceView() {
     (async () => {
       try {
         const uid = auth.currentUser && auth.currentUser.uid;
-        if (!uid) { setError("لم يتم تسجيل الدخول."); setLoading(false); return; }
+        if (!uid) { setError(t("comp_notLoggedIn")); setLoading(false); return; }
         const userSnap = await getDoc(doc(db, "users", uid));
         const tid = userSnap.exists() ? userSnap.data().tenantId : null;
-        if (!tid) { setError("تعذّر تحديد المنشأة."); setLoading(false); return; }
+        if (!tid) { setError(t("comp_noTenant")); setLoading(false); return; }
         setTenantId(tid);
       } catch (e) {
-        setError("تعذّر تحميل بيانات المستخدم."); setLoading(false);
+        setError(t("comp_userErr")); setLoading(false);
       }
     })();
   }, []);
@@ -63,7 +65,7 @@ export default function ComplianceView() {
       const res = await httpsCallable(functions, "getCompliance")({});
       setData(res.data);
     } catch (e) {
-      setError(e.message || "تعذّر تحميل البيانات.");
+      setError(e.message || t("comp_loadErr"));
       setData(null);
     } finally {
       setLoading(false);
@@ -83,7 +85,7 @@ export default function ComplianceView() {
     try {
       await httpsCallable(functions, "setComplianceItem")({ key, ok: !currentOk });
       setData((prev) => ({ ...prev, complianceStatus: { ...prev.complianceStatus, [key]: { ...(prev.complianceStatus[key] || {}), ok: !currentOk } } }));
-    } catch (e) { alert(e.message || "تعذّر التحديث."); }
+    } catch (e) { alert(e.message || t("comp_updateErr")); }
     finally { setSavingKey(""); }
   }
 
@@ -91,24 +93,24 @@ export default function ComplianceView() {
     <div style={styles.page}>
       <div style={styles.topRow}>
         <div>
-          <h1 style={styles.pageTitle}>الامتثال والتراخيص</h1>
-          <p style={styles.pageSub}>متابعة التراخيص ومتطلبات الامتثال النظامية.</p>
+          <h1 style={styles.pageTitle}>{t("leg_com")}</h1>
+          <p style={styles.pageSub}>{t("comp_subtitle")}</p>
         </div>
-        <button style={styles.addBtn} onClick={() => setModal("new")}>+ ترخيص جديد</button>
+        <button style={styles.addBtn} onClick={() => setModal("new")}>{t("comp_addLicense")}</button>
       </div>
 
       {error ? <div style={styles.error}>{error}</div> : null}
 
-      {loading ? <p style={styles.muted}>جارٍ التحميل...</p> : !data ? (
-        <div style={styles.warnBox}>تعذّر تحميل البيانات.</div>
+      {loading ? <p style={styles.muted}>{t("loading")}</p> : !data ? (
+        <div style={styles.warnBox}>{t("comp_loadErr")}</div>
       ) : (
         <>
           {/* KPIs */}
           <div style={styles.kpiGrid}>
-            <div style={styles.kpiCard}><span style={styles.kpiLabel}>نسبة الامتثال</span><span style={{ ...styles.kpiValue, color: complianceRate >= 80 ? "#16a34a" : complianceRate >= 50 ? "#ea580c" : "#dc2626" }} dir="ltr">{complianceRate}%</span></div>
-            <div style={styles.kpiCard}><span style={styles.kpiLabel}>تراخيص سارية</span><span style={{ ...styles.kpiValue, color: "#78716c" }}>{s.validCount}</span></div>
-            <div style={styles.kpiCard}><span style={styles.kpiLabel}>تنتهي قريبًا</span><span style={{ ...styles.kpiValue, color: "#ea580c" }}>{s.expiringCount}</span></div>
-            <div style={styles.kpiCard}><span style={styles.kpiLabel}>منتهية</span><span style={{ ...styles.kpiValue, color: "#dc2626" }}>{s.expiredCount}</span></div>
+            <div style={styles.kpiCard}><span style={styles.kpiLabel}>{t("comp_complianceRate")}</span><span style={{ ...styles.kpiValue, color: complianceRate >= 80 ? "#16a34a" : complianceRate >= 50 ? "#ea580c" : "#dc2626" }} dir="ltr">{complianceRate}%</span></div>
+            <div style={styles.kpiCard}><span style={styles.kpiLabel}>{t("comp_validLicenses")}</span><span style={{ ...styles.kpiValue, color: "#78716c" }}>{s.validCount}</span></div>
+            <div style={styles.kpiCard}><span style={styles.kpiLabel}>{t("comp_expiringSoonTitle")}</span><span style={{ ...styles.kpiValue, color: "#ea580c" }}>{s.expiringCount}</span></div>
+            <div style={styles.kpiCard}><span style={styles.kpiLabel}>{t("comp_expiredTitle")}</span><span style={{ ...styles.kpiValue, color: "#dc2626" }}>{s.expiredCount}</span></div>
           </div>
 
           {/* تنبيه التجديد */}
@@ -118,8 +120,8 @@ export default function ComplianceView() {
               <div style={styles.renewalList}>
                 {renewals.map((r) => (
                   <div key={r.id} style={styles.renewalItem}>
-                    <div><span style={styles.renewalName}>{r.name}</span>{r.authority ? <span style={styles.renewalAuth}> — {r.authority}</span> : null}</div>
-                    <span style={{ ...styles.renewalDays, color: r.days <= 7 ? "#dc2626" : "#ea580c" }}>{r.days <= 0 ? "منتهٍ" : `${r.days} يوم`}</span>
+                    <div><span style={styles.renewalName}>{t(r.nameKey)}</span>{r.authority ? <span style={styles.renewalAuth}> — {r.authority}</span> : null}</div>
+                    <span style={{ ...styles.renewalDays, color: r.days <= 7 ? "#dc2626" : "#ea580c" }}>{r.days <= 0 ? t("comp_expired") : `${r.days} ${t("comp_day")}`}</span>
                   </div>
                 ))}
               </div>
@@ -130,7 +132,7 @@ export default function ComplianceView() {
             {/* التراخيص */}
             <div style={styles.section}>
               <h3 style={styles.sectionTitle}>التراخيص والتصاريح ({licenses.length})</h3>
-              {licenses.length === 0 ? <p style={styles.muted}>لا توجد تراخيص. أضف ترخيصًا جديدًا.</p> : (
+              {licenses.length === 0 ? <p style={styles.muted}>{t("comp_noLicenses")}</p> : (
                 <div style={styles.licList}>
                   {licenses.map((l) => {
                     const st = STATUS_INFO[l.computedStatus] || STATUS_INFO.valid;
@@ -141,14 +143,14 @@ export default function ComplianceView() {
                             <div style={styles.lName}>{l.name}</div>
                             {l.authority ? <div style={styles.lAuth}>🏛 {l.authority}</div> : null}
                           </div>
-                          <span style={{ ...styles.chip, color: st.color, background: st.bg }}>{st.label}</span>
+                          <span style={{ ...styles.chip, color: st.color, background: st.bg }}>{t(st.labelKey)}</span>
                         </div>
                         <div style={styles.lBody}>
                           {l.licenseNumber ? <span style={styles.lNum} dir="ltr">#{l.licenseNumber}</span> : null}
-                          {l.endDate ? <span style={styles.lEnd}>ينتهي: <span dir="ltr">{l.endDate}</span></span> : null}
+                          {l.endDate ? <span style={styles.lEnd}>{t("comp_expiresPrefix")}<span dir="ltr">{l.endDate}</span></span> : null}
                         </div>
                         <div style={styles.lActions}>
-                          <button style={styles.editBtn} onClick={() => setModal({ edit: l })}>✏️ تعديل</button>
+                          <button style={styles.editBtn} onClick={() => setModal({ edit: l })}>{`✏️ ${t("edit")}`}</button>
                           <DeleteBtn licenseId={l.id} name={l.name} onDone={loadData} />
                         </div>
                       </div>
@@ -160,8 +162,8 @@ export default function ComplianceView() {
 
             {/* متطلبات الامتثال */}
             <div style={styles.section}>
-              <h3 style={styles.sectionTitle}>متطلبات الامتثال</h3>
-              <div style={styles.reqHint}>اضغط على المتطلب لتغيير حالته</div>
+              <h3 style={styles.sectionTitle}>{t("comp_complianceReqs")}</h3>
+              <div style={styles.reqHint}>{t("comp_clickReq")}</div>
               <div style={styles.reqList}>
                 {REQUIREMENTS.map((r) => {
                   const ok = !!(cs[r.key] && cs[r.key].ok);
@@ -169,8 +171,8 @@ export default function ComplianceView() {
                     <button key={r.key} style={{ ...styles.reqItem, ...(ok ? styles.reqOk : {}) }} onClick={() => toggleReq(r.key, ok)} disabled={savingKey === r.key}>
                       <span style={{ ...styles.reqCheck, ...(ok ? { background: "#16a34a", borderColor: "#16a34a", color: "#fff" } : {}) }}>{ok ? "✓" : ""}</span>
                       <div style={styles.reqInfo}>
-                        <span style={{ ...styles.reqName, color: ok ? "#166534" : "#334155" }}>{r.name}</span>
-                        <span style={styles.reqNote}>{r.note}</span>
+                        <span style={{ ...styles.reqName, color: ok ? "#166534" : "#334155" }}>{t(r.nameKey)}</span>
+                        <span style={styles.reqNote}>{t(r.noteKey)}</span>
                       </div>
                     </button>
                   );
@@ -195,9 +197,9 @@ function DeleteBtn({ licenseId, name, onDone }) {
     try {
       await httpsCallable(functions, "deleteLicense")({ licenseId });
       onDone();
-    } catch (e) { alert(e.message || "تعذّر الحذف."); setBusy(false); }
+    } catch (e) { alert(e.message || t("comp_deleteErr")); setBusy(false); }
   }
-  return <button style={styles.delBtn} onClick={del} disabled={busy}>{busy ? "..." : "🗑 حذف"}</button>;
+  return <button style={styles.delBtn} onClick={del} disabled={busy}>{busy ? "..." : `🗑 ${t("delete")}`}</button>;
 }
 
 function LicenseModal({ license, onClose, onSaved }) {
@@ -212,7 +214,7 @@ function LicenseModal({ license, onClose, onSaved }) {
 
   async function save() {
     setErr("");
-    if (f.name.trim().length < 2) { setErr("اسم الترخيص مطلوب."); return; }
+    if (f.name.trim().length < 2) { setErr(t("comp_licNameReq")); return; }
     setSaving(true);
     try {
       const payload = {
@@ -226,7 +228,7 @@ function LicenseModal({ license, onClose, onSaved }) {
       }
       onSaved();
     } catch (e) {
-      setErr(e.message || "تعذّر الحفظ.");
+      setErr(e.message || t("comp_saveErr"));
     } finally {
       setSaving(false);
     }
@@ -236,25 +238,25 @@ function LicenseModal({ license, onClose, onSaved }) {
     <div style={styles.overlay} onClick={onClose}>
       <div style={styles.modal} onClick={(e) => e.stopPropagation()}>
         <div style={styles.modalHead}>
-          <h2 style={styles.modalTitle}>{isEdit ? "تعديل الترخيص" : "ترخيص جديد"}</h2>
+          <h2 style={styles.modalTitle}>{isEdit ? t("comp_editLicense") : t("comp_newLicense")}</h2>
           <button style={styles.close} onClick={onClose}>✕</button>
         </div>
         {err ? <div style={styles.error}>{err}</div> : null}
 
-        <div style={styles.field}><label style={styles.label}>اسم الترخيص *</label><input style={styles.input} value={f.name} onChange={(e) => set("name", e.target.value)} disabled={saving} placeholder="السجل التجاري" /></div>
+        <div style={styles.field}><label style={styles.label}>{t("comp_licName")}</label><input style={styles.input} value={f.name} onChange={(e) => set("name", e.target.value)} disabled={saving} placeholder={t("comp_cr")} /></div>
         <div style={styles.row}>
-          <div style={{ flex: 1 }}><div style={styles.field}><label style={styles.label}>رقم الترخيص</label><input style={styles.input} value={f.licenseNumber} onChange={(e) => set("licenseNumber", e.target.value)} disabled={saving} dir="ltr" /></div></div>
-          <div style={{ flex: 1 }}><div style={styles.field}><label style={styles.label}>الجهة المصدرة</label><input style={styles.input} value={f.authority} onChange={(e) => set("authority", e.target.value)} disabled={saving} placeholder="وزارة التجارة" /></div></div>
+          <div style={{ flex: 1 }}><div style={styles.field}><label style={styles.label}>{t("comp_licNumber")}</label><input style={styles.input} value={f.licenseNumber} onChange={(e) => set("licenseNumber", e.target.value)} disabled={saving} dir="ltr" /></div></div>
+          <div style={{ flex: 1 }}><div style={styles.field}><label style={styles.label}>{t("comp_issuer")}</label><input style={styles.input} value={f.authority} onChange={(e) => set("authority", e.target.value)} disabled={saving} placeholder={t("comp_commerce")} /></div></div>
         </div>
         <div style={styles.row}>
-          <div style={{ flex: 1 }}><div style={styles.field}><label style={styles.label}>تاريخ الإصدار</label><input style={styles.input} type="date" value={f.issueDate} onChange={(e) => set("issueDate", e.target.value)} disabled={saving} dir="ltr" /></div></div>
-          <div style={{ flex: 1 }}><div style={styles.field}><label style={styles.label}>تاريخ الانتهاء</label><input style={styles.input} type="date" value={f.endDate} onChange={(e) => set("endDate", e.target.value)} disabled={saving} dir="ltr" /></div></div>
+          <div style={{ flex: 1 }}><div style={styles.field}><label style={styles.label}>{t("comp_issueDate")}</label><input style={styles.input} type="date" value={f.issueDate} onChange={(e) => set("issueDate", e.target.value)} disabled={saving} dir="ltr" /></div></div>
+          <div style={{ flex: 1 }}><div style={styles.field}><label style={styles.label}>{t("comp_expiryDate")}</label><input style={styles.input} type="date" value={f.endDate} onChange={(e) => set("endDate", e.target.value)} disabled={saving} dir="ltr" /></div></div>
         </div>
-        <div style={styles.field}><label style={styles.label}>ملاحظات</label><textarea style={styles.textarea} value={f.notes} onChange={(e) => set("notes", e.target.value)} disabled={saving} rows={2} /></div>
+        <div style={styles.field}><label style={styles.label}>{t("comp_notes")}</label><textarea style={styles.textarea} value={f.notes} onChange={(e) => set("notes", e.target.value)} disabled={saving} rows={2} /></div>
 
         <div style={styles.modalActions}>
-          <button style={styles.cancelBtn} onClick={onClose} disabled={saving}>إلغاء</button>
-          <button style={styles.saveBtn} onClick={save} disabled={saving}>{saving ? "جارٍ الحفظ..." : isEdit ? "حفظ" : "إضافة"}</button>
+          <button style={styles.cancelBtn} onClick={onClose} disabled={saving}>{t("cancel")}</button>
+          <button style={styles.saveBtn} onClick={save} disabled={saving}>{saving ? t("comp_saving") : isEdit ? t("save") : t("add")}</button>
         </div>
       </div>
     </div>

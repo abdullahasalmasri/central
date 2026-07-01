@@ -1,6 +1,7 @@
 import { useState, useEffect, useMemo } from "react";
 import { httpsCallable } from "firebase/functions";
 import { functions } from "../firebase";
+import { useT } from "./i18n";
 
 /* ============================================================
    BuildSystemView — بناء النظام (العميل يختار أقسامه ويدفع)
@@ -50,6 +51,7 @@ const STRUCTURE = [
 ];
 
 export default function BuildSystemView() {
+  const { t } = useT();
   const [pricing, setPricing] = useState(null);
   const [selected, setSelected] = useState({}); // { sub_id: true }
   const [userCount, setUserCount] = useState(1);
@@ -78,7 +80,7 @@ export default function BuildSystemView() {
       if (d.current.userCount > 0) setUserCount(d.current.userCount);
       if (d.current.workerCount > 0) setWorkerCount(d.current.workerCount);
     } catch (e) {
-      setError(e.message || "تعذّر تحميل البيانات.");
+      setError(e.message || t("build_loadErr"));
     } finally {
       setLoading(false);
     }
@@ -119,8 +121,8 @@ export default function BuildSystemView() {
   async function save() {
     setError("");
     setSavedMsg("");
-    if (calc.deptCount === 0) { setError("اختر قسمًا واحدًا على الأقل."); return; }
-    if (calc.hasWorker && workerCount < 1) { setError("حدّد عدد العمالة (اخترت أقسامًا تُسعّر بالعامل)."); return; }
+    if (calc.deptCount === 0) { setError(t("build_selectOne")); return; }
+    if (calc.hasWorker && workerCount < 1) { setError(t("build_specifyWorkers")); return; }
     setSaving(true);
     try {
       const res = await httpsCallable(functions, "saveTenantBuild")({
@@ -128,53 +130,53 @@ export default function BuildSystemView() {
         userCount: userCount,
         workerCount: workerCount,
       });
-      setSavedMsg(`تم الحفظ والتفعيل. اشتراكك الشهري: ${fmt(res.data.subscriptionAmount)} ر.س`);
+      setSavedMsg(`${t("build_savedPrefix")} ${fmt(res.data.subscriptionAmount)} ${t("build_riyal")}`);
       load();
     } catch (e) {
-      setError(e.message || "تعذّر الحفظ.");
+      setError(e.message || t("build_saveErr"));
       setSaving(false);
     }
   }
 
-  if (loading) return <div style={styles.page}><p style={styles.muted}>جارٍ التحميل...</p></div>;
+  if (loading) return <div style={styles.page}><p style={styles.muted}>{t("loading")}</p></div>;
 
   return (
     <div style={styles.page}>
       <div style={styles.head}>
-        <h1 style={styles.pageTitle}>بناء النظام</h1>
-        <p style={styles.pageSub}>اختر الأقسام التي تحتاجها فقط، وادفع مقابلها. النظام يبدأ بما تختاره ويكبر معك.</p>
+        <h1 style={styles.pageTitle}>{t("build")}</h1>
+        <p style={styles.pageSub}>{t("build_sub")}</p>
       </div>
 
       {error ? <div style={styles.error}>{error}</div> : null}
       {savedMsg ? <div style={styles.savedBox}>✓ {savedMsg}</div> : null}
-      {!isOwner ? <div style={styles.warnBox}>التعديل والدفع متاحان لمالك الحساب فقط. يمكنك تصفّح الأقسام والأسعار.</div> : null}
+      {!isOwner ? <div style={styles.warnBox}>{t("build_ownerOnly")}</div> : null}
 
       {/* الأعداد + التكلفة */}
       <div style={styles.controlBar}>
         <div style={styles.countCard}>
-          <label style={styles.countLabel}>👤 عدد المستخدمين الإداريين</label>
+          <label style={styles.countLabel}>👤 {t("build_adminUsers")}</label>
           <input style={styles.countInput} type="number" min="1" value={userCount} onChange={(e) => { setSavedMsg(""); setUserCount(Math.max(1, Number(e.target.value) || 1)); }} disabled={!isOwner || saving} dir="ltr" />
         </div>
         <div style={styles.countCard}>
-          <label style={styles.countLabel}>👷 عدد العمالة {calc.hasWorker ? <span style={styles.reqStar}>*</span> : <span style={styles.optNote}>(للأقسام المرتبطة بالعمالة)</span>}</label>
+          <label style={styles.countLabel}>👷 {t("build_workers")} {calc.hasWorker ? <span style={styles.reqStar}>*</span> : <span style={styles.optNote}>{t("build_workersNote")}</span>}</label>
           <select style={styles.countInput} value={workerCount} onChange={(e) => { setSavedMsg(""); setWorkerCount(Number(e.target.value)); }} disabled={!isOwner || saving} dir="ltr">
             {WORKER_STEPS.map((w) => <option key={w} value={w}>{w}</option>)}
           </select>
         </div>
         <div style={styles.totalCard}>
-          <span style={styles.totalLabel}>الاشتراك الشهري</span>
+          <span style={styles.totalLabel}>{t("build_monthlySub")}</span>
           <span style={styles.totalValue} dir="ltr">{fmt(calc.total)}</span>
-          <span style={styles.totalUnit}>ر.س / شهر</span>
+          <span style={styles.totalUnit}>{t("build_perMonth")}</span>
         </div>
       </div>
 
       {/* تفصيل التكلفة */}
       {calc.deptCount > 0 ? (
         <div style={styles.breakdown}>
-          <span style={styles.bdItem}>المستخدمون: <b dir="ltr">{fmt(calc.userCost)}</b></span>
+          <span style={styles.bdItem}>{t("build_users")}: <b dir="ltr">{fmt(calc.userCost)}</b></span>
           <span style={styles.bdSep}>+</span>
-          <span style={styles.bdItem}>الأقسام الثابتة: <b dir="ltr">{fmt(calc.deptCost)}</b></span>
-          {calc.workerDeptCount > 0 ? <><span style={styles.bdSep}>+</span><span style={styles.bdItem}>العمالة ({calc.workerDeptCount} قسم): <b dir="ltr">{fmt(calc.workerCost)}</b></span></> : null}
+          <span style={styles.bdItem}>{t("build_fixedDepts")}: <b dir="ltr">{fmt(calc.deptCost)}</b></span>
+          {calc.workerDeptCount > 0 ? <><span style={styles.bdSep}>+</span><span style={styles.bdItem}>{t("build_workersCost")} ({calc.workerDeptCount} {t("build_sectionWord")}): <b dir="ltr">{fmt(calc.workerCost)}</b></span></> : null}
         </div>
       ) : null}
 
@@ -188,7 +190,7 @@ export default function BuildSystemView() {
               <div style={{ ...styles.deptHead, borderRightColor: dept.color }}>
                 <label style={styles.deptCheck}>
                   <input type="checkbox" checked={allOn} ref={(el) => { if (el) el.indeterminate = someOn && !allOn; }} onChange={() => toggleDept(dept)} disabled={!isOwner || saving} />
-                  <span style={{ ...styles.deptName, color: dept.color }}>{dept.name}</span>
+                  <span style={{ ...styles.deptName, color: dept.color }}>{t(dept.id)}</span>
                 </label>
                 <span style={styles.deptCount}>{dept.subs.filter((s) => selected[s.id]).length}/{dept.subs.length}</span>
               </div>
@@ -201,12 +203,12 @@ export default function BuildSystemView() {
                     <label key={sub.id} style={{ ...styles.subRow, ...(isSel ? styles.subRowOn : {}) }}>
                       <div style={styles.subLeft}>
                         <input type="checkbox" checked={isSel} onChange={() => toggle(sub.id)} disabled={!isOwner || saving} />
-                        <span style={styles.subName}>{sub.name}</span>
+                        <span style={styles.subName}>{t(sub.id)}</span>
                       </div>
                       {isWorker ? (
-                        <span style={styles.workerPrice} dir="ltr">{fmt(pricing.workerPrice)} × عامل</span>
+                        <span style={styles.workerPrice} dir="ltr">{fmt(pricing.workerPrice)} {t("build_perWorker")}</span>
                       ) : price > 0 ? (
-                        <span style={styles.subPrice} dir="ltr">{fmt(price)} ر.س</span>
+                        <span style={styles.subPrice} dir="ltr">{fmt(price)} {t("build_riyal")}</span>
                       ) : (
                         <span style={styles.freePrice}>—</span>
                       )}
@@ -223,10 +225,10 @@ export default function BuildSystemView() {
       {isOwner ? (
         <div style={styles.saveBar}>
           <div style={styles.saveSummary}>
-            <span style={styles.saveSummaryText}>{calc.deptCount} قسم مختار</span>
-            <span style={styles.saveSummaryAmount} dir="ltr">{fmt(calc.total)} ر.س/شهر</span>
+            <span style={styles.saveSummaryText}>{calc.deptCount} {t("build_selected")}</span>
+            <span style={styles.saveSummaryAmount} dir="ltr">{fmt(calc.total)} {t("build_riyalMonth")}</span>
           </div>
-          <button style={styles.saveBtn} onClick={save} disabled={saving || calc.deptCount === 0}>{saving ? "جارٍ الحفظ..." : "💾 حفظ وتفعيل"}</button>
+          <button style={styles.saveBtn} onClick={save} disabled={saving || calc.deptCount === 0}>{saving ? t("build_saving") : `💾 ${t("build_saveActivate")}`}</button>
         </div>
       ) : null}
     </div>
