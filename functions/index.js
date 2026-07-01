@@ -3,9 +3,11 @@ const { setGlobalOptions } = require("firebase-functions/v2");
 const admin = require("firebase-admin");
 const { FieldValue } = require("firebase-admin/firestore");
 
-// منطقة النشر: الدمام (me-central2) — قرب العملاء وسيادة البيانات داخل السعودية.
-// لا أثر على المحاكي المحلي (يتجاهلها). maxInstances يحدّ التكلفة في Blaze.
-setGlobalOptions({ region: "europe-west1", maxInstances: 10 });
+// منطقة النشر: europe-west1. لا أثر على المحاكي المحلي (يتجاهلها).
+// maxInstances يحدّ التكلفة في Blaze (حماية من الهجمات المكلفة).
+// concurrency=80 يخلّي كل instance يخدم 80 طلبًا متزامنًا (يتطلب ذاكرة >= 512MiB)،
+// فالسعة تقفز من ~10 طلبات إلى ~1600 طلب متزامن مع تقليل البدء البارد.
+setGlobalOptions({ region: "europe-west1", maxInstances: 20, concurrency: 80, memory: "512MiB" });
 const {
   COLLECTIONS,
   ROLES,
@@ -176,6 +178,30 @@ async function requirePlatformOwner(authCtx) {
     throw new HttpsError("permission-denied", "هذه المنصة مخصّصة لمالك النظام فقط.");
   }
   return authCtx.uid;
+}
+
+// تخزين مؤقت للوحات الثقيلة: يحسب مرة ويعيد النتيجة حتى ينتهي عمر الكاش.
+// يقلّل تضخّم القراءات (read amplification) في لوحات الربحية والتقارير.
+// forceRefresh=true يتجاوز الكاش ويعيد الحساب (زر «تحديث» في الواجهة).
+async function getCachedDashboard(tenantId, cacheKey, maxAgeMs, computeFn, forceRefresh) {
+  const ref = db.collection("dashboardCache").doc(`${tenantId}__${cacheKey}`);
+  if (!forceRefresh) {
+    try {
+      const snap = await ref.get();
+      if (snap.exists) {
+        const c = snap.data();
+        const computedMs = c.computedAt && c.computedAt.toMillis ? c.computedAt.toMillis() : 0;
+        if (Date.now() - computedMs < maxAgeMs && c.payload) {
+          return { ...c.payload, _cached: true, _computedAt: computedMs };
+        }
+      }
+    } catch (e) { /* خطأ قراءة الكاش — نعيد الحساب */ }
+  }
+  const payload = await computeFn();
+  try {
+    await ref.set({ tenantId: tenantId, cacheKey: cacheKey, payload: payload, computedAt: FieldValue.serverTimestamp() });
+  } catch (e) { console.error("dashboard cache write failed:", cacheKey, e && e.message); }
+  return { ...payload, _cached: false, _computedAt: Date.now() };
 }
 
 async function wouldCreateCycle(employeeUid, managerUid) {
@@ -6614,68 +6640,72 @@ exports.getEnterpriseProfitability = onCall(async (request) => {
     const data = request.data || {};
     const month = typeof data.month === "string" ? data.month.trim() : "";
     if (!/^\d{4}-\d{2}$/.test(month)) throw new HttpsError("invalid-argument", "الشهر غير صحيح (YYYY-MM).");
+    const forceRefresh = data.forceRefresh === true;
 
-    const tenantDoc = await db.collection(COLLECTIONS.TENANTS).doc(callerTenantId).get();
-    const adminCostPerWorker = tenantDoc.exists ? (Number(tenantDoc.data().adminCostPerWorker) || 0) : 0;
+    // كاش لمدة ساعة لكل (شركة + شهر) — التقارير لا تحتاج تحديثًا لحظيًا
+    return await getCachedDashboard(callerTenantId, `entProfit_${month}`, 60 * 60 * 1000, async () => {
+      const tenantDoc = await db.collection(COLLECTIONS.TENANTS).doc(callerTenantId).get();
+      const adminCostPerWorker = tenantDoc.exists ? (Number(tenantDoc.data().adminCostPerWorker) || 0) : 0;
 
-    const projSnap = await db.collection(COLLECTIONS.PROJECTS)
-      .where("tenantId", "==", callerTenantId)
-      .get();
+      const projSnap = await db.collection(COLLECTIONS.PROJECTS)
+        .where("tenantId", "==", callerTenantId)
+        .get();
 
-    const projects = [];
-    let gRevenue = 0, gNetRevenue = 0, gCost = 0, gProfit = 0, gWorkers = 0, gMissing = 0;
+      const projects = [];
+      let gRevenue = 0, gNetRevenue = 0, gCost = 0, gProfit = 0, gWorkers = 0, gMissing = 0;
 
-    for (const pDoc of projSnap.docs) {
-      const project = pDoc.data();
-      const core = await computeProjectMonthCore(callerTenantId, pDoc.id, month, adminCostPerWorker);
+      for (const pDoc of projSnap.docs) {
+        const project = pDoc.data();
+        const core = await computeProjectMonthCore(callerTenantId, pDoc.id, month, adminCostPerWorker);
 
-      // تجاهل المشاريع بلا أي نشاط في الشهر
-      if (core.lines.length === 0) continue;
+        // تجاهل المشاريع بلا أي نشاط في الشهر
+        if (core.lines.length === 0) continue;
 
-      const missingInProject = core.lines.filter((l) => l.missingCost).length;
-      projects.push({
-        projectId: pDoc.id,
-        projectName: project.name || null,
-        projectNumber: project.projectNumber || null,
-        status: project.status || null,
-        workersCount: core.workersCount,
-        missingCostCount: missingInProject,
-        revenue: core.totals.revenue,
-        netRevenue: core.totals.netRevenue,
-        cost: core.totals.cost,
-        profit: core.totals.profit,
-        margin: core.totals.margin,
-      });
+        const missingInProject = core.lines.filter((l) => l.missingCost).length;
+        projects.push({
+          projectId: pDoc.id,
+          projectName: project.name || null,
+          projectNumber: project.projectNumber || null,
+          status: project.status || null,
+          workersCount: core.workersCount,
+          missingCostCount: missingInProject,
+          revenue: core.totals.revenue,
+          netRevenue: core.totals.netRevenue,
+          cost: core.totals.cost,
+          profit: core.totals.profit,
+          margin: core.totals.margin,
+        });
 
-      gRevenue += core.totals.revenue;
-      gNetRevenue += core.totals.netRevenue;
-      gCost += core.totals.cost;
-      gProfit += core.totals.profit;
-      gWorkers += core.workersCount;
-      gMissing += missingInProject;
-    }
+        gRevenue += core.totals.revenue;
+        gNetRevenue += core.totals.netRevenue;
+        gCost += core.totals.cost;
+        gProfit += core.totals.profit;
+        gWorkers += core.workersCount;
+        gMissing += missingInProject;
+      }
 
-    // ترتيب تنازلي بالربح (للمقارنة)
-    projects.sort((a, b) => b.profit - a.profit);
+      // ترتيب تنازلي بالربح (للمقارنة)
+      projects.sort((a, b) => b.profit - a.profit);
 
-    const r = (n) => Math.round(n * 100) / 100;
-    const gMargin = gNetRevenue > 0 ? (gProfit / gNetRevenue) * 100 : 0;
+      const r = (n) => Math.round(n * 100) / 100;
+      const gMargin = gNetRevenue > 0 ? (gProfit / gNetRevenue) * 100 : 0;
 
-    return {
-      month: month,
-      adminCostPerWorker: r(adminCostPerWorker),
-      projectsCount: projects.length,
-      workersCount: gWorkers,
-      missingCostCount: gMissing,
-      projects: projects,
-      totals: {
-        revenue: r(gRevenue),
-        netRevenue: r(gNetRevenue),
-        cost: r(gCost),
-        profit: r(gProfit),
-        margin: r(gMargin),
-      },
-    };
+      return {
+        month: month,
+        adminCostPerWorker: r(adminCostPerWorker),
+        projectsCount: projects.length,
+        workersCount: gWorkers,
+        missingCostCount: gMissing,
+        projects: projects,
+        totals: {
+          revenue: r(gRevenue),
+          netRevenue: r(gNetRevenue),
+          cost: r(gCost),
+          profit: r(gProfit),
+          margin: r(gMargin),
+        },
+      };
+    }, forceRefresh);
   } catch (err) {
     if (err instanceof HttpsError) throw err;
     console.error("getEnterpriseProfitability failed:", err);
@@ -6697,46 +6727,49 @@ exports.getEnterpriseProfitabilityRange = onCall(async (request) => {
 
     const months = enumerateMonths(fromMonth, toMonth);
     if (months.length > 24) throw new HttpsError("invalid-argument", "النطاق كبير جدًا (24 شهرًا كحد أقصى).");
+    const forceRefresh = data.forceRefresh === true;
 
-    const tenantDoc = await db.collection(COLLECTIONS.TENANTS).doc(callerTenantId).get();
-    const adminCostPerWorker = tenantDoc.exists ? (Number(tenantDoc.data().adminCostPerWorker) || 0) : 0;
+    return await getCachedDashboard(callerTenantId, `entProfitRange_${fromMonth}_${toMonth}`, 60 * 60 * 1000, async () => {
+      const tenantDoc = await db.collection(COLLECTIONS.TENANTS).doc(callerTenantId).get();
+      const adminCostPerWorker = tenantDoc.exists ? (Number(tenantDoc.data().adminCostPerWorker) || 0) : 0;
 
-    const projSnap = await db.collection(COLLECTIONS.PROJECTS).where("tenantId", "==", callerTenantId).get();
-    const r = (n) => Math.round(n * 100) / 100;
+      const projSnap = await db.collection(COLLECTIONS.PROJECTS).where("tenantId", "==", callerTenantId).get();
+      const r = (n) => Math.round(n * 100) / 100;
 
-    const monthly = [];
-    let gRevenue = 0, gNetRevenue = 0, gCost = 0, gProfit = 0;
-    for (const m of months) {
-      let mRevenue = 0, mNetRevenue = 0, mCost = 0, mProfit = 0, mWorkers = 0;
-      for (const pDoc of projSnap.docs) {
-        const core = await computeProjectMonthCore(callerTenantId, pDoc.id, m, adminCostPerWorker);
-        if (core.lines.length === 0) continue;
-        mRevenue += core.totals.revenue;
-        mNetRevenue += core.totals.netRevenue;
-        mCost += core.totals.cost;
-        mProfit += core.totals.profit;
-        mWorkers += core.workersCount;
+      const monthly = [];
+      let gRevenue = 0, gNetRevenue = 0, gCost = 0, gProfit = 0;
+      for (const m of months) {
+        let mRevenue = 0, mNetRevenue = 0, mCost = 0, mProfit = 0, mWorkers = 0;
+        for (const pDoc of projSnap.docs) {
+          const core = await computeProjectMonthCore(callerTenantId, pDoc.id, m, adminCostPerWorker);
+          if (core.lines.length === 0) continue;
+          mRevenue += core.totals.revenue;
+          mNetRevenue += core.totals.netRevenue;
+          mCost += core.totals.cost;
+          mProfit += core.totals.profit;
+          mWorkers += core.workersCount;
+        }
+        monthly.push({
+          month: m,
+          revenue: r(mRevenue), netRevenue: r(mNetRevenue), cost: r(mCost), profit: r(mProfit),
+          workersCount: mWorkers,
+          margin: mNetRevenue > 0 ? r((mProfit / mNetRevenue) * 100) : 0,
+        });
+        gRevenue += mRevenue; gNetRevenue += mNetRevenue; gCost += mCost; gProfit += mProfit;
       }
-      monthly.push({
-        month: m,
-        revenue: r(mRevenue), netRevenue: r(mNetRevenue), cost: r(mCost), profit: r(mProfit),
-        workersCount: mWorkers,
-        margin: mNetRevenue > 0 ? r((mProfit / mNetRevenue) * 100) : 0,
-      });
-      gRevenue += mRevenue; gNetRevenue += mNetRevenue; gCost += mCost; gProfit += mProfit;
-    }
 
-    return {
-      fromMonth, toMonth,
-      monthsCount: months.length,
-      monthly,
-      totals: {
-        revenue: r(gRevenue), netRevenue: r(gNetRevenue), cost: r(gCost), profit: r(gProfit),
-        margin: gNetRevenue > 0 ? r((gProfit / gNetRevenue) * 100) : 0,
-        avgMonthlyCost: months.length > 0 ? r(gCost / months.length) : 0,
-        avgMonthlyProfit: months.length > 0 ? r(gProfit / months.length) : 0,
-      },
-    };
+      return {
+        fromMonth, toMonth,
+        monthsCount: months.length,
+        monthly,
+        totals: {
+          revenue: r(gRevenue), netRevenue: r(gNetRevenue), cost: r(gCost), profit: r(gProfit),
+          margin: gNetRevenue > 0 ? r((gProfit / gNetRevenue) * 100) : 0,
+          avgMonthlyCost: months.length > 0 ? r(gCost / months.length) : 0,
+          avgMonthlyProfit: months.length > 0 ? r(gProfit / months.length) : 0,
+        },
+      };
+    }, forceRefresh);
   } catch (err) {
     if (err instanceof HttpsError) throw err;
     console.error("getEnterpriseProfitabilityRange failed:", err);
@@ -11812,5 +11845,110 @@ exports.markOwnerTicketRead = onCall(async (request) => {
     if (err instanceof HttpsError) throw err;
     console.error("markOwnerTicketRead failed:", err);
     throw new HttpsError("internal", "تعذّر التحديث.");
+  }
+});
+
+// ═══════════════════════════════════════════════════════
+// ===== بناء النظام (العميل يبني اشتراكه ويدفع) =====
+// ═══════════════════════════════════════════════════════
+
+// حساب قيمة الاشتراك من الأسعار والاختيار (يُستخدم داخليًا)
+function computeSubscriptionAmount(pricing, modules, userCount, workerCount) {
+  const userPrice = Number(pricing.userPrice) || 0;
+  const workerPrice = Number(pricing.workerPrice) || 0;
+  const prices = pricing.prices || {};
+  const workerDepts = pricing.workerDepts || {};
+  const uc = Math.max(0, Number(userCount) || 0);
+  const wc = Math.max(0, Number(workerCount) || 0);
+
+  let total = userPrice * uc; // سعر المستخدمين الإداريين
+  let workerDeptCount = 0;
+  for (const m of (modules || [])) {
+    if (workerDepts[m]) workerDeptCount++;           // قسم مُسعّر بالعمالة
+    else total += Number(prices[m]) || 0;            // قسم بسعر ثابت
+  }
+  total += workerPrice * wc * workerDeptCount;       // تكلفة العمالة
+  return Math.round(total * 100) / 100;
+}
+
+// بيانات بناء النظام: الأسعار + هيكل الأقسام + اختيار العميل الحالي
+exports.getBuildData = onCall(async (request) => {
+  try {
+    if (!request.auth || !request.auth.uid) throw new HttpsError("unauthenticated", "يجب تسجيل الدخول.");
+    const callerTenantId = request.auth.token.tenantId;
+    if (!callerTenantId) throw new HttpsError("failed-precondition", "حسابك غير مرتبط بشركة.");
+
+    const [pricingDoc, tenantDoc] = await Promise.all([
+      db.collection(COLLECTIONS.PLATFORM_CONFIG).doc("pricing").get(),
+      db.collection(COLLECTIONS.TENANTS).doc(callerTenantId).get(),
+    ]);
+    const pricing = pricingDoc.exists ? pricingDoc.data() : {};
+    const t = tenantDoc.exists ? tenantDoc.data() : {};
+
+    return {
+      pricing: {
+        userPrice: Number(pricing.userPrice) || 0,
+        workerPrice: Number(pricing.workerPrice) || 0,
+        prices: pricing.prices || {},
+        workerDepts: pricing.workerDepts || {},
+      },
+      current: {
+        activeModules: Array.isArray(t.activeModules) ? t.activeModules : [],
+        userCount: Number(t.userCount) || 0,
+        workerCount: Number(t.workerCount) || 0,
+        subscriptionAmount: Number(t.subscriptionAmount) || 0,
+        subscriptionStatus: t.subscriptionStatus || "pending",
+      },
+      isOwner: request.auth.token.role === ROLES.OWNER,
+    };
+  } catch (err) {
+    if (err instanceof HttpsError) throw err;
+    console.error("getBuildData failed:", err);
+    throw new HttpsError("internal", "تعذّر تحميل بيانات البناء.");
+  }
+});
+
+// حفظ بناء النظام وتفعيل الاشتراك (المالك فقط — لأن المبالغ تُسحب من حساب الشركة)
+// data: { modules: [sub_id...], userCount, workerCount }
+exports.saveTenantBuild = onCall(async (request) => {
+  try {
+    if (!request.auth || !request.auth.uid) throw new HttpsError("unauthenticated", "يجب تسجيل الدخول.");
+    const callerTenantId = request.auth.token.tenantId;
+    if (!callerTenantId) throw new HttpsError("failed-precondition", "حسابك غير مرتبط بشركة.");
+    // الترقية/الدفع للمالك فقط
+    if (request.auth.token.role !== ROLES.OWNER) {
+      throw new HttpsError("permission-denied", "ترقية الاشتراك متاحة لمالك الحساب فقط.");
+    }
+
+    const data = request.data || {};
+    const modules = Array.isArray(data.modules) ? data.modules.filter((m) => typeof m === "string" && m.trim()).map((m) => m.trim()) : [];
+    if (modules.length > 200) throw new HttpsError("invalid-argument", "عدد الأقسام كبير جدًا.");
+    const userCount = Math.max(1, Number(data.userCount) || 1);
+    const workerCount = Math.max(0, Number(data.workerCount) || 0);
+
+    // اقرأ الأسعار واحسب القيمة (الباكإند يحسب — مانع تلاعب)
+    const pricingDoc = await db.collection(COLLECTIONS.PLATFORM_CONFIG).doc("pricing").get();
+    const pricing = pricingDoc.exists ? pricingDoc.data() : {};
+    const amount = computeSubscriptionAmount(pricing, modules, userCount, workerCount);
+
+    // هل فيه أقسام مُسعّرة بالعمالة مختارة؟ لازم عدد عمالة
+    const workerDepts = pricing.workerDepts || {};
+    const hasWorkerDept = modules.some((m) => workerDepts[m]);
+    if (hasWorkerDept && workerCount < 1) {
+      throw new HttpsError("invalid-argument", "حدّد عدد العمالة (اخترت أقسامًا تُسعّر بالعامل).");
+    }
+
+    await db.collection(COLLECTIONS.TENANTS).doc(callerTenantId).update({
+      activeModules: modules,
+      userCount: userCount,
+      workerCount: workerCount,
+      subscriptionAmount: amount,
+      buildUpdatedAt: FieldValue.serverTimestamp(),
+    });
+    return { saved: true, subscriptionAmount: amount, moduleCount: modules.length };
+  } catch (err) {
+    if (err instanceof HttpsError) throw err;
+    console.error("saveTenantBuild failed:", err);
+    throw new HttpsError("internal", "تعذّر حفظ البناء.");
   }
 });

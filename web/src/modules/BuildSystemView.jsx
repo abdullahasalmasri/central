@@ -1,419 +1,282 @@
-import React, { useState, useMemo } from "react";
-import {
-  Crown, Wallet, Users, Settings, Building2, TrendingUp, Megaphone,
-  Scale, Award, Check, Plus, CreditCard, X, Calculator, Lock, Send, CheckCircle2
-} from "lucide-react";
+import { useState, useEffect, useMemo } from "react";
+import { httpsCallable } from "firebase/functions";
+import { functions } from "../firebase";
 
 /* ============================================================
-   بناء النظام — قسم إدارة المنصة (قلب نموذج الاشتراك المعياري)
-   العميل يبني نظامه: يختار الأقسام الفرعية، والتكلفة تتحدّث فوريًا.
-   التسعير: مجموع أسعار الفروع المختارة × عدد المستخدمين.
-   البيانات تجريبية. دوال backend المطلوبة (جديدة) مكتوبة بالأسفل.
+   BuildSystemView — بناء النظام (العميل يختار أقسامه ويدفع)
+   يقرأ الأسعار من منصة المالك، العميل يحدّد المستخدمين والعمالة،
+   يختار الأقسام، يشوف التكلفة مباشرة، ويحفظ ويفعّل.
+   getBuildData / saveTenantBuild.
    ============================================================ */
 
-// 🧩 الأقسام التسعة وفروعها وأسعارها — مصدرها: getSystemStructure + getModulePricing
-// (المالك يسعّر الإدارة ويوزّعها على فروعها؛ العميل يدفع لكل فرع مختار × المستخدمين)
-const DEPARTMENTS = [
-  { id: "exec", name: "الإدارة العليا", color: "#7c3aed", icon: Crown, subs: [
-    { id: "exec_kpi",  name: "لوحة المؤشرات",   price: 0.15 },
-    { id: "exec_org",  name: "الهيكل التنظيمي", price: 0.08 },
-    { id: "exec_perm", name: "الصلاحيات",       price: 0.07 },
-  ]},
-  { id: "fin", name: "المالية", color: "#059669", icon: Wallet, subs: [
-    { id: "fin_acc",   name: "المحاسبة",          price: 0.10 },
-    { id: "fin_inv",   name: "الفوترة و ZATCA",   price: 0.10 },
-    { id: "fin_cust",  name: "العملاء",           price: 0.05 },
-    { id: "fin_fs",    name: "القوائم المالية",   price: 0.06 },
-    { id: "fin_coll",  name: "التحصيل",           price: 0.05 },
-    { id: "fin_treas", name: "الخزينة",           price: 0.05 },
-    { id: "fin_fpa",   name: "التخطيط والتحليل",  price: 0.05 },
-    { id: "fin_proc",  name: "المشتريات",         price: 0.04 },
-  ]},
-  { id: "hr", name: "الموارد البشرية", color: "#2563eb", icon: Users, subs: [
-    { id: "hr_emp",   name: "شؤون الموظفين",  price: 0.10 },
-    { id: "hr_pay",   name: "الرواتب",        price: 0.08 },
-    { id: "hr_rec",   name: "التوظيف",        price: 0.08 },
-    { id: "hr_train", name: "التدريب",        price: 0.07 },
-    { id: "hr_rel",   name: "علاقات الموظفين", price: 0.07 },
-  ]},
-  { id: "ops", name: "العمليات", color: "#ea580c", icon: Settings, subs: [
-    { id: "ops_book", name: "الحجوزات والجدولة", price: 0.15 },
-    { id: "ops_req",  name: "طلبات الموارد",     price: 0.12 },
-    { id: "ops_proj", name: "المشاريع",          price: 0.10 },
-    { id: "ops_qs",   name: "الجودة والسلامة",   price: 0.08 },
-  ]},
-  { id: "assets", name: "الأصول والمرافق", color: "#0e7490", icon: Building2, subs: [
-    { id: "as_veh",  name: "المركبات", price: 0.10 },
-    { id: "as_hous", name: "الإسكان",  price: 0.08 },
-    { id: "as_equ",  name: "المعدّات", price: 0.07 },
-    { id: "as_dep",  name: "الإهلاك",  price: 0.05 },
-  ]},
-  { id: "cost", name: "التكاليف والربحية", color: "#ca8a04", icon: TrendingUp, subs: [
-    { id: "cost_full", name: "التكلفة الشاملة",  price: 0.15 },
-    { id: "cost_prof", name: "تقارير الربحية",   price: 0.12 },
-    { id: "cost_alloc",name: "توزيع الموارد",    price: 0.08 },
-  ]},
-  { id: "sales", name: "المبيعات والتسويق", color: "#db2777", icon: Megaphone, subs: [
-    { id: "sal_dir",  name: "المبيعات المباشرة", price: 0.12 },
-    { id: "sal_mkt",  name: "التسويق والتواصل",  price: 0.10 },
-    { id: "sal_serv", name: "خدمة العملاء",      price: 0.08 },
-  ]},
-  { id: "legal", name: "القانونية والامتثال", color: "#78716c", icon: Scale, subs: [
-    { id: "leg_con", name: "العقود",          price: 0.10 },
-    { id: "leg_com", name: "الامتثال والتراخيص", price: 0.08 },
-    { id: "leg_dis", name: "المنازعات",       price: 0.07 },
-  ]},
-  { id: "quality", name: "التميز والجودة", color: "#65a30d", icon: Award, subs: [
-    { id: "qa_aud", name: "التدقيق الداخلي",   price: 0.10 },
-    { id: "qa_nps", name: "رضا العملاء و NPS", price: 0.08 },
-    { id: "qa_imp", name: "تحسين العمليات",    price: 0.07 },
-  ]},
+const fmt = (n) => (Math.round((Number(n) || 0) * 100) / 100).toLocaleString("en-US");
+const WORKER_STEPS = [100, 150, 200, 250, 300, 400, 500, 750, 1000, 1500, 2000];
+
+// بنية الإدارات والأقسام (مطابقة لـ Central ومنصة المالك)
+const STRUCTURE = [
+  { id: "exec", name: "الإدارة العليا", color: "#7c3aed", subs: [
+    { id: "exec_kpi", name: "لوحة المؤشرات" }, { id: "exec_org", name: "الهيكل التنظيمي" }, { id: "exec_perm", name: "الصلاحيات" },
+  ] },
+  { id: "fin", name: "المالية", color: "#059669", subs: [
+    { id: "fin_acc", name: "المحاسبة" }, { id: "fin_inv", name: "الفوترة و ZATCA" }, { id: "fin_cust", name: "العملاء" },
+    { id: "fin_fs", name: "القوائم المالية" }, { id: "fin_coll", name: "التحصيل" }, { id: "fin_treas", name: "الخزينة" },
+    { id: "fin_fpa", name: "التخطيط والتحليل" }, { id: "fin_proc", name: "المشتريات" }, { id: "fin_pos", name: "نقاط البيع" }, { id: "fin_cash", name: "الكاشير" },
+  ] },
+  { id: "hr", name: "الموارد البشرية", color: "#2563eb", subs: [
+    { id: "hr_emp", name: "شؤون الموظفين" }, { id: "hr_pay", name: "الرواتب" }, { id: "hr_rec", name: "التوظيف" },
+    { id: "hr_train", name: "التدريب" }, { id: "hr_rel", name: "علاقات الموظفين" },
+  ] },
+  { id: "ops", name: "العمليات", color: "#ea580c", subs: [
+    { id: "ops_proj", name: "المشاريع" }, { id: "ops_people", name: "الأفراد" }, { id: "ops_facilities", name: "المرافق" },
+    { id: "ops_materials", name: "المواد" }, { id: "ops_inv", name: "المخزون" }, { id: "ops_req", name: "طلبات المخزون" },
+    { id: "ops_process", name: "العمليات التشغيلية" }, { id: "ops_planning", name: "التخطيط والرقابة" }, { id: "ops_qs", name: "الجودة والسلامة" },
+  ] },
+  { id: "assets", name: "الأصول والمرافق", color: "#0e7490", subs: [
+    { id: "as_veh", name: "المركبات" }, { id: "as_hous", name: "الإسكان" }, { id: "as_equ", name: "المعدّات" },
+    { id: "as_simple", name: "الأصول البسيطة" }, { id: "as_dep", name: "الإهلاك" },
+  ] },
+  { id: "cost", name: "التكاليف والربحية", color: "#ca8a04", subs: [
+    { id: "cost_full", name: "التكلفة الشاملة" }, { id: "cost_prof", name: "تقارير الربحية" }, { id: "cost_alloc", name: "توزيع الموارد" },
+  ] },
+  { id: "sales", name: "المبيعات والتسويق", color: "#db2777", subs: [
+    { id: "sal_dir", name: "المبيعات المباشرة" }, { id: "sal_quote", name: "عروض الأسعار" }, { id: "sal_mkt", name: "التسويق والتواصل" }, { id: "sal_serv", name: "خدمة العملاء" },
+  ] },
+  { id: "legal", name: "القانونية والامتثال", color: "#78716c", subs: [
+    { id: "leg_con", name: "العقود" }, { id: "leg_com", name: "الامتثال والتراخيص" }, { id: "leg_dis", name: "المنازعات" },
+  ] },
+  { id: "quality", name: "التميز والجودة", color: "#65a30d", subs: [
+    { id: "qa_aud", name: "التدقيق الداخلي" }, { id: "qa_nps", name: "رضا العملاء و NPS" }, { id: "qa_imp", name: "تحسين العمليات" },
+  ] },
 ];
 
-// الأقسام المفعّلة مسبقًا (المشترك بها حاليًا) — مصدرها: getSystemStructure (feature flags)
-const ACTIVE_DEPTS = ["fin", "hr", "ops", "cost", "assets"];
-
-// عدد المستخدمين (أساس التسعير) — مصدرها: getSubscription
-const USERS = 100;
-
-// صلاحية الدفع/الترقية — مصدرها: نظام الصلاحيات (المالك أو من يخوّله)
-const canManageBilling = true;
-
-const fmt = (n) => n.toLocaleString("en-US");
-
-const buildInitial = () => {
-  const s = new Set();
-  DEPARTMENTS.forEach((d) => {
-    if (ACTIVE_DEPTS.includes(d.id)) d.subs.forEach((sub) => s.add(sub.id));
-  });
-  return s;
-};
-
-const STYLES = `
-  *{margin:0;padding:0;box-sizing:border-box}
-  .bld-root{
-    --bg:#f4f6f9; --panel:#fff; --ink:#161b26; --ink2:#5a6580; --ink3:#94a0b8;
-    --line:#e7ebf1; --line2:#dde2ec; --brand:#4f46e5;
-    font-family:'IBM Plex Sans Arabic','Segoe UI',Tahoma,sans-serif;
-    direction:rtl; background:var(--bg); color:var(--ink); min-height:100vh;
-    padding:26px 30px 40px; -webkit-font-smoothing:antialiased;
-  }
-  .bld-num{font-variant-numeric:tabular-nums; letter-spacing:-.3px}
-
-  .bld-head{display:flex; align-items:center; gap:14px; margin-bottom:20px; flex-wrap:wrap}
-  .bld-head-ic{width:50px; height:50px; border-radius:13px; display:grid; place-items:center;
-    background:#4f46e51a; color:#4f46e5; flex-shrink:0}
-  .bld-title{font-size:23px; font-weight:700; letter-spacing:-.4px; line-height:1.1}
-  .bld-subt{font-size:13px; color:var(--ink2); margin-top:2px}
-
-  /* CALC BAR (sticky) */
-  .bld-calc{position:sticky; top:14px; z-index:20; background:linear-gradient(135deg,#4338ca,#4f46e5 55%,#6366f1);
-    border-radius:16px; padding:16px 20px; margin-bottom:20px; color:#fff;
-    display:flex; align-items:center; gap:22px; flex-wrap:wrap; box-shadow:0 10px 30px rgba(79,70,229,.28)}
-  .bld-calc-ic{width:42px; height:42px; border-radius:11px; background:rgba(255,255,255,.18); display:grid; place-items:center; flex-shrink:0}
-  .bld-calc-item{display:flex; flex-direction:column; gap:2px}
-  .bld-calc-item .l{font-size:11.5px; opacity:.85}
-  .bld-calc-item .v{font-size:18px; font-weight:800; font-variant-numeric:tabular-nums}
-  .bld-calc-cost{margin-right:auto; text-align:left}
-  .bld-calc-cost .l{font-size:11.5px; opacity:.85}
-  .bld-calc-cost .v{font-size:24px; font-weight:800; font-variant-numeric:tabular-nums}
-  .bld-calc-cost .v small{font-size:13px; opacity:.85; font-weight:600}
-  .bld-calc-btn{display:inline-flex; align-items:center; gap:7px; font-family:inherit; font-size:14px; font-weight:700;
-    padding:11px 20px; border-radius:11px; border:none; background:#fff; color:#4338ca; cursor:pointer; white-space:nowrap}
-  .bld-calc-btn:hover{background:#eef2ff}
-  .bld-calc-btn:disabled{opacity:.5; cursor:not-allowed}
-
-  .bld-hint{font-size:12.5px; color:var(--ink2); margin-bottom:16px; display:flex; align-items:center; gap:7px}
-  .bld-hint svg{color:#4f46e5; flex-shrink:0}
-
-  /* GRID */
-  .bld-grid{display:grid; grid-template-columns:repeat(2,1fr); gap:16px; align-items:start}
-  .bld-dept{background:var(--panel); border:1px solid var(--line); border-radius:16px; padding:18px; border-top:3px solid var(--c)}
-  .bld-dept.on{box-shadow:0 0 0 1px var(--c)}
-  .bld-dept-head{display:flex; align-items:center; gap:11px; margin-bottom:14px}
-  .bld-dept-ic{width:40px; height:40px; border-radius:11px; display:grid; place-items:center; flex-shrink:0;
-    background:color-mix(in srgb,var(--c) 14%,transparent); color:var(--c)}
-  .bld-dept-titles{flex:1; min-width:0}
-  .bld-dept-name{font-size:15px; font-weight:700}
-  .bld-dept-count{font-size:11.5px; color:var(--ink3); margin-top:1px}
-  .bld-dept-badge{font-size:10.5px; font-weight:700; padding:4px 10px; border-radius:999px; white-space:nowrap; flex-shrink:0}
-  .bld-dept-badge.active{background:#dcfce7; color:#15803d}
-  .bld-dept-badge.avail{background:#eef2ff; color:#4338ca}
-
-  .bld-subs{display:flex; flex-direction:column; gap:7px; margin-bottom:14px}
-  .bld-sub{display:flex; align-items:center; gap:10px; padding:9px 11px; border-radius:10px; background:var(--bg);
-    border:1px solid var(--line); cursor:pointer; transition:background .12s}
-  .bld-sub:hover{background:#eef2ff55}
-  .bld-sub.sel{background:#eef2ff; border-color:#c7d2fe}
-  .bld-check{width:20px; height:20px; border-radius:6px; border:2px solid var(--line2); display:grid; place-items:center; flex-shrink:0; background:#fff; color:#fff}
-  .bld-sub.sel .bld-check{background:var(--c); border-color:var(--c)}
-  .bld-sub-name{flex:1; font-size:12.5px; font-weight:600; min-width:0}
-  .bld-sub-price{font-size:11px; color:var(--ink3); font-weight:600; font-variant-numeric:tabular-nums; white-space:nowrap}
-
-  .bld-dept-foot{display:flex; align-items:center; justify-content:space-between; padding-top:13px; border-top:1px solid var(--line)}
-  .bld-dept-toggle{font-family:inherit; font-size:12px; font-weight:700; padding:7px 13px; border-radius:8px; border:1px solid var(--line2);
-    background:#fff; cursor:pointer; color:var(--ink2)}
-  .bld-dept-toggle:hover{background:var(--bg)}
-  .bld-dept-sum{font-size:13px; font-weight:800; font-variant-numeric:tabular-nums; color:var(--c)}
-  .bld-dept-sum small{font-size:10.5px; color:var(--ink3); font-weight:600}
-
-  /* CUSTOM */
-  .bld-custom{grid-column:1 / -1; display:flex; align-items:center; gap:14px; padding:18px 20px; border-radius:16px;
-    background:#fff; border:2px dashed var(--line2)}
-  .bld-custom-ic{width:46px; height:46px; border-radius:12px; background:#eef2ff; color:#4f46e5; display:grid; place-items:center; flex-shrink:0}
-  .bld-custom-info{flex:1; min-width:0}
-  .bld-custom-t{font-size:14px; font-weight:700}
-  .bld-custom-v{font-size:12px; color:var(--ink2); margin-top:2px}
-  .bld-custom-btn{display:inline-flex; align-items:center; gap:7px; font-family:inherit; font-size:13px; font-weight:700;
-    padding:10px 18px; border-radius:10px; border:none; background:#4f46e5; color:#fff; cursor:pointer; white-space:nowrap}
-  .bld-custom-btn:hover{background:#4338ca}
-
-  /* MODAL */
-  .bld-overlay{position:fixed; inset:0; background:rgba(15,23,42,.5); display:grid; place-items:center; z-index:60; padding:20px}
-  .bld-modal{background:var(--panel); border-radius:18px; width:100%; max-width:480px; padding:24px; box-shadow:0 20px 60px rgba(0,0,0,.3); max-height:90vh; overflow-y:auto}
-  .bld-modal-head{display:flex; align-items:center; justify-content:space-between; margin-bottom:5px}
-  .bld-modal-title{font-size:18px; font-weight:700}
-  .bld-modal-close{width:34px; height:34px; border-radius:9px; border:none; background:var(--bg); cursor:pointer; display:grid; place-items:center; color:var(--ink2)}
-  .bld-modal-sub{font-size:13px; color:var(--ink2); margin-bottom:18px}
-
-  .bld-summary{display:flex; flex-direction:column; gap:8px; margin-bottom:16px}
-  .bld-sum-row{display:flex; align-items:center; justify-content:space-between; padding:10px 13px; border-radius:10px; background:var(--bg)}
-  .bld-sum-name{display:flex; align-items:center; gap:9px; font-size:13px; font-weight:600}
-  .bld-sum-dot{width:8px; height:8px; border-radius:50%; flex-shrink:0}
-  .bld-sum-meta{font-size:12px; color:var(--ink3); font-variant-numeric:tabular-nums}
-  .bld-sum-total{display:flex; align-items:center; justify-content:space-between; padding:15px 16px; border-radius:12px; background:#eef2ff; margin-bottom:16px}
-  .bld-sum-total-l{font-size:13.5px; font-weight:700}
-  .bld-sum-total-l small{display:block; font-size:11px; color:var(--ink3); font-weight:500; margin-top:2px}
-  .bld-sum-total-v{font-size:22px; font-weight:800; font-variant-numeric:tabular-nums; color:#4f46e5}
-  .bld-modal-btn{width:100%; display:flex; align-items:center; justify-content:center; gap:8px; font-family:inherit; font-size:14px; font-weight:700;
-    padding:13px; border-radius:12px; border:none; background:#4f46e5; color:#fff; cursor:pointer}
-  .bld-modal-btn:hover{background:#4338ca}
-  .bld-modal-note{display:flex; gap:8px; align-items:flex-start; font-size:11.5px; color:var(--ink2); margin-top:14px; padding:11px 13px; background:var(--bg); border-radius:11px; line-height:1.5}
-  .bld-modal-note svg{color:#4f46e5; flex-shrink:0; margin-top:1px}
-
-  .bld-field{margin-bottom:14px}
-  .bld-field-l{font-size:12.5px; font-weight:600; margin-bottom:7px; display:block}
-  .bld-input{width:100%; font-family:inherit; font-size:13px; padding:11px 13px; border-radius:10px; border:1px solid var(--line2); background:var(--bg); color:var(--ink)}
-  .bld-input:focus{outline:none; border-color:#4f46e5; background:#fff}
-  textarea.bld-input{resize:vertical; min-height:80px}
-
-  @media(max-width:900px){
-    .bld-grid{grid-template-columns:1fr}
-    .bld-calc{gap:16px}
-    .bld-calc-cost{margin-right:0; width:100%; order:3}
-  }
-  @media(max-width:560px){
-    .bld-root{padding:18px 14px 30px}
-    .bld-title{font-size:19px}
-  }
-`;
-
 export default function BuildSystemView() {
-  const [selected, setSelected] = useState(buildInitial);
-  const [showPay, setShowPay] = useState(false);
-  const [showCustom, setShowCustom] = useState(false);
-  const [customName, setCustomName] = useState("");
-  const [customDesc, setCustomDesc] = useState("");
+  const [pricing, setPricing] = useState(null);
+  const [selected, setSelected] = useState({}); // { sub_id: true }
+  const [userCount, setUserCount] = useState(1);
+  const [workerCount, setWorkerCount] = useState(100);
+  const [current, setCurrent] = useState(null);
+  const [isOwner, setIsOwner] = useState(false);
+  const [loading, setLoading] = useState(true);
+  const [saving, setSaving] = useState(false);
+  const [error, setError] = useState("");
+  const [savedMsg, setSavedMsg] = useState("");
 
-  const toggleSub = (id) => {
-    setSelected((prev) => {
-      const next = new Set(prev);
-      next.has(id) ? next.delete(id) : next.add(id);
-      return next;
+  useEffect(() => { load(); }, []);
+
+  async function load() {
+    setLoading(true);
+    setError("");
+    try {
+      const res = await httpsCallable(functions, "getBuildData")({});
+      const d = res.data;
+      setPricing(d.pricing);
+      setIsOwner(!!d.isOwner);
+      setCurrent(d.current);
+      const sel = {};
+      (d.current.activeModules || []).forEach((m) => { sel[m] = true; });
+      setSelected(sel);
+      if (d.current.userCount > 0) setUserCount(d.current.userCount);
+      if (d.current.workerCount > 0) setWorkerCount(d.current.workerCount);
+    } catch (e) {
+      setError(e.message || "تعذّر تحميل البيانات.");
+    } finally {
+      setLoading(false);
+    }
+  }
+
+  function toggle(subId) {
+    setSavedMsg("");
+    setSelected((s) => {
+      const n = { ...s };
+      if (n[subId]) delete n[subId]; else n[subId] = true;
+      return n;
     });
-  };
-
-  const toggleDept = (dept) => {
-    setSelected((prev) => {
-      const next = new Set(prev);
-      const allOn = dept.subs.every((s) => next.has(s.id));
-      dept.subs.forEach((s) => (allOn ? next.delete(s.id) : next.add(s.id)));
-      return next;
+  }
+  function toggleDept(dept) {
+    setSavedMsg("");
+    const allOn = dept.subs.every((s) => selected[s.id]);
+    setSelected((s) => {
+      const n = { ...s };
+      dept.subs.forEach((sub) => { if (allOn) delete n[sub.id]; else n[sub.id] = true; });
+      return n;
     });
-  };
+  }
 
-  // التكلفة الجارية (تتحدّث فوريًا)
-  const { perUser, count, activeDepts } = useMemo(() => {
-    let pu = 0, c = 0;
-    const ad = [];
-    DEPARTMENTS.forEach((d) => {
-      const chosen = d.subs.filter((s) => selected.has(s.id));
-      if (chosen.length) {
-        const deptPU = chosen.reduce((sum, s) => sum + s.price, 0);
-        ad.push({ ...d, chosenCount: chosen.length, deptCost: deptPU * USERS });
-        pu += deptPU;
-        c += chosen.length;
-      }
+  // الحساب المباشر (نفس منطق الباكإند)
+  const calc = useMemo(() => {
+    if (!pricing) return { total: 0, hasWorker: false, userCost: 0, deptCost: 0, workerCost: 0, deptCount: 0 };
+    const userCost = (Number(pricing.userPrice) || 0) * userCount;
+    let deptCost = 0, workerDeptCount = 0, deptCount = 0;
+    Object.keys(selected).forEach((m) => {
+      deptCount++;
+      if (pricing.workerDepts[m]) workerDeptCount++;
+      else deptCost += Number(pricing.prices[m]) || 0;
     });
-    return { perUser: pu, count: c, activeDepts: ad };
-  }, [selected]);
+    const workerCost = (Number(pricing.workerPrice) || 0) * workerCount * workerDeptCount;
+    return { total: userCost + deptCost + workerCost, hasWorker: workerDeptCount > 0, userCost, deptCost, workerCost, deptCount, workerDeptCount };
+  }, [pricing, selected, userCount, workerCount]);
 
-  const monthlyCost = Math.round(perUser * USERS);
+  async function save() {
+    setError("");
+    setSavedMsg("");
+    if (calc.deptCount === 0) { setError("اختر قسمًا واحدًا على الأقل."); return; }
+    if (calc.hasWorker && workerCount < 1) { setError("حدّد عدد العمالة (اخترت أقسامًا تُسعّر بالعامل)."); return; }
+    setSaving(true);
+    try {
+      const res = await httpsCallable(functions, "saveTenantBuild")({
+        modules: Object.keys(selected),
+        userCount: userCount,
+        workerCount: workerCount,
+      });
+      setSavedMsg(`تم الحفظ والتفعيل. اشتراكك الشهري: ${fmt(res.data.subscriptionAmount)} ر.س`);
+      load();
+    } catch (e) {
+      setError(e.message || "تعذّر الحفظ.");
+      setSaving(false);
+    }
+  }
+
+  if (loading) return <div style={styles.page}><p style={styles.muted}>جارٍ التحميل...</p></div>;
 
   return (
-    <div className="bld-root">
-      <style>{STYLES}</style>
+    <div style={styles.page}>
+      <div style={styles.head}>
+        <h1 style={styles.pageTitle}>بناء النظام</h1>
+        <p style={styles.pageSub}>اختر الأقسام التي تحتاجها فقط، وادفع مقابلها. النظام يبدأ بما تختاره ويكبر معك.</p>
+      </div>
 
-      {/* HEAD */}
-      <div className="bld-head">
-        <div className="bld-head-ic"><Settings size={24} /></div>
-        <div>
-          <div className="bld-title">بناء النظام</div>
-          <div className="bld-subt">اختر الأقسام التي يحتاجها نظامك وادفع لما تستخدمه فقط · إدارة المنصة</div>
+      {error ? <div style={styles.error}>{error}</div> : null}
+      {savedMsg ? <div style={styles.savedBox}>✓ {savedMsg}</div> : null}
+      {!isOwner ? <div style={styles.warnBox}>التعديل والدفع متاحان لمالك الحساب فقط. يمكنك تصفّح الأقسام والأسعار.</div> : null}
+
+      {/* الأعداد + التكلفة */}
+      <div style={styles.controlBar}>
+        <div style={styles.countCard}>
+          <label style={styles.countLabel}>👤 عدد المستخدمين الإداريين</label>
+          <input style={styles.countInput} type="number" min="1" value={userCount} onChange={(e) => { setSavedMsg(""); setUserCount(Math.max(1, Number(e.target.value) || 1)); }} disabled={!isOwner || saving} dir="ltr" />
+        </div>
+        <div style={styles.countCard}>
+          <label style={styles.countLabel}>👷 عدد العمالة {calc.hasWorker ? <span style={styles.reqStar}>*</span> : <span style={styles.optNote}>(للأقسام المرتبطة بالعمالة)</span>}</label>
+          <select style={styles.countInput} value={workerCount} onChange={(e) => { setSavedMsg(""); setWorkerCount(Number(e.target.value)); }} disabled={!isOwner || saving} dir="ltr">
+            {WORKER_STEPS.map((w) => <option key={w} value={w}>{w}</option>)}
+          </select>
+        </div>
+        <div style={styles.totalCard}>
+          <span style={styles.totalLabel}>الاشتراك الشهري</span>
+          <span style={styles.totalValue} dir="ltr">{fmt(calc.total)}</span>
+          <span style={styles.totalUnit}>ر.س / شهر</span>
         </div>
       </div>
 
-      {/* CALC BAR */}
-      <div className="bld-calc">
-        <div className="bld-calc-ic"><Calculator size={22} /></div>
-        <div className="bld-calc-item">
-          <span className="l">عدد المستخدمين</span>
-          <span className="v bld-num">{USERS}</span>
+      {/* تفصيل التكلفة */}
+      {calc.deptCount > 0 ? (
+        <div style={styles.breakdown}>
+          <span style={styles.bdItem}>المستخدمون: <b dir="ltr">{fmt(calc.userCost)}</b></span>
+          <span style={styles.bdSep}>+</span>
+          <span style={styles.bdItem}>الأقسام الثابتة: <b dir="ltr">{fmt(calc.deptCost)}</b></span>
+          {calc.workerDeptCount > 0 ? <><span style={styles.bdSep}>+</span><span style={styles.bdItem}>العمالة ({calc.workerDeptCount} قسم): <b dir="ltr">{fmt(calc.workerCost)}</b></span></> : null}
         </div>
-        <div className="bld-calc-item">
-          <span className="l">الأقسام الفرعية المختارة</span>
-          <span className="v bld-num">{count}</span>
-        </div>
-        <div className="bld-calc-cost">
-          <span className="l">التكلفة الشهرية</span>
-          <div className="v bld-num">{fmt(monthlyCost)} <small>ر.س/شهر</small></div>
-        </div>
-        <button className="bld-calc-btn" disabled={!canManageBilling || count === 0} onClick={() => setShowPay(true)}>
-          <CreditCard size={17} /> تأكيد والدفع
-        </button>
-      </div>
+      ) : null}
 
-      <div className="bld-hint">
-        <Check size={15} /> الأقسام المختارة تُحسب في الفوترة فورًا. اضغط أي فرع لتفعيله أو إلغائه — والتكلفة تتحدّث مباشرة.
-      </div>
-
-      {/* GRID */}
-      <div className="bld-grid">
-        {DEPARTMENTS.map((d) => {
-          const Icon = d.icon;
-          const chosen = d.subs.filter((s) => selected.has(s.id));
-          const allOn = d.subs.every((s) => selected.has(s.id));
-          const someOn = chosen.length > 0;
-          const deptCost = Math.round(chosen.reduce((sum, s) => sum + s.price, 0) * USERS);
+      {/* الإدارات والأقسام */}
+      <div style={styles.deptList}>
+        {STRUCTURE.map((dept) => {
+          const allOn = dept.subs.every((s) => selected[s.id]);
+          const someOn = dept.subs.some((s) => selected[s.id]);
           return (
-            <div className={`bld-dept ${someOn ? "on" : ""}`} key={d.id} style={{ "--c": d.color }}>
-              <div className="bld-dept-head">
-                <div className="bld-dept-ic"><Icon size={20} /></div>
-                <div className="bld-dept-titles">
-                  <div className="bld-dept-name">{d.name}</div>
-                  <div className="bld-dept-count">{chosen.length} من {d.subs.length} أقسام مختارة</div>
-                </div>
-                <span className={`bld-dept-badge ${someOn ? "active" : "avail"}`}>
-                  {someOn ? "مفعّل" : "متاح للإضافة"}
-                </span>
+            <div key={dept.id} style={{ ...styles.deptCard, ...(someOn ? { borderColor: dept.color } : {}) }}>
+              <div style={{ ...styles.deptHead, borderRightColor: dept.color }}>
+                <label style={styles.deptCheck}>
+                  <input type="checkbox" checked={allOn} ref={(el) => { if (el) el.indeterminate = someOn && !allOn; }} onChange={() => toggleDept(dept)} disabled={!isOwner || saving} />
+                  <span style={{ ...styles.deptName, color: dept.color }}>{dept.name}</span>
+                </label>
+                <span style={styles.deptCount}>{dept.subs.filter((s) => selected[s.id]).length}/{dept.subs.length}</span>
               </div>
-
-              <div className="bld-subs">
-                {d.subs.map((s) => {
-                  const sel = selected.has(s.id);
+              <div style={styles.subGrid}>
+                {dept.subs.map((sub) => {
+                  const isSel = !!selected[sub.id];
+                  const isWorker = pricing && pricing.workerDepts[sub.id];
+                  const price = pricing ? (Number(pricing.prices[sub.id]) || 0) : 0;
                   return (
-                    <div className={`bld-sub ${sel ? "sel" : ""}`} key={s.id}
-                         style={{ "--c": d.color }} onClick={() => toggleSub(s.id)}>
-                      <span className="bld-check">{sel && <Check size={13} strokeWidth={3} />}</span>
-                      <span className="bld-sub-name">{s.name}</span>
-                      <span className="bld-sub-price">{s.price.toFixed(2)} ر.س</span>
-                    </div>
+                    <label key={sub.id} style={{ ...styles.subRow, ...(isSel ? styles.subRowOn : {}) }}>
+                      <div style={styles.subLeft}>
+                        <input type="checkbox" checked={isSel} onChange={() => toggle(sub.id)} disabled={!isOwner || saving} />
+                        <span style={styles.subName}>{sub.name}</span>
+                      </div>
+                      {isWorker ? (
+                        <span style={styles.workerPrice} dir="ltr">{fmt(pricing.workerPrice)} × عامل</span>
+                      ) : price > 0 ? (
+                        <span style={styles.subPrice} dir="ltr">{fmt(price)} ر.س</span>
+                      ) : (
+                        <span style={styles.freePrice}>—</span>
+                      )}
+                    </label>
                   );
                 })}
-              </div>
-
-              <div className="bld-dept-foot">
-                <button className="bld-dept-toggle" onClick={() => toggleDept(d)}>
-                  {allOn ? "إلغاء الكل" : "تفعيل الكل"}
-                </button>
-                <span className="bld-dept-sum bld-num">
-                  {fmt(deptCost)} <small>ر.س/شهر</small>
-                </span>
               </div>
             </div>
           );
         })}
-
-        {/* CUSTOM SECTION REQUEST */}
-        <div className="bld-custom">
-          <div className="bld-custom-ic"><Plus size={22} /></div>
-          <div className="bld-custom-info">
-            <div className="bld-custom-t">طلب قسم مخصّص</div>
-            <div className="bld-custom-v">تحتاج قسمًا غير موجود؟ أرسل طلبك ويصل لمالك المنصة لدراسته وبنائه.</div>
-          </div>
-          <button className="bld-custom-btn" onClick={() => setShowCustom(true)}>
-            <Plus size={16} /> طلب قسم
-          </button>
-        </div>
       </div>
 
-      {/* PAY MODAL */}
-      {showPay && (
-        <div className="bld-overlay" onClick={() => setShowPay(false)}>
-          <div className="bld-modal" onClick={(e) => e.stopPropagation()}>
-            <div className="bld-modal-head">
-              <span className="bld-modal-title">تأكيد الاشتراك والدفع</span>
-              <button className="bld-modal-close" onClick={() => setShowPay(false)}><X size={18} /></button>
-            </div>
-            <div className="bld-modal-sub">ملخّص الأقسام المختارة وتكلفتها الشهرية.</div>
-            <div className="bld-summary">
-              {activeDepts.map((d) => (
-                <div className="bld-sum-row" key={d.id}>
-                  <span className="bld-sum-name">
-                    <span className="bld-sum-dot" style={{ background: d.color }} />
-                    {d.name}
-                  </span>
-                  <span className="bld-sum-meta">{d.chosenCount} قسم · {fmt(d.deptCost)} ر.س</span>
-                </div>
-              ))}
-            </div>
-            <div className="bld-sum-total">
-              <span className="bld-sum-total-l">
-                الإجمالي الشهري
-                <small>{perUser.toFixed(2)} ر.س × {USERS} مستخدم</small>
-              </span>
-              <span className="bld-sum-total-v bld-num">{fmt(monthlyCost)} ر.س</span>
-            </div>
-            <button className="bld-modal-btn" onClick={() => setShowPay(false)}>
-              <CreditCard size={17} /> المتابعة للدفع
-            </button>
-            <div className="bld-modal-note">
-              <Lock size={14} />
-              صلاحية الدفع للمالك فقط أو من يخوّله، لأن المبلغ يُسحب من حساب الشركة.
-            </div>
+      {/* زر الحفظ */}
+      {isOwner ? (
+        <div style={styles.saveBar}>
+          <div style={styles.saveSummary}>
+            <span style={styles.saveSummaryText}>{calc.deptCount} قسم مختار</span>
+            <span style={styles.saveSummaryAmount} dir="ltr">{fmt(calc.total)} ر.س/شهر</span>
           </div>
+          <button style={styles.saveBtn} onClick={save} disabled={saving || calc.deptCount === 0}>{saving ? "جارٍ الحفظ..." : "💾 حفظ وتفعيل"}</button>
         </div>
-      )}
-
-      {/* CUSTOM REQUEST MODAL */}
-      {showCustom && (
-        <div className="bld-overlay" onClick={() => setShowCustom(false)}>
-          <div className="bld-modal" onClick={(e) => e.stopPropagation()}>
-            <div className="bld-modal-head">
-              <span className="bld-modal-title">طلب قسم مخصّص</span>
-              <button className="bld-modal-close" onClick={() => setShowCustom(false)}><X size={18} /></button>
-            </div>
-            <div className="bld-modal-sub">صف القسم الذي تحتاجه وسيصل طلبك لمالك المنصة لدراسته.</div>
-            <div className="bld-field">
-              <label className="bld-field-l">اسم القسم المطلوب</label>
-              <input className="bld-input" value={customName} onChange={(e) => setCustomName(e.target.value)}
-                     placeholder="مثال: قسم التعويضات والمطالبات" />
-            </div>
-            <div className="bld-field">
-              <label className="bld-field-l">وصف الحاجة</label>
-              <textarea className="bld-input" value={customDesc} onChange={(e) => setCustomDesc(e.target.value)}
-                        placeholder="اشرح ما تريد أن يفعله هذا القسم..." />
-            </div>
-            <button className="bld-modal-btn" onClick={() => { setShowCustom(false); setCustomName(""); setCustomDesc(""); }}>
-              <Send size={16} /> إرسال الطلب للمالك
-            </button>
-            <div className="bld-modal-note">
-              <CheckCircle2 size={14} />
-              بعد الموافقة، يُبنى القسم ويُسعّر ويصبح متاحًا لك ولبقية المشتركين.
-            </div>
-          </div>
-        </div>
-      )}
+      ) : null}
     </div>
   );
 }
+
+const styles = {
+  page: { padding: "26px 30px 120px", minHeight: "100%", background: "#f4f6f9", fontFamily: "'IBM Plex Sans Arabic', system-ui, sans-serif", direction: "rtl" },
+  head: { marginBottom: 22 },
+  pageTitle: { fontSize: 24, fontWeight: 800, color: "#4f46e5", margin: "0 0 4px" },
+  pageSub: { fontSize: 14, color: "#64748b", margin: 0 },
+
+  error: { padding: "10px 12px", background: "#fee2e2", color: "#b91c1c", borderRadius: 8, fontSize: 14, marginBottom: 16 },
+  savedBox: { padding: "11px 14px", background: "#dcfce7", color: "#15803d", borderRadius: 8, fontSize: 14, marginBottom: 16, fontWeight: 700 },
+  warnBox: { padding: "12px 16px", background: "#fffbeb", border: "1px solid #fde68a", borderRadius: 10, fontSize: 14, color: "#92400e", marginBottom: 16 },
+  muted: { color: "#94a3b8", fontSize: 14 },
+
+  controlBar: { display: "grid", gridTemplateColumns: "1fr 1fr auto", gap: 14, marginBottom: 14 },
+  countCard: { background: "#fff", border: "1px solid #e2e8f0", borderRadius: 12, padding: "14px 18px" },
+  countLabel: { display: "block", fontSize: 13, fontWeight: 600, color: "#334155", marginBottom: 10 },
+  reqStar: { color: "#dc2626", fontWeight: 800 },
+  optNote: { fontSize: 11, color: "#94a3b8", fontWeight: 400 },
+  countInput: { width: "100%", padding: "10px 12px", fontSize: 16, fontWeight: 700, border: "1px solid #cbd5e1", borderRadius: 8, textAlign: "center", fontFamily: "monospace", boxSizing: "border-box" },
+  totalCard: { background: "linear-gradient(135deg, #4f46e5, #6366f1)", borderRadius: 12, padding: "14px 28px", display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "center", minWidth: 180 },
+  totalLabel: { fontSize: 12, color: "#c7d2fe", fontWeight: 600 },
+  totalValue: { fontSize: 30, fontWeight: 800, color: "#fff", fontFamily: "monospace", lineHeight: 1.2 },
+  totalUnit: { fontSize: 12, color: "#c7d2fe" },
+
+  breakdown: { display: "flex", gap: 10, alignItems: "center", flexWrap: "wrap", padding: "10px 16px", background: "#eef2ff", borderRadius: 10, fontSize: 13, color: "#4338ca", marginBottom: 20 },
+  bdItem: { fontWeight: 500 },
+  bdSep: { color: "#a5b4fc", fontWeight: 800 },
+
+  deptList: { display: "flex", flexDirection: "column", gap: 12 },
+  deptCard: { background: "#fff", border: "1px solid #e2e8f0", borderRadius: 12, overflow: "hidden", transition: "border-color .15s" },
+  deptHead: { display: "flex", justifyContent: "space-between", alignItems: "center", padding: "13px 18px", borderRight: "4px solid", background: "#fafbfc" },
+  deptCheck: { display: "flex", alignItems: "center", gap: 10, cursor: "pointer" },
+  deptName: { fontSize: 16, fontWeight: 800 },
+  deptCount: { fontSize: 13, fontWeight: 700, color: "#94a3b8", fontFamily: "monospace" },
+  subGrid: { display: "grid", gridTemplateColumns: "repeat(auto-fill, minmax(240px, 1fr))", gap: 8, padding: "14px 18px" },
+  subRow: { display: "flex", justifyContent: "space-between", alignItems: "center", gap: 10, padding: "9px 12px", background: "#f8fafc", borderRadius: 8, cursor: "pointer", border: "1px solid transparent" },
+  subRowOn: { background: "#eef2ff", borderColor: "#c7d2fe" },
+  subLeft: { display: "flex", alignItems: "center", gap: 9, flex: 1, minWidth: 0 },
+  subName: { fontSize: 13, fontWeight: 600, color: "#334155" },
+  subPrice: { fontSize: 13, fontWeight: 700, color: "#16a34a", fontFamily: "monospace", flexShrink: 0 },
+  workerPrice: { fontSize: 12, fontWeight: 700, color: "#ea580c", fontFamily: "monospace", flexShrink: 0 },
+  freePrice: { fontSize: 13, color: "#cbd5e1", flexShrink: 0 },
+
+  saveBar: { position: "fixed", bottom: 0, right: 0, left: 0, background: "#fff", borderTop: "1px solid #e2e8f0", padding: "14px 30px", display: "flex", justifyContent: "space-between", alignItems: "center", gap: 16, boxShadow: "0 -4px 16px rgba(0,0,0,.06)", zIndex: 50 },
+  saveSummary: { display: "flex", flexDirection: "column", gap: 2 },
+  saveSummaryText: { fontSize: 13, color: "#64748b" },
+  saveSummaryAmount: { fontSize: 20, fontWeight: 800, color: "#4f46e5", fontFamily: "monospace" },
+  saveBtn: { padding: "13px 32px", fontSize: 15, fontWeight: 700, color: "#fff", background: "#4f46e5", border: "none", borderRadius: 10, cursor: "pointer" },
+};
