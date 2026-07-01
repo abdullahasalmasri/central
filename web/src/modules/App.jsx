@@ -45,6 +45,7 @@ import CostOverviewView        from "./CostOverviewView";
 import CostAllocationView      from "./CostAllocationView";
 import SalesView                from "./SalesView";
 import QuotesView               from "./QuotesView";
+import PriceQuotesView          from "./PriceQuotesView";
 import MarketingView            from "./MarketingView";
 import CustomerServiceView      from "./CustomerServiceView";
 import ContractsView            from "./ContractsView";
@@ -106,7 +107,7 @@ const views = {
 
   // المبيعات والتسويق
   sal_dir:       SalesView,
-  sal_quote:     QuotesView,
+  sal_quote:     PriceQuotesView,
   sal_mkt:       MarketingView,
   sal_serv:      CustomerServiceView,
 

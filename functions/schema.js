@@ -46,6 +46,7 @@ const COLLECTIONS = {
   PROJECT_BUDGETS: "projectBudgets",
   DEALS: "deals",
   QUOTES: "quotes",
+  PRICE_QUOTES: "priceQuotes",
   CAMPAIGNS: "campaigns",
   TICKETS: "tickets",
   INTERACTIONS: "interactions",
@@ -309,7 +310,7 @@ function buildWorkerCostBase({
 
 function buildWorkerDoc({
   tenantId, name, email, supervisorUid, employeeNumber,
-  jobTitleId, jobTitleName, costBase, createdBy, createdAt,
+  jobTitleId, jobTitleName, nationality, gender, costBase, createdBy, createdAt,
 }) {
   return {
     tenantId,
@@ -321,6 +322,8 @@ function buildWorkerDoc({
     employeeNumber: employeeNumber || null,
     jobTitleId: jobTitleId || null,
     jobTitleName: jobTitleName || null,
+    nationality: nationality || null,   // الجنسية (للتسعير المرجعي)
+    gender: gender || null,   // الجنس (للتسعير المرجعي — عامل حاسم)
     costBase: costBase || null,   // بنية التكلفة الأساسية (الوحدة 1)
     status: "active",
     mustChangePassword: true,
@@ -2614,6 +2617,13 @@ function buildStockRequestDoc({
 }
 
 
+// قائمة الجنسيات الموحّدة (للعمالة والتسعير المرجعي — تمنع تكرار التسميات)
+const NATIONALITIES = [
+  "سعودي", "باكستاني", "هندي", "بنغلاديشي", "فلبيني", "نيبالي",
+  "مصري", "يمني", "سوداني", "إثيوبي", "سريلانكي", "إندونيسي",
+  "أردني", "سوري", "أفغاني", "بورمي", "كيني", "أوغندي", "غاني", "أخرى",
+];
+
 // ===== تذاكر الدعم (تواصل العميل مع مالك المنصة) =====
 const PLATFORM_TICKET_STATUS = { OPEN: "open", IN_PROGRESS: "in_progress", CLOSED: "closed" };
 const ALL_PLATFORM_TICKET_STATUS = Object.values(PLATFORM_TICKET_STATUS);
@@ -2635,6 +2645,115 @@ function buildSupportTicketDoc({ tenantId, tenantName, subject, category, status
     lastMessageFrom: firstMessage ? "client" : null,
     ownerUnread: !!firstMessage,
     clientUnread: false,
+  };
+}
+
+// ═══════════════════════════════════════════════════════
+// ===== عرض السعر المفصّل (workflow: مبيعات ← مالية ← عميل) =====
+// ═══════════════════════════════════════════════════════
+
+// حالات عرض السعر عبر دورة الموافقة
+const PRICE_QUOTE_STATUS = {
+  DRAFT: "draft",                     // مسودة (المبيعات تعدّل)
+  PENDING_FINANCE: "pending_finance", // بانتظار مراجعة المالية
+  REJECTED_FINANCE: "rejected_finance", // رفضتها المالية (يعود للمبيعات)
+  APPROVED_FINANCE: "approved_finance", // اعتمدتها المالية
+  SENT_CLIENT: "sent_client",         // أُرسل للعميل
+  REJECTED_CLIENT: "rejected_client", // رفضه العميل
+  ACCEPTED: "accepted",               // قبله العميل (وصل أمر شراء)
+};
+const ALL_PRICE_QUOTE_STATUSES = Object.values(PRICE_QUOTE_STATUS);
+
+// تطبيع بند عمالة: يحسب سعر الوحدة والإجمالي وحالة الشمول
+// سعر الوحدة = التكلفة المعروضة + السكن المعروض + المواصلات المعروضة + الربح
+function normalizeQuoteLaborItem(item) {
+  const it = item || {};
+  const num = (v) => Math.max(0, Number(v) || 0);
+  const offeredCost = num(it.offeredCost);
+  const offeredHousing = num(it.offeredHousing);
+  const offeredTransport = num(it.offeredTransport);
+  const profit = num(it.profit);
+  const count = Math.max(0, Math.floor(Number(it.count) || 0));
+  const unitPrice = offeredCost + offeredHousing + offeredTransport + profit;
+  return {
+    gender: it.gender || null,
+    nationality: it.nationality || null,
+    jobTitleId: it.jobTitleId || null,
+    jobTitleName: it.jobTitleName || null,
+    // القيم المرجعية (snapshot وقت الإنشاء — للمقارنة والتوثيق)
+    refCost: num(it.refCost),
+    refHousing: num(it.refHousing),
+    refTransport: num(it.refTransport),
+    // القيم المعروضة (اليدوية من المبيعات)
+    offeredCost, offeredHousing, offeredTransport, profit, count,
+    includesHousing: offeredHousing > 0,     // السكن المعروض > 0 = شامل
+    includesTransport: offeredTransport > 0, // المواصلات المعروضة > 0 = شامل
+    unitPrice: Math.round(unitPrice * 100) / 100,
+    lineTotal: Math.round(unitPrice * count * 100) / 100,
+  };
+}
+
+// تطبيع بند معدات: سعر الوحدة = السعر المعروض + الربح
+function normalizeQuoteEquipmentItem(item) {
+  const it = item || {};
+  const num = (v) => Math.max(0, Number(v) || 0);
+  const offeredPrice = num(it.offeredPrice);
+  const profit = num(it.profit);
+  const count = Math.max(0, Math.floor(Number(it.count) || 0));
+  const unitPrice = offeredPrice + profit;
+  return {
+    type: it.type || null,
+    model: it.model || null,
+    manufacturer: it.manufacturer || null,
+    size: it.size || null,
+    count,
+    offeredPrice, profit,
+    unitPrice: Math.round(unitPrice * 100) / 100,
+    lineTotal: Math.round(unitPrice * count * 100) / 100,
+  };
+}
+
+// حساب إجماليات عرض السعر (الباكإند يحسب — مانع تلاعب)
+function computePriceQuoteTotals(laborItems, equipmentItems, vatRate) {
+  const labor = (Array.isArray(laborItems) ? laborItems : []).map(normalizeQuoteLaborItem);
+  const equip = (Array.isArray(equipmentItems) ? equipmentItems : []).map(normalizeQuoteEquipmentItem);
+  const subtotal = [...labor, ...equip].reduce((s, it) => s + (it.lineTotal || 0), 0);
+  const rate = Number.isFinite(Number(vatRate)) ? Number(vatRate) : QUOTE_VAT_RATE;
+  const taxAmount = subtotal * (rate / 100);
+  const total = subtotal + taxAmount;
+  const r = (n) => Math.round(n * 100) / 100;
+  return {
+    laborItems: labor, equipmentItems: equip,
+    subtotal: r(subtotal), vatRate: rate, taxAmount: r(taxAmount), total: r(total),
+  };
+}
+
+// بناء وثيقة عرض السعر المفصّل
+function buildPriceQuoteDoc({
+  tenantId, quoteNumber, customerId, customerName,
+  laborItems, equipmentItems, subtotal, vatRate, taxAmount, total,
+  status, createdBy, createdAt,
+}) {
+  return {
+    tenantId,
+    quoteNumber,
+    customerId: customerId || null,
+    customerName: customerName || null,
+    laborItems: laborItems || [],
+    equipmentItems: equipmentItems || [],
+    subtotal: subtotal || 0,
+    vatRate: vatRate != null ? vatRate : QUOTE_VAT_RATE,
+    taxAmount: taxAmount || 0,
+    total: total || 0,
+    status: status || PRICE_QUOTE_STATUS.DRAFT,
+    // حقول دورة الموافقة (تُملأ لاحقًا)
+    financeRefNumber: null,      // الرقم المرجعي من المالية عند الموافقة
+    financeReviewedBy: null,
+    financeReviewedAt: null,
+    rejectionReason: null,       // سبب الرفض (للتوثيق)
+    createdBy,
+    createdAt,
+    updatedAt: createdAt,
   };
 }
 
@@ -2763,6 +2882,13 @@ module.exports = {
   buildSafetyInspectionDoc,
   buildStockRequestDoc,
   buildSupportTicketDoc,
+  NATIONALITIES,
+  PRICE_QUOTE_STATUS,
+  ALL_PRICE_QUOTE_STATUSES,
+  normalizeQuoteLaborItem,
+  normalizeQuoteEquipmentItem,
+  computePriceQuoteTotals,
+  buildPriceQuoteDoc,
   PLATFORM_TICKET_STATUS,
   ALL_PLATFORM_TICKET_STATUS,
   PLATFORM_TICKET_CATEGORY,

@@ -472,6 +472,8 @@ exports.createWorker = onCall(async (request) => {
     const supervisorUid = typeof data.supervisorUid === "string" ? data.supervisorUid.trim() : "";
     const employeeNumber = typeof data.employeeNumber === "string" ? data.employeeNumber.trim() : "";
     const jobTitleId = typeof data.jobTitleId === "string" ? data.jobTitleId.trim() : "";
+    const nationality = typeof data.nationality === "string" ? data.nationality.trim() : "";
+    const gender = typeof data.gender === "string" ? data.gender.trim() : "";
 
     if (name.length < 2) {
       throw new HttpsError("invalid-argument", "اسم العامل مطلوب (حرفان على الأقل).");
@@ -512,7 +514,7 @@ exports.createWorker = onCall(async (request) => {
     const newUid = userRecord.uid;
     try {
       await db.collection(COLLECTIONS.USERS).doc(newUid).set(
-        buildWorkerDoc({ tenantId: callerTenantId, name, email, supervisorUid: effectiveSupervisorUid, employeeNumber, jobTitleId: jobTitleId || null, jobTitleName, createdBy: auth.uid, createdAt: FieldValue.serverTimestamp() })
+        buildWorkerDoc({ tenantId: callerTenantId, name, email, supervisorUid: effectiveSupervisorUid, employeeNumber, jobTitleId: jobTitleId || null, jobTitleName, nationality: nationality || null, gender: gender || null, createdBy: auth.uid, createdAt: FieldValue.serverTimestamp() })
       );
       await admin.auth().setCustomUserClaims(newUid, { tenantId: callerTenantId, role: ROLES.WORKER });
     } catch (err) {
@@ -11950,5 +11952,314 @@ exports.saveTenantBuild = onCall(async (request) => {
     if (err instanceof HttpsError) throw err;
     console.error("saveTenantBuild failed:", err);
     throw new HttpsError("internal", "تعذّر حفظ البناء.");
+  }
+});
+
+// تحديث بيانات عامل (الاسم، المهنة، الجنسية، المشرف) — للمالك/الموظفين
+exports.updateWorker = onCall(async (request) => {
+  try {
+    const auth = request.auth;
+    if (!auth) throw new HttpsError("unauthenticated", "يجب تسجيل الدخول أولاً.");
+    const callerTenantId = auth.token.tenantId;
+    if (!callerTenantId) throw new HttpsError("failed-precondition", "حسابك غير مرتبط بشركة.");
+    if (auth.token.role === ROLES.WORKER) throw new HttpsError("permission-denied", "غير مخوّل لهذا الإجراء.");
+
+    const data = request.data || {};
+    const workerId = typeof data.workerId === "string" ? data.workerId.trim() : "";
+    if (!workerId) throw new HttpsError("invalid-argument", "يجب تحديد العامل.");
+
+    const ref = db.collection(COLLECTIONS.USERS).doc(workerId);
+    const doc = await ref.get();
+    if (!doc.exists) throw new HttpsError("invalid-argument", "العامل غير موجود.");
+    const w = doc.data();
+    if (w.tenantId !== callerTenantId) throw new HttpsError("permission-denied", "غير مخوّل لهذا العامل.");
+    if (w.role !== ROLES.WORKER) throw new HttpsError("invalid-argument", "هذا الحساب ليس عاملًا.");
+
+    const update = {};
+    if (typeof data.name === "string" && data.name.trim()) update.name = data.name.trim();
+    if (typeof data.nationality === "string") update.nationality = data.nationality.trim() || null;
+    if (typeof data.gender === "string") update.gender = data.gender.trim() || null;
+    if (typeof data.employeeNumber === "string") update.employeeNumber = data.employeeNumber.trim() || null;
+    if (typeof data.supervisorUid === "string") update.supervisorUid = data.supervisorUid.trim() || null;
+    // المهنة (المسمى الوظيفي) — نجيب الاسم من JOB_TITLES ونتحقق من الشركة
+    if (typeof data.jobTitleId === "string") {
+      const jid = data.jobTitleId.trim();
+      if (jid) {
+        const jobDoc = await db.collection(COLLECTIONS.JOB_TITLES).doc(jid).get();
+        if (!jobDoc.exists || jobDoc.data().tenantId !== callerTenantId) {
+          throw new HttpsError("invalid-argument", "المسمى الوظيفي غير صحيح.");
+        }
+        update.jobTitleId = jid;
+        update.jobTitleName = jobDoc.data().name;
+      } else {
+        update.jobTitleId = null;
+        update.jobTitleName = null;
+      }
+    }
+
+    if (Object.keys(update).length === 0) throw new HttpsError("invalid-argument", "لا تغييرات.");
+    await ref.update(update);
+    return { id: workerId, updated: true };
+  } catch (err) {
+    if (err instanceof HttpsError) throw err;
+    console.error("updateWorker failed:", err);
+    throw new HttpsError("internal", "تعذّر تحديث العامل.");
+  }
+});
+
+// ═══════════════════════════════════════════════════════
+// ===== جدول التسعير المرجعي (أساس مراجعة المالية لعروض الأسعار) =====
+// ═══════════════════════════════════════════════════════
+
+// نصيب العامل من نوع أصل معيّن (housing أو vehicle) لشهر — منفصل عن الأنواع الأخرى
+async function computeWorkerAssetShareByType(callerTenantId, workerUid, month, assetType) {
+  const assetsSnap = await db.collection(COLLECTIONS.ASSETS)
+    .where("tenantId", "==", callerTenantId)
+    .where("beneficiaries", "array-contains", workerUid)
+    .get();
+  let totalShare = 0;
+  for (const aDoc of assetsSnap.docs) {
+    const asset = aDoc.data();
+    if (asset.status === "inactive") continue;
+    if (asset.type !== assetType) continue;   // فقط النوع المطلوب
+    const beneficiaries = Array.isArray(asset.beneficiaries) ? asset.beneficiaries : [];
+    const count = beneficiaries.length;
+    if (count === 0) continue;
+    const expSnap = await db.collection(COLLECTIONS.ASSET_EXPENSES)
+      .where("tenantId", "==", callerTenantId)
+      .where("assetId", "==", aDoc.id)
+      .where("month", "==", month)
+      .get();
+    const variable = expSnap.docs.reduce((s, d) => s + (Number(d.data().amount) || 0), 0);
+    const monthlyTotal = (Number(asset.monthlyRent) || 0) + variable;
+    totalShare += monthlyTotal / count;   // ÷ عدد المستفيدين الفعلي
+  }
+  return Math.round(totalShare * 100) / 100;
+}
+
+// التكلفة المرجعية: متوسط تكلفة العمال بنفس (الجنس + الجنسية + المهنة)
+// data: { gender, nationality, jobTitleId, includeHousing, includeTransport, month? }
+exports.getReferenceCost = onCall(async (request) => {
+  try {
+    const callerTenantId = await requireAnyModule(request.auth, [MODULES.SALES, MODULES.FINANCE]);
+    const data = request.data || {};
+    const gender = typeof data.gender === "string" ? data.gender.trim() : "";
+    const nationality = typeof data.nationality === "string" ? data.nationality.trim() : "";
+    const jobTitle = typeof data.jobTitle === "string" ? data.jobTitle.trim() : "";
+    const includeHousing = data.includeHousing === true;
+    const includeTransport = data.includeTransport === true;
+
+    // الجنس + الجنسية + المهنة إجباري (وإلا تسعير خاطئ — فلبيني ذكر ≠ فلبينية أنثى)
+    if (!gender || !nationality || !jobTitle) {
+      throw new HttpsError("invalid-argument", "يجب تحديد الجنس والجنسية والمهنة معًا.");
+    }
+
+    // الشهر للنصيب (افتراضيًا الحالي)
+    let month = typeof data.month === "string" && /^\d{4}-\d{2}$/.test(data.month) ? data.month : null;
+    if (!month) {
+      const now = new Date();
+      month = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, "0")}`;
+    }
+
+    // الموظفون بنفس المفتاح (الجنس + الجنسية) — المهنة تُفلتر بعد القراءة (job.title متداخل)
+    const empSnap = await db.collection(COLLECTIONS.EMPLOYEES)
+      .where("tenantId", "==", callerTenantId)
+      .where("gender", "==", gender)
+      .where("nationality", "==", nationality)
+      .get();
+
+    let totalBase = 0, totalHousing = 0, totalTransport = 0, count = 0;
+    for (const eDoc of empSnap.docs) {
+      const emp = eDoc.data();
+      if (emp.status === "inactive") continue;
+      // فلترة المهنة (job.title نصي)
+      const empJobTitle = (emp.job && emp.job.title) ? String(emp.job.title).trim() : "";
+      if (empJobTitle !== jobTitle) continue;
+
+      // التكلفة الأساسية = الراتب الكامل + الرسوم الحكومية/الإدارية
+      const salaryTotal = (emp.salary && Number(emp.salary.total)) || 0;
+      const govFees = (emp.costing && Number(emp.costing.governmentFees)) || 0;
+      totalBase += salaryTotal + govFees;
+
+      // نصيب السكن/المواصلات (÷ عدد المستفيدين الفعلي) — يتطلب ربط المستفيدين بالأصل
+      if (includeHousing) totalHousing += await computeWorkerAssetShareByType(callerTenantId, eDoc.id, month, "housing");
+      if (includeTransport) totalTransport += await computeWorkerAssetShareByType(callerTenantId, eDoc.id, month, "vehicle");
+      count++;
+    }
+
+    const r = (n) => Math.round((Number(n) || 0) * 100) / 100;
+    const avgBase = count > 0 ? totalBase / count : 0;
+    const avgHousing = count > 0 ? totalHousing / count : 0;
+    const avgTransport = count > 0 ? totalTransport / count : 0;
+
+    return {
+      count: count,   // عدد الموظفين المطابقين (0 = لا موظفين بهذا المفتاح)
+      month: month,
+      avgBaseCost: r(avgBase),
+      avgHousingShare: r(avgHousing),
+      avgTransportShare: r(avgTransport),
+      referenceCost: r(avgBase + avgHousing + avgTransport),   // التكلفة المرجعية الشاملة
+      includeHousing: includeHousing,
+      includeTransport: includeTransport,
+    };
+  } catch (err) {
+    if (err instanceof HttpsError) throw err;
+    console.error("getReferenceCost failed:", err);
+    throw new HttpsError("internal", "تعذّر حساب التكلفة المرجعية.");
+  }
+});
+
+// ═══════════════════════════════════════════════════════
+// ===== المرحلة ١: عرض السعر المفصّل (مبيعات ← مالية ← عميل) =====
+// ═══════════════════════════════════════════════════════
+const {
+  PRICE_QUOTE_STATUS: PQS,
+  computePriceQuoteTotals: computePQTotals,
+  buildPriceQuoteDoc: buildPQDoc,
+} = require("./schema");
+
+// إنشاء عرض سعر (المبيعات) — رقم تلقائي عند الحفظ
+// data: { customerId?, laborItems[], equipmentItems[], vatRate?, submit? }
+exports.createPriceQuote = onCall(async (request) => {
+  try {
+    const callerTenantId = await requireModule(request.auth, MODULES.SALES);
+    const data = request.data || {};
+
+    // العميل (اختياري في المسودة، يُتحقق إن وُجد)
+    const customerId = typeof data.customerId === "string" ? data.customerId.trim() : "";
+    let customerName = null;
+    if (customerId) {
+      const custDoc = await db.collection(COLLECTIONS.CUSTOMERS).doc(customerId).get();
+      if (!custDoc.exists || custDoc.data().tenantId !== callerTenantId) {
+        throw new HttpsError("invalid-argument", "العميل غير موجود.");
+      }
+      customerName = custDoc.data().name || null;
+    }
+
+    const laborItems = Array.isArray(data.laborItems) ? data.laborItems : [];
+    const equipmentItems = Array.isArray(data.equipmentItems) ? data.equipmentItems : [];
+    if (laborItems.length === 0 && equipmentItems.length === 0) {
+      throw new HttpsError("invalid-argument", "أضف بندًا واحدًا على الأقل (عمالة أو معدات).");
+    }
+
+    // الحساب في الباكإند (مانع تلاعب)
+    const vatRate = data.vatRate !== undefined ? Number(data.vatRate) : QUOTE_VAT_RATE;
+    const totals = computePQTotals(laborItems, equipmentItems, vatRate);
+
+    // submit=true → يُرسل للمالية مباشرة، وإلا مسودة
+    const status = data.submit === true ? PQS.PENDING_FINANCE : PQS.DRAFT;
+
+    const tenantRef = db.collection(COLLECTIONS.TENANTS).doc(callerTenantId);
+    const quoteRef = db.collection(COLLECTIONS.PRICE_QUOTES).doc();
+    const result = await db.runTransaction(async (tx) => {
+      const tenantSnap = await tx.get(tenantRef);
+      const tData = tenantSnap.data() || {};
+      const nextQuoteNumber = (tData.lastPriceQuoteNumber || 0) + 1;
+
+      const doc = buildPQDoc({
+        tenantId: callerTenantId,
+        quoteNumber: nextQuoteNumber,
+        customerId: customerId || null,
+        customerName,
+        laborItems: totals.laborItems,
+        equipmentItems: totals.equipmentItems,
+        subtotal: totals.subtotal,
+        vatRate: totals.vatRate,
+        taxAmount: totals.taxAmount,
+        total: totals.total,
+        status,
+        createdBy: request.auth.uid,
+        createdAt: FieldValue.serverTimestamp(),
+      });
+
+      tx.set(quoteRef, doc);
+      tx.update(tenantRef, { lastPriceQuoteNumber: nextQuoteNumber });
+      return { quoteNumber: nextQuoteNumber };
+    });
+
+    return { id: quoteRef.id, quoteNumber: result.quoteNumber, status, ...totals };
+  } catch (err) {
+    if (err instanceof HttpsError) throw err;
+    console.error("createPriceQuote failed:", err);
+    throw new HttpsError("internal", "تعذّر إنشاء عرض السعر.");
+  }
+});
+
+// قائمة عروض الأسعار (للمبيعات)
+exports.getPriceQuotes = onCall(async (request) => {
+  try {
+    const callerTenantId = await requireModule(request.auth, MODULES.SALES);
+    const snap = await db.collection(COLLECTIONS.PRICE_QUOTES)
+      .where("tenantId", "==", callerTenantId)
+      .get();
+    const quotes = snap.docs.map((d) => ({ id: d.id, ...d.data() }));
+    quotes.sort((a, b) => (b.quoteNumber || 0) - (a.quoteNumber || 0));
+    return { quotes };
+  } catch (err) {
+    if (err instanceof HttpsError) throw err;
+    console.error("getPriceQuotes failed:", err);
+    throw new HttpsError("internal", "تعذّر تحميل عروض الأسعار.");
+  }
+});
+
+// تفاصيل عرض سعر واحد
+exports.getPriceQuote = onCall(async (request) => {
+  try {
+    const callerTenantId = await requireModule(request.auth, MODULES.SALES);
+    const data = request.data || {};
+    const quoteId = typeof data.quoteId === "string" ? data.quoteId.trim() : "";
+    if (!quoteId) throw new HttpsError("invalid-argument", "يجب تحديد عرض السعر.");
+    const doc = await db.collection(COLLECTIONS.PRICE_QUOTES).doc(quoteId).get();
+    if (!doc.exists || doc.data().tenantId !== callerTenantId) {
+      throw new HttpsError("invalid-argument", "عرض السعر غير موجود.");
+    }
+    return { id: doc.id, ...doc.data() };
+  } catch (err) {
+    if (err instanceof HttpsError) throw err;
+    console.error("getPriceQuote failed:", err);
+    throw new HttpsError("internal", "تعذّر تحميل عرض السعر.");
+  }
+});
+
+// صلاحية: يقبل لو المستخدم عنده أيٌّ من الوحدات المطلوبة (المالك يتجاوز)
+async function requireAnyModule(auth, moduleNames) {
+  if (!auth) throw new HttpsError("unauthenticated", "يجب تسجيل الدخول أولاً.");
+  const callerRole = auth.token.role;
+  const callerTenantId = auth.token.tenantId;
+  if (!callerTenantId) throw new HttpsError("failed-precondition", "حسابك غير مرتبط بشركة.");
+  if (callerRole === ROLES.OWNER) return callerTenantId;
+  if (callerRole === ROLES.STAFF) {
+    const callerDoc = await db.collection(COLLECTIONS.USERS).doc(auth.uid).get();
+    if (!callerDoc.exists) throw new HttpsError("failed-precondition", "تعذّر التحقق من صلاحياتك.");
+    const perms = callerDoc.data().permissions || [];
+    if (Array.isArray(moduleNames) && moduleNames.some((m) => perms.includes(m))) return callerTenantId;
+  }
+  throw new HttpsError("permission-denied", "ليس لديك الصلاحية المطلوبة.");
+}
+
+// خيارات القوى العاملة لعرض السعر: المهن والجنسيات المتاحة فعليًا (من الموظفين)
+exports.getWorkforceOptions = onCall(async (request) => {
+  try {
+    const callerTenantId = await requireAnyModule(request.auth, [MODULES.SALES, MODULES.FINANCE]);
+    const snap = await db.collection(COLLECTIONS.EMPLOYEES)
+      .where("tenantId", "==", callerTenantId)
+      .get();
+    const jobTitles = new Set();
+    const nationalities = new Set();
+    snap.docs.forEach((d) => {
+      const e = d.data();
+      if (e.status === "inactive") return;
+      const jt = e.job && e.job.title ? String(e.job.title).trim() : "";
+      if (jt) jobTitles.add(jt);
+      if (e.nationality) nationalities.add(String(e.nationality).trim());
+    });
+    return {
+      jobTitles: [...jobTitles].sort(),
+      nationalities: [...nationalities].sort(),
+    };
+  } catch (err) {
+    if (err instanceof HttpsError) throw err;
+    console.error("getWorkforceOptions failed:", err);
+    throw new HttpsError("internal", "تعذّر تحميل خيارات القوى العاملة.");
   }
 });
