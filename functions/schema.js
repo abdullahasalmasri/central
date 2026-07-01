@@ -2752,6 +2752,13 @@ function buildPriceQuoteDoc({
     financeReviewedBy: null,
     financeReviewedAt: null,
     rejectionReason: null,       // سبب الرفض (للتوثيق)
+    // حقول أمر الشراء (المرحلة ٢)
+    sentToClientAt: null,        // متى أُرسل للعميل
+    poNumber: null,              // رقم أمر الشراء من العميل
+    poDate: null,                // تاريخ أمر الشراء
+    poNote: null,                // ملاحظة/رابط نسخة أمر الشراء
+    clientRespondedAt: null,     // متى ردّ العميل
+    clientRejectionReason: null, // سبب رفض العميل
     createdBy,
     createdAt,
     updatedAt: createdAt,

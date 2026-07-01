@@ -40,6 +40,7 @@ export default function PriceQuotesView() {
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState("");
   const [showForm, setShowForm] = useState(false);
+  const [activeQuote, setActiveQuote] = useState(null);
 
   useEffect(() => {
     (async () => {
@@ -102,7 +103,7 @@ export default function PriceQuotesView() {
                 const st = STATUS_INFO[q.status] || STATUS_INFO.draft;
                 const createdMs = q.createdAt && q.createdAt._seconds ? q.createdAt._seconds * 1000 : null;
                 return (
-                  <div key={q.id} style={styles.tableRow}>
+                  <div key={q.id} style={{ ...styles.tableRow, cursor: "pointer" }} onClick={() => setActiveQuote(q)}>
                     <span style={styles.tdNum}>#{q.quoteNumber}</span>
                     <span style={styles.tdName}>{q.customerName || "—"}</span>
                     <span style={styles.tdMoney} dir="ltr">{fmt(q.total)} ر.س</span>
@@ -123,6 +124,14 @@ export default function PriceQuotesView() {
           nationalities={nationalities}
           onClose={() => setShowForm(false)}
           onSaved={() => { setShowForm(false); loadData(); }}
+        />
+      ) : null}
+
+      {activeQuote ? (
+        <QuoteDetailModal
+          quote={activeQuote}
+          onClose={() => setActiveQuote(null)}
+          onChanged={() => { setActiveQuote(null); loadData(); }}
         />
       ) : null}
     </div>
@@ -456,6 +465,133 @@ function QuoteForm({ customers, jobTitles, nationalities, onClose, onSaved }) {
   );
 }
 
+/* ===== تفاصيل العرض + إجراءات المرحلة ٢ (أمر الشراء) ===== */
+function QuoteDetailModal({ quote, onClose, onChanged }) {
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState("");
+  const [mode, setMode] = useState(""); // "" | "po" | "reject"
+  const [poNumber, setPoNumber] = useState("");
+  const [poDate, setPoDate] = useState("");
+  const [poNote, setPoNote] = useState("");
+  const [reason, setReason] = useState("");
+
+  const st = STATUS_INFO[quote.status] || STATUS_INFO.draft;
+  const labor = quote.laborItems || [];
+  const equip = quote.equipmentItems || [];
+
+  async function call(fnName, payload, okMsg) {
+    setBusy(true); setError("");
+    try {
+      await httpsCallable(functions, fnName)({ quoteId: quote.id, ...payload });
+      onChanged();
+    } catch (e) { setError(e.message || "تعذّر تنفيذ العملية."); setBusy(false); }
+  }
+
+  return (
+    <div style={styles.overlay} onClick={onClose}>
+      <div style={styles.modal} onClick={(e) => e.stopPropagation()}>
+        <div style={styles.modalHead}>
+          <h2 style={styles.modalTitle}>عرض #{quote.quoteNumber}</h2>
+          <button style={styles.closeBtn} onClick={onClose}>✕</button>
+        </div>
+
+        {error ? <div style={styles.error}>{error}</div> : null}
+
+        <div style={styles.formBody}>
+          {/* رأس الحالة */}
+          <div style={styles.detailTop}>
+            <span style={{ ...styles.badge, color: st.color, background: st.bg }}>{st.label}</span>
+            {quote.financeRefNumber ? <span style={styles.finRef}>مرجع المالية: {quote.financeRefNumber}</span> : null}
+          </div>
+          <div style={styles.detailRow}>العميل: <b>{quote.customerName || "—"}</b></div>
+          {quote.poNumber ? <div style={styles.detailRow}>أمر الشراء: <b>{quote.poNumber}</b>{quote.poDate ? ` · ${quote.poDate}` : ""}</div> : null}
+          {quote.rejectionReason ? <div style={styles.rejReason}>سبب رفض المالية: {quote.rejectionReason}</div> : null}
+          {quote.clientRejectionReason ? <div style={styles.rejReason}>سبب رفض العميل: {quote.clientRejectionReason}</div> : null}
+
+          {/* البنود */}
+          {labor.length > 0 ? <div style={styles.sectionTitle}>👷 العمالة</div> : null}
+          {labor.map((it, idx) => (
+            <div key={idx} style={styles.detailItem}>
+              <div style={styles.detailItemInfo}>
+                <span style={styles.chipD}>{genderLabel(it.gender)}</span>
+                <span style={styles.chipD}>{it.nationality || "—"}</span>
+                <span style={styles.chipD}>{it.jobTitleName || it.jobTitle || "—"}</span>
+                <span style={styles.chipDCount}>× {it.count}</span>
+              </div>
+              <span style={styles.detailItemTotal} dir="ltr">{fmt(it.lineTotal)}</span>
+            </div>
+          ))}
+          {equip.length > 0 ? <div style={styles.sectionTitle}>🔧 المعدات</div> : null}
+          {equip.map((it, idx) => (
+            <div key={idx} style={styles.detailItem}>
+              <span>{it.type || "—"} {it.model ? `· ${it.model}` : ""} × {it.count}</span>
+              <span style={styles.detailItemTotal} dir="ltr">{fmt(it.lineTotal)}</span>
+            </div>
+          ))}
+
+          <div style={styles.totalsBox}>
+            <div style={styles.totalRow}><span>قبل الضريبة</span><span dir="ltr">{fmt(quote.subtotal)}</span></div>
+            <div style={styles.totalRow}><span>الضريبة {quote.vatRate || 15}%</span><span dir="ltr">{fmt(quote.taxAmount)}</span></div>
+            <div style={styles.totalRowFinal}><span>الإجمالي</span><span dir="ltr">{fmt(quote.total)}</span></div>
+          </div>
+
+          {/* نموذج أمر الشراء */}
+          {mode === "po" ? (
+            <div style={styles.actionForm}>
+              <div style={styles.actionFormTitle}>تسجيل أمر الشراء</div>
+              <label style={styles.fieldLabel}>رقم أمر الشراء *</label>
+              <input style={styles.select} value={poNumber} onChange={(e) => setPoNumber(e.target.value)} disabled={busy} placeholder="PO-2024-001" />
+              <label style={styles.fieldLabel}>تاريخ أمر الشراء</label>
+              <input style={styles.select} type="date" value={poDate} onChange={(e) => setPoDate(e.target.value)} disabled={busy} dir="ltr" />
+              <label style={styles.fieldLabel}>ملاحظة / رابط النسخة</label>
+              <input style={styles.select} value={poNote} onChange={(e) => setPoNote(e.target.value)} disabled={busy} placeholder="اختياري" />
+            </div>
+          ) : null}
+
+          {/* نموذج الرفض */}
+          {mode === "reject" ? (
+            <div style={styles.actionForm}>
+              <div style={styles.actionFormTitle}>رفض العميل</div>
+              <label style={styles.fieldLabel}>سبب الرفض (اختياري)</label>
+              <textarea style={{ ...styles.select, resize: "vertical" }} rows={2} value={reason} onChange={(e) => setReason(e.target.value)} disabled={busy} />
+            </div>
+          ) : null}
+        </div>
+
+        {/* أزرار حسب الحالة */}
+        <div style={styles.modalFoot}>
+          {mode === "" ? (
+            <>
+              {quote.status === "approved_finance" ? (
+                <button style={styles.submitBtn} onClick={() => call("sendQuoteToClient", {}, "")} disabled={busy}>{busy ? "..." : "📤 إرسال للعميل"}</button>
+              ) : null}
+              {quote.status === "sent_client" ? (
+                <>
+                  <button style={styles.rejectActBtn} onClick={() => setMode("reject")} disabled={busy}>العميل رفض</button>
+                  <button style={styles.submitBtn} onClick={() => setMode("po")} disabled={busy}>✓ العميل وافق (أمر شراء)</button>
+                </>
+              ) : null}
+              {quote.status !== "approved_finance" && quote.status !== "sent_client" ? (
+                <button style={styles.cancelBtn} onClick={onClose} disabled={busy}>إغلاق</button>
+              ) : null}
+            </>
+          ) : mode === "po" ? (
+            <>
+              <button style={styles.cancelBtn} onClick={() => { setMode(""); setError(""); }} disabled={busy}>رجوع</button>
+              <button style={styles.submitBtn} onClick={() => call("acceptQuoteWithPO", { poNumber: poNumber.trim(), poDate, poNote }, "")} disabled={busy || !poNumber.trim()}>{busy ? "..." : "تأكيد أمر الشراء"}</button>
+            </>
+          ) : (
+            <>
+              <button style={styles.cancelBtn} onClick={() => { setMode(""); setError(""); }} disabled={busy}>رجوع</button>
+              <button style={styles.rejectActBtn} onClick={() => call("rejectQuoteByClient", { reason: reason.trim() }, "")} disabled={busy}>{busy ? "..." : "تأكيد الرفض"}</button>
+            </>
+          )}
+        </div>
+      </div>
+    </div>
+  );
+}
+
 const styles = {
   page: { padding: "26px 30px 40px", minHeight: "100%", background: "#f4f6f9", fontFamily: "'IBM Plex Sans Arabic', system-ui, sans-serif", direction: "rtl" },
   topRow: { display: "flex", justifyContent: "space-between", alignItems: "flex-start", marginBottom: 22, flexWrap: "wrap", gap: 12 },
@@ -544,4 +680,17 @@ const styles = {
   cancelBtn: { padding: "10px 18px", fontSize: 14, color: "#64748b", background: "#fff", border: "1px solid #cbd5e1", borderRadius: 8, cursor: "pointer", fontFamily: "inherit" },
   draftBtn: { padding: "10px 18px", fontSize: 14, fontWeight: 700, color: "#4f46e5", background: "#eef2ff", border: "none", borderRadius: 8, cursor: "pointer", fontFamily: "inherit" },
   submitBtn: { padding: "10px 20px", fontSize: 14, fontWeight: 700, color: "#fff", background: "#4f46e5", border: "none", borderRadius: 8, cursor: "pointer", fontFamily: "inherit" },
+
+  detailTop: { display: "flex", alignItems: "center", gap: 12, marginBottom: 12, flexWrap: "wrap" },
+  finRef: { fontSize: 12, fontWeight: 700, color: "#059669", background: "#d1fae5", padding: "4px 10px", borderRadius: 6 },
+  detailRow: { fontSize: 14, color: "#475569", marginBottom: 6 },
+  rejReason: { fontSize: 13, color: "#b91c1c", background: "#fef2f2", padding: "8px 12px", borderRadius: 8, marginTop: 8, marginBottom: 8 },
+  detailItem: { display: "flex", justifyContent: "space-between", alignItems: "center", padding: "10px 12px", background: "#fafbfc", borderRadius: 8, marginBottom: 8 },
+  detailItemInfo: { display: "flex", gap: 6, alignItems: "center", flexWrap: "wrap" },
+  chipD: { fontSize: 12, fontWeight: 700, color: "#334155", background: "#e2e8f0", padding: "3px 10px", borderRadius: 6 },
+  chipDCount: { fontSize: 12, fontWeight: 700, color: "#4f46e5", background: "#eef2ff", padding: "3px 10px", borderRadius: 6 },
+  detailItemTotal: { fontSize: 14, fontWeight: 700, color: "#0f172a", fontFamily: "monospace" },
+  actionForm: { marginTop: 16, padding: 16, background: "#f8fafc", borderRadius: 10, border: "1px solid #e2e8f0" },
+  actionFormTitle: { fontSize: 14, fontWeight: 800, color: "#0f172a", marginBottom: 12 },
+  rejectActBtn: { padding: "10px 20px", fontSize: 14, fontWeight: 700, color: "#dc2626", background: "#fef2f2", border: "1px solid #fecaca", borderRadius: 8, cursor: "pointer", fontFamily: "inherit" },
 };

@@ -12461,3 +12461,111 @@ exports.rejectPriceQuote = onCall(async (request) => {
     throw new HttpsError("internal", "تعذّر رفض عرض السعر.");
   }
 });
+
+// ═══════════════════════════════════════════════════════
+// ===== المرحلة ٢: أمر الشراء (إرسال للعميل → موافقة/رفض) =====
+// ═══════════════════════════════════════════════════════
+
+// إرسال عرض السعر المعتمد للعميل (المبيعات)
+exports.sendQuoteToClient = onCall(async (request) => {
+  try {
+    const callerTenantId = await requireModule(request.auth, MODULES.SALES);
+    const data = request.data || {};
+    const quoteId = typeof data.quoteId === "string" ? data.quoteId.trim() : "";
+    if (!quoteId) throw new HttpsError("invalid-argument", "يجب تحديد عرض السعر.");
+
+    const ref = db.collection(COLLECTIONS.PRICE_QUOTES).doc(quoteId);
+    const snap = await ref.get();
+    if (!snap.exists || snap.data().tenantId !== callerTenantId) {
+      throw new HttpsError("invalid-argument", "عرض السعر غير موجود.");
+    }
+    if (snap.data().status !== "approved_finance") {
+      throw new HttpsError("failed-precondition", "يجب اعتماد العرض من المالية قبل إرساله للعميل.");
+    }
+    await ref.update({
+      status: "sent_client",
+      sentToClientAt: FieldValue.serverTimestamp(),
+      updatedAt: FieldValue.serverTimestamp(),
+    });
+    return { id: quoteId, status: "sent_client" };
+  } catch (err) {
+    if (err instanceof HttpsError) throw err;
+    console.error("sendQuoteToClient failed:", err);
+    throw new HttpsError("internal", "تعذّر إرسال العرض للعميل.");
+  }
+});
+
+// العميل وافق → تسجيل أمر الشراء (المبيعات) + إشعار المشاريع
+// data: { quoteId, poNumber, poDate?, poNote? }
+exports.acceptQuoteWithPO = onCall(async (request) => {
+  try {
+    const callerTenantId = await requireModule(request.auth, MODULES.SALES);
+    const data = request.data || {};
+    const quoteId = typeof data.quoteId === "string" ? data.quoteId.trim() : "";
+    const poNumber = typeof data.poNumber === "string" ? data.poNumber.trim() : "";
+    const poDate = typeof data.poDate === "string" ? data.poDate.trim() : "";
+    const poNote = typeof data.poNote === "string" ? data.poNote.trim() : "";
+    if (!quoteId) throw new HttpsError("invalid-argument", "يجب تحديد عرض السعر.");
+    if (!poNumber) throw new HttpsError("invalid-argument", "يجب إدخال رقم أمر الشراء.");
+
+    const ref = db.collection(COLLECTIONS.PRICE_QUOTES).doc(quoteId);
+    const snap = await ref.get();
+    if (!snap.exists || snap.data().tenantId !== callerTenantId) {
+      throw new HttpsError("invalid-argument", "عرض السعر غير موجود.");
+    }
+    if (snap.data().status !== "sent_client") {
+      throw new HttpsError("failed-precondition", "يجب إرسال العرض للعميل أولاً.");
+    }
+    await ref.update({
+      status: "accepted",
+      poNumber, poDate: poDate || null, poNote: poNote || null,
+      clientRespondedAt: FieldValue.serverTimestamp(),
+      updatedAt: FieldValue.serverTimestamp(),
+    });
+
+    // إشعار المشاريع: عرض مقبول جاهز لإنشاء مشروع
+    await createNotification({
+      tenantId: callerTenantId, targetModule: MODULES.PROJECTS, type: "quote_accepted",
+      title: "عرض سعر مقبول — جاهز لإنشاء مشروع",
+      message: `عرض السعر #${snap.data().quoteNumber} قبله العميل (أمر شراء ${poNumber}). يمكن إنشاء المشروع.`,
+      relatedType: "price_quote", relatedId: quoteId, createdBy: request.auth.uid,
+    });
+
+    return { id: quoteId, status: "accepted", poNumber };
+  } catch (err) {
+    if (err instanceof HttpsError) throw err;
+    console.error("acceptQuoteWithPO failed:", err);
+    throw new HttpsError("internal", "تعذّر تسجيل أمر الشراء.");
+  }
+});
+
+// العميل رفض العرض (المبيعات)
+exports.rejectQuoteByClient = onCall(async (request) => {
+  try {
+    const callerTenantId = await requireModule(request.auth, MODULES.SALES);
+    const data = request.data || {};
+    const quoteId = typeof data.quoteId === "string" ? data.quoteId.trim() : "";
+    const reason = typeof data.reason === "string" ? data.reason.trim() : "";
+    if (!quoteId) throw new HttpsError("invalid-argument", "يجب تحديد عرض السعر.");
+
+    const ref = db.collection(COLLECTIONS.PRICE_QUOTES).doc(quoteId);
+    const snap = await ref.get();
+    if (!snap.exists || snap.data().tenantId !== callerTenantId) {
+      throw new HttpsError("invalid-argument", "عرض السعر غير موجود.");
+    }
+    if (snap.data().status !== "sent_client") {
+      throw new HttpsError("failed-precondition", "العرض ليس مرسلاً للعميل.");
+    }
+    await ref.update({
+      status: "rejected_client",
+      clientRejectionReason: reason || null,
+      clientRespondedAt: FieldValue.serverTimestamp(),
+      updatedAt: FieldValue.serverTimestamp(),
+    });
+    return { id: quoteId, status: "rejected_client" };
+  } catch (err) {
+    if (err instanceof HttpsError) throw err;
+    console.error("rejectQuoteByClient failed:", err);
+    throw new HttpsError("internal", "تعذّر تسجيل رفض العميل.");
+  }
+});
