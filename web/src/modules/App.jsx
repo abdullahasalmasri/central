@@ -53,6 +53,7 @@ import ProjectContractsView     from "./ProjectContractsView";
 import AssetBeneficiariesView   from "./AssetBeneficiariesView";
 import ContractSignaturesView   from "./ContractSignaturesView";
 import ContractTemplatesView    from "./ContractTemplatesView";
+import CompanyProfileView       from "./CompanyProfileView";
 import MarketingView            from "./MarketingView";
 import CustomerServiceView      from "./CustomerServiceView";
 import ContractsView            from "./ContractsView";
@@ -71,6 +72,7 @@ const views = {
   exec_kpi:      ExecutiveDashboard,
   exec_org:      OrgStructureView,
   exec_perm:     PermissionsView,
+  exec_company:  CompanyProfileView,
 
   // المالية
   fin_acc:       AccountingView,

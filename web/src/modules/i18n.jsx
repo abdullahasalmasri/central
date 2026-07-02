@@ -91,6 +91,7 @@ const T = {
   as_ben: { ar: "ربط السكن والمواصلات", en: "Housing & Transport Links", ur: "رہائش اور ٹرانسپورٹ لنکس", tl: "Mga Link sa Tirahan at Transportasyon" },
   leg_sign: { ar: "توقيعات العقود", en: "Contract Signatures", ur: "معاہدے کے دستخط", tl: "Mga Lagda ng Kontrata" },
   leg_tpl: { ar: "قوالب العقود", en: "Contract Templates", ur: "معاہدے کے ٹیمپلیٹس", tl: "Mga Template ng Kontrata" },
+  exec_company: { ar: "بيانات الشركة", en: "Company Profile", ur: "کمپنی پروفائل", tl: "Profile ng Kumpanya" },
 
   // ===== أقسام الموارد البشرية =====
   hr_emp: { ar: "شؤون الموظفين", en: "Employees", ur: "ملازمین", tl: "Mga Empleyado" },

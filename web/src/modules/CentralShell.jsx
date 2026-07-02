@@ -27,6 +27,7 @@ const NAV = [
     { id: "exec_kpi",  name: "لوحة المؤشرات",   file: "ExecutiveDashboard.jsx" },
     { id: "exec_org",  name: "الهيكل التنظيمي", file: "OrgStructureView.jsx" },
     { id: "exec_perm", name: "الصلاحيات",       file: "PermissionsView.jsx" },
+    { id: "exec_company", name: "بيانات الشركة", file: "CompanyProfileView.jsx" },
   ]},
   { type: "section", id: "fin", name: "المالية", icon: Wallet, color: "#059669", children: [
     { id: "fin_acc",   name: "المحاسبة",          file: null },

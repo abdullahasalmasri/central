@@ -189,15 +189,30 @@ function ContractView({ contract, onClose }) {
     ).join("");
     w.document.write(`
       <html dir="rtl"><head><meta charset="utf-8"><title>عقد رقم ${c.contractNumber}</title>
-      <style>body{font-family:Arial,sans-serif;padding:40px;line-height:1.8;color:#1a1a1a}
+      <style>body{font-family:Arial,sans-serif;padding:40px 40px 60px;line-height:1.8;color:#1a1a1a}
       h1{text-align:center;font-size:22px}h2{font-size:16px;border-bottom:2px solid #333;padding-bottom:6px;margin-top:24px}
       table{width:100%;border-collapse:collapse;margin-top:12px}th,td{border:1px solid #999;padding:8px;text-align:right;font-size:13px}
-      th{background:#f0f0f0}.parties{display:flex;gap:40px}.party{flex:1}.pv{color:#555;font-size:13px}</style></head><body>
+      th{background:#f0f0f0}.parties{display:flex;gap:40px}.party{flex:1}.pv{color:#555;font-size:12px;line-height:1.7}
+      .doc-head{border-bottom:3px solid #7c2d12;padding-bottom:14px;margin-bottom:10px}
+      .dh-name{font-size:20px;font-weight:800;color:#7c2d12}
+      .dh-grid{display:flex;flex-wrap:wrap;gap:3px 16px;font-size:11px;color:#555;margin-top:6px}
+      .pg-footer{position:fixed;bottom:14px;left:40px;right:40px;text-align:center;font-size:10px;color:#666;border-top:1px solid #ccc;padding-top:6px}</style></head><body>
+      <div class="doc-head">
+        <div class="dh-name">${company.name || "اسم الشركة"}</div>
+        <div class="dh-grid">
+          ${company.crNumber ? `<span>السجل التجاري: ${company.crNumber}</span>` : ""}
+          ${company.licenseNumber ? `<span>رقم الترخيص: ${company.licenseNumber}</span>` : ""}
+          ${company.taxNumber ? `<span>الرقم الضريبي: ${company.taxNumber}</span>` : ""}
+          ${company.addressText ? `<span>العنوان: ${company.addressText}</span>` : ""}
+          ${company.authorizedPerson ? `<span>المخوّل: ${company.authorizedPerson}</span>` : ""}
+          ${company.companyPhone ? `<span>هاتف: ${company.companyPhone}</span>` : ""}
+        </div>
+      </div>
       <h1>عقد توريد عمالة رقم ${c.contractNumber}</h1>
       <h2>الأطراف</h2>
       <div class="parties">
         <div class="party"><b>الطرف الأول (المورّد):</b><br/>${company.name || "—"}<br/>
-          <span class="pv">الرقم الضريبي: ${company.taxNumber || "—"} | السجل: ${company.crNumber || "—"}</span></div>
+          <span class="pv">السجل التجاري: ${company.crNumber || "—"}${company.licenseNumber ? " | الترخيص: " + company.licenseNumber : ""}<br/>الرقم الضريبي: ${company.taxNumber || "—"}${company.authorizedPerson ? "<br/>المخوّل: " + company.authorizedPerson : ""}</span></div>
         <div class="party"><b>الطرف الثاني (العميل):</b><br/>${client.name || c.party || "—"}<br/>
           <span class="pv">الرقم الضريبي: ${client.taxNumber || "—"} | السجل: ${client.crNumber || "—"}</span></div>
       </div>
@@ -211,6 +226,7 @@ function ContractView({ contract, onClose }) {
       <br/><br/>
       <div class="parties"><div class="party">توقيع الطرف الأول:<br/><br/>________________</div>
       <div class="party">توقيع الطرف الثاني:<br/><br/>________________</div></div>
+      <div class="pg-footer">${[company.name || "الشركة", company.crNumber && ("س.ت " + company.crNumber), company.licenseNumber && ("ترخيص " + company.licenseNumber), company.addressText].filter(Boolean).join("  -  ")}</div>
       </body></html>`);
     w.document.close();
     w.print();
@@ -229,8 +245,9 @@ function ContractView({ contract, onClose }) {
             <div style={styles.partyBox}>
               <div style={styles.partyLabel}>الطرف الأول (المورّد)</div>
               <div style={styles.partyName}>{company.name || "—"}</div>
-              <div style={styles.partyMeta}>الرقم الضريبي: {company.taxNumber || "—"}</div>
               <div style={styles.partyMeta}>السجل التجاري: {company.crNumber || "—"}</div>
+              {company.licenseNumber ? <div style={styles.partyMeta}>الترخيص: {company.licenseNumber}</div> : null}
+              <div style={styles.partyMeta}>الرقم الضريبي: {company.taxNumber || "—"}</div>
             </div>
             <div style={styles.partyBox}>
               <div style={styles.partyLabel}>الطرف الثاني (العميل)</div>

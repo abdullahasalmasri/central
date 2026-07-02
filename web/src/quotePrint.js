@@ -22,16 +22,14 @@ function fmtDate(ts) {
   return d ? d.toISOString().slice(0, 10) : "—";
 }
 
-// ختم إلكتروني مرسوم (دائري)
+// ختم إلكتروني مرسوم (دائري) — باسم القسم فقط
 function stampHTML(company, dept, dateStr) {
-  const cName = (company && company.name) || "الشركة";
   return `<div class="stamp">
     <div class="stamp-inner">
-      <div class="stamp-co">${cName}</div>
       <div class="stamp-dept">${dept}</div>
       <div class="stamp-line"></div>
+      <div class="stamp-seal">اعتماد</div>
       <div class="stamp-date">${dateStr}</div>
-      <div class="stamp-seal">معتمد</div>
     </div>
   </div>`;
 }
@@ -133,13 +131,15 @@ export function printQuote(quote, mode, company) {
   <style>
     * { box-sizing: border-box; }
     body { font-family: 'Segoe UI', Tahoma, Arial, sans-serif; padding: 36px; color: #1a1a1a; line-height: 1.7; }
-    .head { display: flex; justify-content: space-between; align-items: flex-start; border-bottom: 3px solid ${isClient ? "#4f46e5" : "#64748b"}; padding-bottom: 16px; margin-bottom: 20px; }
-    .co-name { font-size: 22px; font-weight: 800; color: ${isClient ? "#4f46e5" : "#334155"}; }
-    .co-meta { font-size: 12px; color: #666; margin-top: 4px; }
-    .doc-title { text-align: left; }
+    .head { display: flex; justify-content: space-between; align-items: flex-start; border-bottom: 3px solid ${isClient ? "#4f46e5" : "#64748b"}; padding-bottom: 16px; margin-bottom: 20px; gap: 20px; }
+    .head-co { flex: 1; }
+    .co-name { font-size: 22px; font-weight: 800; color: ${isClient ? "#4f46e5" : "#334155"}; margin-bottom: 8px; }
+    .co-grid { display: flex; flex-wrap: wrap; gap: 4px 18px; font-size: 11px; color: #555; }
+    .co-grid span { white-space: nowrap; }
+    .doc-title { text-align: left; min-width: 180px; }
     .doc-title h1 { font-size: 20px; margin: 0; }
-    .doc-title .num { font-size: 14px; color: #666; margin-top: 4px; }
-    .doc-title .num span { display: block; }
+    .doc-title .num { font-size: 13px; color: #666; margin-top: 6px; }
+    .doc-title .num span { display: block; margin-bottom: 2px; }
     ${!isClient ? ".watermark { position: fixed; top: 45%; right: 20%; font-size: 60px; color: rgba(100,116,139,.08); transform: rotate(-30deg); font-weight: 800; }" : ""}
     .client-box { background: #f8fafc; padding: 12px 16px; border-radius: 8px; margin-bottom: 20px; }
     .client-box b { font-size: 15px; }
@@ -157,22 +157,28 @@ export function printQuote(quote, mode, company) {
     .notes p { margin: 4px 0; }
     .validity { margin-top: 20px; padding: 12px 16px; background: ${isClient ? "#eff6ff" : "#f8fafc"}; border-radius: 8px; font-size: 13px; text-align: center; }
     .stamps { display: flex; gap: 60px; justify-content: center; margin-top: 40px; }
-    .stamp { width: 150px; height: 150px; }
+    .stamp { width: 140px; height: 140px; }
     .stamp-inner { width: 100%; height: 100%; border: 3px double #1e40af; border-radius: 50%; display: flex; flex-direction: column; align-items: center; justify-content: center; text-align: center; color: #1e40af; padding: 12px; transform: rotate(-8deg); }
-    .stamp-co { font-size: 12px; font-weight: 800; }
-    .stamp-dept { font-size: 11px; margin-top: 3px; }
-    .stamp-line { width: 70%; border-top: 1px solid #1e40af; margin: 6px 0; }
-    .stamp-date { font-size: 10px; }
-    .stamp-seal { font-size: 13px; font-weight: 800; margin-top: 4px; letter-spacing: 2px; }
-    .footer { margin-top: 40px; text-align: center; font-size: 11px; color: #999; border-top: 1px solid #eee; padding-top: 12px; }
-    @media print { body { padding: 20px; } .watermark { display: block; } }
+    .stamp-dept { font-size: 14px; font-weight: 800; }
+    .stamp-line { width: 60%; border-top: 1px solid #1e40af; margin: 8px 0; }
+    .stamp-seal { font-size: 12px; font-weight: 800; letter-spacing: 3px; }
+    .stamp-date { font-size: 10px; margin-top: 4px; }
+    .page-footer { position: fixed; bottom: 12px; left: 0; right: 0; text-align: center; font-size: 10px; color: #64748b; border-top: 1px solid #e2e8f0; padding-top: 6px; margin: 0 20px; }
+    @media print { body { padding: 20px 20px 50px; } .watermark { display: block; } .page-footer { position: fixed; } }
   </style></head><body>
   ${!isClient ? '<div class="watermark">نسخة داخلية</div>' : ''}
   <div class="head">
-    <div>
+    <div class="head-co">
       <div class="co-name">${co.name || "اسم الشركة"}</div>
-      <div class="co-meta">الرقم الضريبي: ${co.taxNumber || "—"} | السجل التجاري: ${co.crNumber || "—"}</div>
-      ${co.phone || co.address ? `<div class="co-meta">${co.address || ""}${co.phone ? " | هاتف: " + co.phone : ""}</div>` : ""}
+      <div class="co-grid">
+        ${co.crNumber ? `<span>السجل التجاري: ${co.crNumber}</span>` : ""}
+        ${co.licenseNumber ? `<span>رقم الترخيص: ${co.licenseNumber}</span>` : ""}
+        ${co.taxNumber ? `<span>الرقم الضريبي: ${co.taxNumber}</span>` : ""}
+        ${co.addressText ? `<span>العنوان: ${co.addressText}</span>` : ""}
+        ${co.authorizedPerson ? `<span>المخوّل: ${co.authorizedPerson}</span>` : ""}
+        ${co.companyPhone ? `<span>هاتف الشركة: ${co.companyPhone}</span>` : ""}
+        ${co.authorizedPhone ? `<span>هاتف المخوّل: ${co.authorizedPhone}</span>` : ""}
+      </div>
     </div>
     <div class="doc-title">
       <h1>${title}</h1>
@@ -196,7 +202,7 @@ export function printQuote(quote, mode, company) {
   ${validitySection}
   ${stampsSection}
 
-  <div class="footer">${isClient ? "هذا العرض معتمد رسميًا من الشركة." : "نسخة داخلية — لا تُسلّم للعميل. تحتوي على التكلفة وهامش الربح."}</div>
+  <div class="page-footer">${[co.name || "الشركة", co.crNumber && ("س.ت " + co.crNumber), co.licenseNumber && ("ترخيص " + co.licenseNumber), co.addressText].filter(Boolean).join("  -  ")}</div>
 
   <script>window.onload = function() { window.print(); }</script>
   </body></html>`);

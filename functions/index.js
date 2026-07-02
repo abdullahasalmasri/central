@@ -4827,6 +4827,14 @@ exports.updateCompanyProfile = onCall(async (request) => {
       },
     };
 
+    // بيانات الشركة الرسمية للأوراق (عرض السعر، العقد، ...)
+    if (typeof data.name === "string" && data.name.trim()) update.name = data.name.trim();
+    update.licenseNumber = typeof data.licenseNumber === "string" ? data.licenseNumber.trim() || null : null;
+    update.authorizedPerson = typeof data.authorizedPerson === "string" ? data.authorizedPerson.trim() || null : null;
+    update.companyPhone = typeof data.companyPhone === "string" ? data.companyPhone.trim() || null : null;
+    update.authorizedPhone = typeof data.authorizedPhone === "string" ? data.authorizedPhone.trim() || null : null;
+    update.addressText = typeof data.addressText === "string" ? data.addressText.trim() || null : null;
+
     // أيام العمل الشهرية وساعات اليوم (إن أُرسلت)
     if (data.workDaysPerMonth !== undefined) {
       const wd = Number(data.workDaysPerMonth);
@@ -12984,7 +12992,9 @@ exports.createContractFromProject = onCall(async (request) => {
     const t = tenantSnap.data() || {};
     const companySnapshot = {
       name: t.name || null, taxNumber: t.taxNumber || null, crNumber: t.crNumber || null,
-      address: t.address || null, phone: t.phone || null, email: t.email || null,
+      licenseNumber: t.licenseNumber || null, addressText: t.addressText || null,
+      authorizedPerson: t.authorizedPerson || null, companyPhone: t.companyPhone || null,
+      authorizedPhone: t.authorizedPhone || null,
     };
 
     // بيانات العميل (من customers)
