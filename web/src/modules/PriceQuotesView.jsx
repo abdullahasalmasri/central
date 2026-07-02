@@ -2,6 +2,7 @@ import { useState, useEffect, useMemo } from "react";
 import { collection, query, where, getDocs, doc, getDoc } from "firebase/firestore";
 import { httpsCallable } from "firebase/functions";
 import { db, auth, functions } from "../firebase";
+import { printQuote } from "../quotePrint";
 
 /* ============================================================
    عرض السعر المفصّل — قسم المبيعات (المرحلة ١ من دورة العقود)
@@ -35,6 +36,7 @@ export default function PriceQuotesView() {
   const [tenantId, setTenantId] = useState("");
   const [quotes, setQuotes] = useState([]);
   const [customers, setCustomers] = useState([]);
+  const [company, setCompany] = useState(null);
   const [jobTitles, setJobTitles] = useState([]);
   const [nationalities, setNationalities] = useState([]);
   const [loading, setLoading] = useState(true);
@@ -69,6 +71,11 @@ export default function PriceQuotesView() {
       setJobTitles((optRes.data && optRes.data.jobTitles) || []);
       setNationalities((optRes.data && optRes.data.nationalities) || []);
       setCustomers(custSnap.docs.map((d) => ({ id: d.id, ...d.data() })));
+      // بيانات الشركة للطباعة
+      try {
+        const tSnap = await getDoc(doc(db, "tenants", tenantId));
+        if (tSnap.exists()) setCompany({ id: tSnap.id, ...tSnap.data() });
+      } catch (_) {}
     } catch (e) {
       setError(e.message || "تعذّر تحميل البيانات.");
     } finally { setLoading(false); }
@@ -130,6 +137,7 @@ export default function PriceQuotesView() {
       {activeQuote ? (
         <QuoteDetailModal
           quote={activeQuote}
+          company={company}
           onClose={() => setActiveQuote(null)}
           onChanged={() => { setActiveQuote(null); loadData(); }}
         />
@@ -155,6 +163,7 @@ function genderLabel(g) { return g === "male" ? "ذكر" : g === "female" ? "أ�
 
 function QuoteForm({ customers, jobTitles, nationalities, onClose, onSaved }) {
   const [customerId, setCustomerId] = useState("");
+  const [validityDays, setValidityDays] = useState(14);
   const [laborItems, setLaborItems] = useState([emptyLaborItem()]);
   const [equipmentItems, setEquipmentItems] = useState([]);
   const [showClientPreview, setShowClientPreview] = useState(false);
@@ -242,6 +251,7 @@ function QuoteForm({ customers, jobTitles, nationalities, onClose, onSaved }) {
           profit: Number(it.profit) || 0,
         })),
         submit: submit === true,
+        validityDays: Number(validityDays) || 14,
       };
       await httpsCallable(functions, "createPriceQuote")(payload);
       onSaved();
@@ -267,6 +277,13 @@ function QuoteForm({ customers, jobTitles, nationalities, onClose, onSaved }) {
           <select style={styles.select} value={customerId} onChange={(e) => setCustomerId(e.target.value)} disabled={saving}>
             <option value="">— اختر العميل —</option>
             {customers.map((c) => <option key={c.id} value={c.id}>{c.name}</option>)}
+          </select>
+
+          {/* مدة صلاحية العرض */}
+          <label style={styles.fieldLabel}>مدة صلاحية العرض (من تاريخ موافقة المالية)</label>
+          <select style={styles.select} value={validityDays} onChange={(e) => setValidityDays(Number(e.target.value))} disabled={saving}>
+            <option value={7}>٧ أيام عمل</option>
+            <option value={14}>١٤ يوم عمل</option>
           </select>
 
           {/* بنود العمالة */}
@@ -466,7 +483,7 @@ function QuoteForm({ customers, jobTitles, nationalities, onClose, onSaved }) {
 }
 
 /* ===== تفاصيل العرض + إجراءات المرحلة ٢ (أمر الشراء) ===== */
-function QuoteDetailModal({ quote, onClose, onChanged }) {
+function QuoteDetailModal({ quote, company, onClose, onChanged }) {
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
   const [mode, setMode] = useState(""); // "" | "po" | "reject" | "project"
@@ -507,6 +524,17 @@ function QuoteDetailModal({ quote, onClose, onChanged }) {
             <span style={{ ...styles.badge, color: st.color, background: st.bg }}>{st.label}</span>
             {quote.financeRefNumber ? <span style={styles.finRef}>مرجع المالية: {quote.financeRefNumber}</span> : null}
           </div>
+
+          {/* أزرار الطباعة */}
+          <div style={styles.printRow}>
+            <button style={styles.printInternalBtn} onClick={() => printQuote(quote, "internal", company)}>🖨️ نسخة داخلية</button>
+            {quote.financeRefNumber ? (
+              <button style={styles.printClientBtn} onClick={() => printQuote(quote, "client", company)}>📄 نسخة العميل (مختومة)</button>
+            ) : (
+              <span style={styles.printHint}>نسخة العميل المختومة تتاح بعد موافقة المالية</span>
+            )}
+          </div>
+
           <div style={styles.detailRow}>العميل: <b>{quote.customerName || "—"}</b></div>
           {quote.poNumber ? <div style={styles.detailRow}>أمر الشراء: <b>{quote.poNumber}</b>{quote.poDate ? ` · ${quote.poDate}` : ""}</div> : null}
           {quote.rejectionReason ? <div style={styles.rejReason}>سبب رفض المالية: {quote.rejectionReason}</div> : null}
@@ -718,6 +746,10 @@ const styles = {
   submitBtn: { padding: "10px 20px", fontSize: 14, fontWeight: 700, color: "#fff", background: "#4f46e5", border: "none", borderRadius: 8, cursor: "pointer", fontFamily: "inherit" },
 
   detailTop: { display: "flex", alignItems: "center", gap: 12, marginBottom: 12, flexWrap: "wrap" },
+  printRow: { display: "flex", gap: 10, marginBottom: 14, flexWrap: "wrap", alignItems: "center" },
+  printInternalBtn: { padding: "8px 16px", fontSize: 13, fontWeight: 700, color: "#475569", background: "#f1f5f9", border: "1px solid #cbd5e1", borderRadius: 8, cursor: "pointer", fontFamily: "inherit" },
+  printClientBtn: { padding: "8px 16px", fontSize: 13, fontWeight: 700, color: "#fff", background: "#4f46e5", border: "none", borderRadius: 8, cursor: "pointer", fontFamily: "inherit" },
+  printHint: { fontSize: 12, color: "#94a3b8" },
   finRef: { fontSize: 12, fontWeight: 700, color: "#059669", background: "#d1fae5", padding: "4px 10px", borderRadius: 6 },
   detailRow: { fontSize: 14, color: "#475569", marginBottom: 6 },
   rejReason: { fontSize: 13, color: "#b91c1c", background: "#fef2f2", padding: "8px 12px", borderRadius: 8, marginTop: 8, marginBottom: 8 },

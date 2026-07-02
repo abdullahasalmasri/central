@@ -1,6 +1,8 @@
 import { useState, useEffect } from "react";
+import { doc, getDoc } from "firebase/firestore";
 import { httpsCallable } from "firebase/functions";
-import { functions } from "../firebase";
+import { db, auth, functions } from "../firebase";
+import { printQuote } from "../quotePrint";
 
 /* ============================================================
    مراجعة المالية لعروض الأسعار (المرحلة ١ من الدورة)
@@ -12,18 +14,39 @@ const fmt = (n) => (Math.round((Number(n) || 0) * 100) / 100).toLocaleString("en
 const genderLabel = (g) => (g === "male" ? "ذكر" : g === "female" ? "أنثى" : "—");
 
 export default function FinanceQuoteReviewView() {
+  const [tab, setTab] = useState("pending"); // pending | reviewed
   const [quotes, setQuotes] = useState([]);
+  const [reviewed, setReviewed] = useState([]);
+  const [company, setCompany] = useState(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState("");
   const [active, setActive] = useState(null);
 
-  useEffect(() => { load(); }, []);
+  useEffect(() => { load(); /* eslint-disable-next-line */ }, [tab]);
+  useEffect(() => { loadCompany(); }, []);
+
+  async function loadCompany() {
+    try {
+      const uid = auth.currentUser && auth.currentUser.uid;
+      if (!uid) return;
+      const uSnap = await getDoc(doc(db, "users", uid));
+      const tid = uSnap.exists() ? uSnap.data().tenantId : null;
+      if (!tid) return;
+      const tSnap = await getDoc(doc(db, "tenants", tid));
+      if (tSnap.exists()) setCompany({ id: tSnap.id, ...tSnap.data() });
+    } catch (_) {}
+  }
 
   async function load() {
     setLoading(true); setError("");
     try {
-      const res = await httpsCallable(functions, "getFinanceQuotes")({});
-      setQuotes((res.data && res.data.quotes) || []);
+      if (tab === "pending") {
+        const res = await httpsCallable(functions, "getFinanceQuotes")({});
+        setQuotes((res.data && res.data.quotes) || []);
+      } else {
+        const res = await httpsCallable(functions, "getReviewedQuotes")({});
+        setReviewed((res.data && res.data.quotes) || []);
+      }
     } catch (e) {
       setError(e.message || "تعذّر تحميل العروض.");
     } finally { setLoading(false); }
@@ -34,40 +57,68 @@ export default function FinanceQuoteReviewView() {
       <div style={styles.topRow}>
         <div>
           <h1 style={styles.pageTitle}>مراجعة عروض الأسعار</h1>
-          <p style={styles.pageSub}>راجع العروض المرسلة من المبيعات مقابل التكلفة المرجعية، ثم اعتمد أو ارفض.</p>
+          <p style={styles.pageSub}>راجع العروض مقابل التكلفة المرجعية واعتمد أو ارفض. اطبع نسخة للأرشفة قبل الاعتماد وبعده.</p>
         </div>
-        <span style={styles.countBadge}>{quotes.length} بانتظار المراجعة</span>
+      </div>
+
+      <div style={styles.tabs}>
+        <button style={{ ...styles.tab, ...(tab === "pending" ? styles.tabActive : {}) }} onClick={() => setTab("pending")}>بانتظار المراجعة</button>
+        <button style={{ ...styles.tab, ...(tab === "reviewed" ? styles.tabActive : {}) }} onClick={() => setTab("reviewed")}>المعتمدة (للأرشفة)</button>
       </div>
 
       {error ? <div style={styles.error}>{error}</div> : null}
 
-      {loading ? <p style={styles.muted}>جارٍ التحميل...</p> : quotes.length === 0 ? (
-        <div style={styles.emptyBox}>لا توجد عروض بانتظار المراجعة.</div>
+      {tab === "pending" ? (
+        loading ? <p style={styles.muted}>جارٍ التحميل...</p> : quotes.length === 0 ? (
+          <div style={styles.emptyBox}>لا توجد عروض بانتظار المراجعة.</div>
+        ) : (
+          <div style={styles.list}>
+            {quotes.map((q) => (
+              <div key={q.id} style={styles.quoteCard}>
+                <div style={styles.quoteCardMain} onClick={() => setActive(q)}>
+                  <span style={styles.quoteNum}>#{q.quoteNumber}</span>
+                  <span style={styles.quoteCust}>{q.customerName || "بدون عميل"}</span>
+                </div>
+                <div style={styles.quoteCardSide}>
+                  <button style={styles.printMini} onClick={() => printQuote(q, "internal", company)}>🖨️ داخلية</button>
+                  <span style={styles.quoteTotal} dir="ltr">{fmt(q.total)} ر.س</span>
+                  <span style={styles.reviewLink} onClick={() => setActive(q)}>مراجعة ←</span>
+                </div>
+              </div>
+            ))}
+          </div>
+        )
       ) : (
-        <div style={styles.list}>
-          {quotes.map((q) => (
-            <div key={q.id} style={styles.quoteCard} onClick={() => setActive(q)}>
-              <div style={styles.quoteCardMain}>
-                <span style={styles.quoteNum}>#{q.quoteNumber}</span>
-                <span style={styles.quoteCust}>{q.customerName || "بدون عميل"}</span>
+        loading ? <p style={styles.muted}>جارٍ التحميل...</p> : reviewed.length === 0 ? (
+          <div style={styles.emptyBox}>لا توجد عروض معتمدة بعد.</div>
+        ) : (
+          <div style={styles.list}>
+            {reviewed.map((q) => (
+              <div key={q.id} style={styles.quoteCard}>
+                <div style={styles.quoteCardMain}>
+                  <span style={styles.quoteNum}>#{q.quoteNumber}</span>
+                  <span style={styles.quoteCust}>{q.customerName || "بدون عميل"}</span>
+                  {q.financeRefNumber ? <span style={styles.refMini}>{q.financeRefNumber}</span> : null}
+                </div>
+                <div style={styles.quoteCardSide}>
+                  <button style={styles.printMini} onClick={() => printQuote(q, "internal", company)}>🖨️ داخلية</button>
+                  <button style={styles.printClientMini} onClick={() => printQuote(q, "client", company)}>📄 عميل مختومة</button>
+                  <span style={styles.quoteTotal} dir="ltr">{fmt(q.total)} ر.س</span>
+                </div>
               </div>
-              <div style={styles.quoteCardSide}>
-                <span style={styles.quoteTotal} dir="ltr">{fmt(q.total)} ر.س</span>
-                <span style={styles.reviewLink}>مراجعة ←</span>
-              </div>
-            </div>
-          ))}
-        </div>
+            ))}
+          </div>
+        )
       )}
 
       {active ? (
-        <ReviewModal quote={active} onClose={() => setActive(null)} onDone={() => { setActive(null); load(); }} />
+        <ReviewModal quote={active} company={company} onClose={() => setActive(null)} onDone={() => { setActive(null); load(); }} />
       ) : null}
     </div>
   );
 }
 
-function ReviewModal({ quote, onClose, onDone }) {
+function ReviewModal({ quote, company, onClose, onDone }) {
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
   const [rejecting, setRejecting] = useState(false);
@@ -98,7 +149,10 @@ function ReviewModal({ quote, onClose, onDone }) {
       <div style={styles.modal} onClick={(e) => e.stopPropagation()}>
         <div style={styles.modalHead}>
           <h2 style={styles.modalTitle}>مراجعة عرض #{quote.quoteNumber}</h2>
-          <button style={styles.closeBtn} onClick={onClose}>✕</button>
+          <div style={{ display: "flex", gap: 8, alignItems: "center" }}>
+            <button style={styles.printMini} onClick={() => printQuote(quote, "internal", company)}>🖨️ طباعة داخلية</button>
+            <button style={styles.closeBtn} onClick={onClose}>✕</button>
+          </div>
         </div>
 
         {error ? <div style={styles.error}>{error}</div> : null}
@@ -202,6 +256,12 @@ const styles = {
   overlay: { position: "fixed", inset: 0, background: "rgba(15,23,42,.5)", display: "flex", alignItems: "flex-start", justifyContent: "center", padding: "40px 16px", zIndex: 1000, overflowY: "auto" },
   modal: { background: "#fff", borderRadius: 16, width: "100%", maxWidth: 680, boxShadow: "0 20px 60px rgba(0,0,0,.3)" },
   modalHead: { display: "flex", justifyContent: "space-between", alignItems: "center", padding: "18px 24px", borderBottom: "1px solid #e2e8f0" },
+  tabs: { display: "flex", gap: 8, marginBottom: 18, borderBottom: "2px solid #e2e8f0" },
+  tab: { padding: "10px 18px", fontSize: 14, fontWeight: 700, color: "#94a3b8", background: "transparent", border: "none", borderBottom: "3px solid transparent", cursor: "pointer", fontFamily: "inherit", marginBottom: -2 },
+  tabActive: { color: "#0891b2", borderBottomColor: "#0891b2" },
+  printMini: { padding: "6px 12px", fontSize: 12, fontWeight: 700, color: "#475569", background: "#f1f5f9", border: "1px solid #cbd5e1", borderRadius: 6, cursor: "pointer", fontFamily: "inherit" },
+  printClientMini: { padding: "6px 12px", fontSize: 12, fontWeight: 700, color: "#fff", background: "#0891b2", border: "none", borderRadius: 6, cursor: "pointer", fontFamily: "inherit" },
+  refMini: { fontSize: 11, fontWeight: 700, color: "#059669", background: "#d1fae5", padding: "3px 8px", borderRadius: 6, marginRight: 8 },
   modalTitle: { fontSize: 18, fontWeight: 800, color: "#0f172a", margin: 0 },
   closeBtn: { width: 32, height: 32, borderRadius: 8, border: "1px solid #e2e8f0", background: "#fff", cursor: "pointer", fontSize: 15, color: "#64748b" },
   modalBody: { padding: "20px 24px", maxHeight: "58vh", overflowY: "auto" },

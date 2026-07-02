@@ -2783,7 +2783,7 @@ function computePriceQuoteTotals(laborItems, equipmentItems, vatRate) {
 function buildPriceQuoteDoc({
   tenantId, quoteNumber, customerId, customerName,
   laborItems, equipmentItems, subtotal, vatRate, taxAmount, total,
-  status, createdBy, createdAt,
+  status, validityDays, createdBy, createdAt,
 }) {
   return {
     tenantId,
@@ -2797,6 +2797,7 @@ function buildPriceQuoteDoc({
     taxAmount: taxAmount || 0,
     total: total || 0,
     status: status || PRICE_QUOTE_STATUS.DRAFT,
+    validityDays: Number(validityDays) > 0 ? Number(validityDays) : 14, // مدة صلاحية العرض (أيام عمل)
     // حقول دورة الموافقة (تُملأ لاحقًا)
     financeRefNumber: null,      // الرقم المرجعي من المالية عند الموافقة
     financeReviewedBy: null,

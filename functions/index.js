@@ -12168,6 +12168,7 @@ exports.createPriceQuote = onCall(async (request) => {
         taxAmount: totals.taxAmount,
         total: totals.total,
         status,
+        validityDays: data.validityDays !== undefined ? Number(data.validityDays) : 14,
         createdBy: request.auth.uid,
         createdAt: FieldValue.serverTimestamp(),
       });
@@ -13334,5 +13335,22 @@ exports.deleteContractTemplate = onCall(async (request) => {
     if (err instanceof HttpsError) throw err;
     console.error("deleteContractTemplate failed:", err);
     throw new HttpsError("internal", "تعذّر حذف القالب.");
+  }
+});
+
+// عروض راجعتها المالية (معتمدة/مرسلة/مقبولة) — للطباعة والأرشفة
+exports.getReviewedQuotes = onCall(async (request) => {
+  try {
+    const callerTenantId = await requireModule(request.auth, MODULES.FINANCE);
+    const snap = await db.collection(COLLECTIONS.PRICE_QUOTES)
+      .where("tenantId", "==", callerTenantId).get();
+    const reviewed = snap.docs.map((d) => ({ id: d.id, ...d.data() }))
+      .filter((q) => ["approved_finance", "sent_client", "accepted", "rejected_client"].includes(q.status));
+    reviewed.sort((a, b) => (b.quoteNumber || 0) - (a.quoteNumber || 0));
+    return { quotes: reviewed };
+  } catch (err) {
+    if (err instanceof HttpsError) throw err;
+    console.error("getReviewedQuotes failed:", err);
+    throw new HttpsError("internal", "تعذّر تحميل العروض المعتمدة.");
   }
 });
