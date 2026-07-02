@@ -85,6 +85,10 @@ const T = {
   fin_pos: { ar: "نقاط البيع", en: "Point of Sale", ur: "پوائنٹ آف سیل", tl: "Point of Sale" },
   fin_cash: { ar: "الكاشير", en: "Cashier", ur: "کیشیئر", tl: "Cashier" },
   fin_review: { ar: "مراجعة عروض الأسعار", en: "Quote Review", ur: "قیمت کا جائزہ", tl: "Pagsusuri ng Quote" },
+  ops_draft: { ar: "مسودات العمليات", en: "Ops Drafts", ur: "آپریشنز ڈرافٹس", tl: "Mga Draft ng Operasyon" },
+  ops_approval: { ar: "الموافقة النهائية", en: "Final Approval", ur: "حتمی منظوری", tl: "Panghuling Pag-apruba" },
+  leg_pcon: { ar: "عقود المشاريع", en: "Project Contracts", ur: "پروجیکٹ معاہدے", tl: "Mga Kontrata ng Proyekto" },
+  as_ben: { ar: "ربط السكن والمواصلات", en: "Housing & Transport Links", ur: "رہائش اور ٹرانسپورٹ لنکس", tl: "Mga Link sa Tirahan at Transportasyon" },
 
   // ===== أقسام الموارد البشرية =====
   hr_emp: { ar: "شؤون الموظفين", en: "Employees", ur: "ملازمین", tl: "Mga Empleyado" },

@@ -47,6 +47,10 @@ import SalesView                from "./SalesView";
 import QuotesView               from "./QuotesView";
 import PriceQuotesView          from "./PriceQuotesView";
 import FinanceQuoteReviewView   from "./FinanceQuoteReviewView";
+import OperationsDraftsView     from "./OperationsDraftsView";
+import FinalApprovalView        from "./FinalApprovalView";
+import ProjectContractsView     from "./ProjectContractsView";
+import AssetBeneficiariesView   from "./AssetBeneficiariesView";
 import MarketingView            from "./MarketingView";
 import CustomerServiceView      from "./CustomerServiceView";
 import ContractsView            from "./ContractsView";
@@ -96,6 +100,8 @@ const views = {
   ops_process:   ProcessesView,
   ops_planning:  PlanningView,
   ops_qs:        QualitySafetyView,
+  ops_draft:     OperationsDraftsView,
+  ops_approval:  FinalApprovalView,
 
   // الأصول والمرافق
   as_veh:        AssetsView,
@@ -103,6 +109,7 @@ const views = {
   as_equ:        AssetsView,
   as_simple:     AssetsView,
   as_dep:        DepreciationView,
+  as_ben:        AssetBeneficiariesView,
   cost_full:     CostOverviewView,
   cost_prof:     CostProfitabilityView,
   cost_alloc:    CostAllocationView,
@@ -115,6 +122,7 @@ const views = {
 
   // القانونية والامتثال
   leg_con:       ContractsView,
+  leg_pcon:      ProjectContractsView,
   leg_com:       ComplianceView,
   leg_dis:       DisputesView,
 

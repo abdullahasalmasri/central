@@ -58,6 +58,8 @@ const NAV = [
     { id: "ops_process",    name: "العمليات التشغيلية",   file: "ProcessesView.jsx" },
     { id: "ops_planning",   name: "التخطيط والرقابة",     file: "PlanningView.jsx" },
     { id: "ops_qs",         name: "الجودة والسلامة",      file: "QualitySafetyView.jsx" },
+    { id: "ops_draft", name: "مسودات العمليات", file: "OperationsDraftsView.jsx" },
+    { id: "ops_approval", name: "الموافقة النهائية", file: "FinalApprovalView.jsx" },
   ]},
   { type: "section", id: "assets", name: "الأصول والمرافق", icon: Building2, color: "#0e7490", children: [
     { id: "as_veh",  name: "المركبات", file: "AssetsView.jsx" },
@@ -65,6 +67,7 @@ const NAV = [
     { id: "as_equ",  name: "المعدّات", file: "AssetsView.jsx" },
     { id: "as_simple", name: "الأصول البسيطة", file: "AssetsView.jsx" },
     { id: "as_dep",  name: "الإهلاك",  file: "DepreciationView.jsx" },
+    { id: "as_ben", name: "ربط السكن والمواصلات", file: "AssetBeneficiariesView.jsx" },
   ]},
   { type: "section", id: "cost", name: "التكاليف والربحية", icon: TrendingUp, color: "#ca8a04", children: [
     { id: "cost_full",  name: "التكلفة الشاملة", file: "CostOverviewView.jsx" },
@@ -79,6 +82,7 @@ const NAV = [
   ]},
   { type: "section", id: "legal", name: "القانونية والامتثال", icon: Scale, color: "#78716c", children: [
     { id: "leg_con", name: "العقود",             file: "ContractsView.jsx" },
+    { id: "leg_pcon", name: "عقود المشاريع", file: "ProjectContractsView.jsx" },
     { id: "leg_com", name: "الامتثال والتراخيص", file: "ComplianceView.jsx" },
     { id: "leg_dis", name: "المنازعات",          file: "DisputesView.jsx" },
   ]},
