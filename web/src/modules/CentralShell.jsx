@@ -266,6 +266,24 @@ function viewFromHash() {
 }
 
 // جرس الإشعارات — تنبيهات فعلية موجّهة للإدارات لاتخاذ إجراء
+// خريطة توجيه الإشعار للشاشة المناسبة (قيم targetModule صغيرة الحروف)
+function routeForNotification(n) {
+  const t = n.type || "";
+  const rt = n.relatedType || "";
+  const tm = n.targetModule || "";
+  if (rt === "price_quote") {
+    if (tm === "finance") return "fin_review";
+    return "sal_quote"; // المبيعات/المشاريع: شاشة العروض (فيها إنشاء المشروع)
+  }
+  if (rt === "project") {
+    if (t === "draft_submitted" || t === "final_finance_review") return "ops_approval";
+    if (t === "ready_for_contract") return "leg_pcon";
+    return "ops_draft"; // project_created أو draft_rejected
+  }
+  if (rt === "contract") return "leg_sign"; // توقيعات العقود
+  return "";
+}
+
 function NotificationBell() {
   const { t } = useT();
   const [open, setOpen] = useState(false);
@@ -299,9 +317,8 @@ function NotificationBell() {
 
   const goTo = (n) => {
     if (!n.read) markRead(n.id);
-    if (n.relatedType === "price_quote") {
-      window.location.hash = n.targetModule === "SALES" ? "#sal_quote" : "#fin_review";
-    }
+    const dest = routeForNotification(n);
+    if (dest) window.location.hash = "#" + dest;
     setOpen(false);
   };
 
