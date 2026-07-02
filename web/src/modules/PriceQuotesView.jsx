@@ -469,11 +469,15 @@ function QuoteForm({ customers, jobTitles, nationalities, onClose, onSaved }) {
 function QuoteDetailModal({ quote, onClose, onChanged }) {
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
-  const [mode, setMode] = useState(""); // "" | "po" | "reject"
+  const [mode, setMode] = useState(""); // "" | "po" | "reject" | "project"
   const [poNumber, setPoNumber] = useState("");
   const [poDate, setPoDate] = useState("");
   const [poNote, setPoNote] = useState("");
   const [reason, setReason] = useState("");
+  const [projName, setProjName] = useState("");
+  const [projStart, setProjStart] = useState("");
+  const [projEnd, setProjEnd] = useState("");
+  const [supplyPeriod, setSupplyPeriod] = useState("");
 
   const st = STATUS_INFO[quote.status] || STATUS_INFO.draft;
   const labor = quote.laborItems || [];
@@ -556,6 +560,27 @@ function QuoteDetailModal({ quote, onClose, onChanged }) {
               <textarea style={{ ...styles.select, resize: "vertical" }} rows={2} value={reason} onChange={(e) => setReason(e.target.value)} disabled={busy} />
             </div>
           ) : null}
+
+          {/* نموذج إنشاء المشروع */}
+          {mode === "project" ? (
+            <div style={styles.actionForm}>
+              <div style={styles.actionFormTitle}>إنشاء مشروع من هذا العرض</div>
+              <label style={styles.fieldLabel}>اسم المشروع *</label>
+              <input style={styles.select} value={projName} onChange={(e) => setProjName(e.target.value)} disabled={busy} placeholder="مشروع توريد عمالة — الرياض" />
+              <div style={styles.dateRow}>
+                <div style={styles.dateCol}>
+                  <label style={styles.fieldLabel}>تاريخ البداية</label>
+                  <input style={styles.select} type="date" value={projStart} onChange={(e) => setProjStart(e.target.value)} disabled={busy} dir="ltr" />
+                </div>
+                <div style={styles.dateCol}>
+                  <label style={styles.fieldLabel}>تاريخ النهاية</label>
+                  <input style={styles.select} type="date" value={projEnd} onChange={(e) => setProjEnd(e.target.value)} disabled={busy} dir="ltr" />
+                </div>
+              </div>
+              <label style={styles.fieldLabel}>فترة التوريد</label>
+              <input style={styles.select} value={supplyPeriod} onChange={(e) => setSupplyPeriod(e.target.value)} disabled={busy} placeholder="مثال: 12 شهر" />
+            </div>
+          ) : null}
         </div>
 
         {/* أزرار حسب الحالة */}
@@ -571,7 +596,13 @@ function QuoteDetailModal({ quote, onClose, onChanged }) {
                   <button style={styles.submitBtn} onClick={() => setMode("po")} disabled={busy}>✓ العميل وافق (أمر شراء)</button>
                 </>
               ) : null}
-              {quote.status !== "approved_finance" && quote.status !== "sent_client" ? (
+              {quote.status === "accepted" && !quote.projectId ? (
+                <button style={styles.projectBtn} onClick={() => setMode("project")} disabled={busy}>🏗️ إنشاء مشروع</button>
+              ) : null}
+              {quote.status === "accepted" && quote.projectId ? (
+                <span style={styles.projectDone}>✓ أُنشئ المشروع #{quote.projectNumber}</span>
+              ) : null}
+              {quote.status !== "approved_finance" && quote.status !== "sent_client" && quote.status !== "accepted" ? (
                 <button style={styles.cancelBtn} onClick={onClose} disabled={busy}>إغلاق</button>
               ) : null}
             </>
@@ -579,6 +610,11 @@ function QuoteDetailModal({ quote, onClose, onChanged }) {
             <>
               <button style={styles.cancelBtn} onClick={() => { setMode(""); setError(""); }} disabled={busy}>رجوع</button>
               <button style={styles.submitBtn} onClick={() => call("acceptQuoteWithPO", { poNumber: poNumber.trim(), poDate, poNote }, "")} disabled={busy || !poNumber.trim()}>{busy ? "..." : "تأكيد أمر الشراء"}</button>
+            </>
+          ) : mode === "project" ? (
+            <>
+              <button style={styles.cancelBtn} onClick={() => { setMode(""); setError(""); }} disabled={busy}>رجوع</button>
+              <button style={styles.projectBtn} onClick={() => call("createProjectFromQuote", { name: projName.trim(), startDate: projStart, endDate: projEnd, supplyPeriod }, "")} disabled={busy || !projName.trim()}>{busy ? "..." : "إنشاء المشروع"}</button>
             </>
           ) : (
             <>
@@ -693,4 +729,8 @@ const styles = {
   actionForm: { marginTop: 16, padding: 16, background: "#f8fafc", borderRadius: 10, border: "1px solid #e2e8f0" },
   actionFormTitle: { fontSize: 14, fontWeight: 800, color: "#0f172a", marginBottom: 12 },
   rejectActBtn: { padding: "10px 20px", fontSize: 14, fontWeight: 700, color: "#dc2626", background: "#fef2f2", border: "1px solid #fecaca", borderRadius: 8, cursor: "pointer", fontFamily: "inherit" },
+  projectBtn: { padding: "10px 20px", fontSize: 14, fontWeight: 700, color: "#fff", background: "#0d9488", border: "none", borderRadius: 8, cursor: "pointer", fontFamily: "inherit" },
+  projectDone: { fontSize: 14, fontWeight: 700, color: "#0d9488", padding: "10px 16px" },
+  dateRow: { display: "flex", gap: 12 },
+  dateCol: { flex: 1 },
 };

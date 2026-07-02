@@ -10719,10 +10719,10 @@ exports.setAssetBeneficiaries = onCall(async (request) => {
     }
 
     const uniq = [...new Set(beneficiaries)];
-    // تحقّق أن كل مستفيد ينتمي للشركة
-    for (const uid of uniq) {
-      const u = await db.collection(COLLECTIONS.USERS).doc(uid).get();
-      if (!u.exists || u.data().tenantId !== callerTenantId) {
+    // تحقّق أن كل مستفيد موظف ينتمي للشركة (employee document ID — يطابق التسعير المرجعي)
+    for (const empId of uniq) {
+      const e = await db.collection(COLLECTIONS.EMPLOYEES).doc(empId).get();
+      if (!e.exists || e.data().tenantId !== callerTenantId) {
         throw new HttpsError("invalid-argument", "أحد المستفيدين غير صحيح.");
       }
     }
@@ -12567,5 +12567,526 @@ exports.rejectQuoteByClient = onCall(async (request) => {
     if (err instanceof HttpsError) throw err;
     console.error("rejectQuoteByClient failed:", err);
     throw new HttpsError("internal", "تعذّر تسجيل رفض العميل.");
+  }
+});
+
+// ═══════════════════════════════════════════════════════
+// ===== المرحلة ٣: إنشاء المشروع من العرض المقبول =====
+// ═══════════════════════════════════════════════════════
+
+// العروض المقبولة الجاهزة لإنشاء مشروع (لم يُنشأ لها مشروع بعد)
+exports.getAcceptedQuotes = onCall(async (request) => {
+  try {
+    const callerTenantId = await requireModule(request.auth, MODULES.PROJECTS);
+    const snap = await db.collection(COLLECTIONS.PRICE_QUOTES)
+      .where("tenantId", "==", callerTenantId)
+      .where("status", "==", "accepted")
+      .get();
+    // فقط اللي ما لها مشروع بعد
+    const quotes = snap.docs.map((d) => ({ id: d.id, ...d.data() })).filter((q) => !q.projectId);
+    quotes.sort((a, b) => (b.quoteNumber || 0) - (a.quoteNumber || 0));
+    return { quotes };
+  } catch (err) {
+    if (err instanceof HttpsError) throw err;
+    console.error("getAcceptedQuotes failed:", err);
+    throw new HttpsError("internal", "تعذّر تحميل العروض المقبولة.");
+  }
+});
+
+// إنشاء مشروع من عرض مقبول (المشاريع) → رقم مشروع + ربط + إشعار العمليات
+// data: { quoteId, name, startDate?, endDate?, supplyPeriod?, city?, location? }
+exports.createProjectFromQuote = onCall(async (request) => {
+  try {
+    const callerTenantId = await requireModule(request.auth, MODULES.PROJECTS);
+    const data = request.data || {};
+    const quoteId = typeof data.quoteId === "string" ? data.quoteId.trim() : "";
+    const name = typeof data.name === "string" ? data.name.trim() : "";
+    const startDate = typeof data.startDate === "string" ? data.startDate.trim() : "";
+    const endDate = typeof data.endDate === "string" ? data.endDate.trim() : "";
+    const supplyPeriod = typeof data.supplyPeriod === "string" ? data.supplyPeriod.trim() : "";
+    const city = typeof data.city === "string" ? data.city.trim() : "";
+    const location = typeof data.location === "string" ? data.location.trim() : "";
+    if (!quoteId) throw new HttpsError("invalid-argument", "يجب تحديد عرض السعر.");
+    if (!name) throw new HttpsError("invalid-argument", "يجب إدخال اسم المشروع.");
+
+    const quoteRef = db.collection(COLLECTIONS.PRICE_QUOTES).doc(quoteId);
+    const tenantRef = db.collection(COLLECTIONS.TENANTS).doc(callerTenantId);
+    const projectRef = db.collection(COLLECTIONS.PROJECTS).doc();
+
+    const result = await db.runTransaction(async (tx) => {
+      const qSnap = await tx.get(quoteRef);
+      if (!qSnap.exists || qSnap.data().tenantId !== callerTenantId) {
+        throw new HttpsError("invalid-argument", "عرض السعر غير موجود.");
+      }
+      const q = qSnap.data();
+      if (q.status !== "accepted") {
+        throw new HttpsError("failed-precondition", "يجب أن يكون العرض مقبولًا من العميل.");
+      }
+      if (q.projectId) {
+        throw new HttpsError("failed-precondition", "سبق إنشاء مشروع لهذا العرض.");
+      }
+
+      const tenantSnap = await tx.get(tenantRef);
+      const nextNumber = ((tenantSnap.data() || {}).lastProjectNumber || 0) + 1;
+
+      const projectDoc = buildProjectDoc({
+        tenantId: callerTenantId,
+        projectNumber: nextNumber,
+        name,
+        customerId: q.customerId || null,
+        customerName: q.customerName || null,
+        contractNumber: q.poNumber || null,
+        city, location, startDate, endDate,
+        sourceQuoteId: quoteId,
+        sourceQuoteNumber: q.quoteNumber,
+        poNumber: q.poNumber || null,
+        supplyPeriod: supplyPeriod || null,
+        createdBy: request.auth.uid,
+        createdAt: FieldValue.serverTimestamp(),
+      });
+
+      tx.set(projectRef, projectDoc);
+      tx.update(tenantRef, { lastProjectNumber: nextNumber });
+      // ربط العرض بالمشروع
+      tx.update(quoteRef, { projectId: projectRef.id, projectNumber: nextNumber, updatedAt: FieldValue.serverTimestamp() });
+      return { projectNumber: nextNumber, quoteNumber: q.quoteNumber };
+    });
+
+    // إشعار العمليات: مشروع جديد جاهز للإسناد (المرحلة ٤)
+    await createNotification({
+      tenantId: callerTenantId, targetModule: MODULES.OPERATIONS, type: "project_created",
+      title: "مشروع جديد — جاهز لإسناد العمالة",
+      message: `المشروع #${result.projectNumber} (${name}) أُنشئ من العرض #${result.quoteNumber}. جاهز لإسناد العمالة والمعدات.`,
+      relatedType: "project", relatedId: projectRef.id, createdBy: request.auth.uid,
+    });
+
+    return { id: projectRef.id, projectNumber: result.projectNumber };
+  } catch (err) {
+    if (err instanceof HttpsError) throw err;
+    console.error("createProjectFromQuote failed:", err);
+    throw new HttpsError("internal", "تعذّر إنشاء المشروع.");
+  }
+});
+
+// ═══════════════════════════════════════════════════════
+// ===== المرحلة ٤: مسودة العمليات (إسناد → إرسال للمشاريع) =====
+// ═══════════════════════════════════════════════════════
+
+// المشاريع الجاهزة للعمليات (المنشأة من عروض) مع ملخّص الإسناد
+exports.getProjectsForOperations = onCall(async (request) => {
+  try {
+    const callerTenantId = await requireModule(request.auth, MODULES.OPERATIONS);
+    // المشاريع المنشأة من عروض (لها sourceQuoteId)
+    const projSnap = await db.collection(COLLECTIONS.PROJECTS)
+      .where("tenantId", "==", callerTenantId)
+      .get();
+    const projects = projSnap.docs.map((d) => ({ id: d.id, ...d.data() })).filter((p) => p.sourceQuoteId);
+
+    // إسنادات الموظفين النشطة
+    const asgSnap = await db.collection(COLLECTIONS.EMPLOYEE_ASSIGNMENTS)
+      .where("tenantId", "==", callerTenantId)
+      .where("status", "==", "active")
+      .get();
+    const asgByProject = {};
+    asgSnap.docs.forEach((d) => {
+      const a = d.data();
+      if (!asgByProject[a.projectId]) asgByProject[a.projectId] = [];
+      asgByProject[a.projectId].push({ employeeId: a.employeeId, employeeName: a.employeeName || null });
+    });
+
+    const withCounts = projects.map((p) => ({
+      ...p,
+      assignedCount: (asgByProject[p.id] || []).length,
+      assignedEmployees: asgByProject[p.id] || [],
+    }));
+    withCounts.sort((a, b) => (b.projectNumber || 0) - (a.projectNumber || 0));
+    return { projects: withCounts };
+  } catch (err) {
+    if (err instanceof HttpsError) throw err;
+    console.error("getProjectsForOperations failed:", err);
+    throw new HttpsError("internal", "تعذّر تحميل المشاريع.");
+  }
+});
+
+// إرسال مسودة العمليات للمشاريع → رقم مسودة + إشعار المشاريع (المرحلة ٥)
+exports.submitOperationsDraft = onCall(async (request) => {
+  try {
+    const callerTenantId = await requireModule(request.auth, MODULES.OPERATIONS);
+    const data = request.data || {};
+    const projectId = typeof data.projectId === "string" ? data.projectId.trim() : "";
+    if (!projectId) throw new HttpsError("invalid-argument", "يجب تحديد المشروع.");
+
+    const projRef = db.collection(COLLECTIONS.PROJECTS).doc(projectId);
+    const tenantRef = db.collection(COLLECTIONS.TENANTS).doc(callerTenantId);
+
+    // تحقق من وجود إسناد واحد على الأقل
+    const asgSnap = await db.collection(COLLECTIONS.EMPLOYEE_ASSIGNMENTS)
+      .where("tenantId", "==", callerTenantId)
+      .where("projectId", "==", projectId)
+      .where("status", "==", "active")
+      .get();
+    if (asgSnap.empty) {
+      throw new HttpsError("failed-precondition", "أسند عمالة واحدة على الأقل قبل إرسال المسودة.");
+    }
+
+    const result = await db.runTransaction(async (tx) => {
+      const pSnap = await tx.get(projRef);
+      if (!pSnap.exists || pSnap.data().tenantId !== callerTenantId) {
+        throw new HttpsError("invalid-argument", "المشروع غير موجود.");
+      }
+      const p = pSnap.data();
+      if (!p.sourceQuoteId) {
+        throw new HttpsError("failed-precondition", "هذا المشروع غير مرتبط بعرض سعر.");
+      }
+      const tenantSnap = await tx.get(tenantRef);
+      const nextNumber = ((tenantSnap.data() || {}).lastDraftNumber || 0) + 1;
+      const draftNumber = `DRF-${String(nextNumber).padStart(4, "0")}`;
+
+      tx.update(projRef, {
+        operationsDraftStatus: "submitted",
+        operationsDraftNumber: draftNumber,
+        operationsDraftSubmittedAt: FieldValue.serverTimestamp(),
+        finalApprovalStage: "projects_review",
+        updatedAt: FieldValue.serverTimestamp(),
+      });
+      tx.update(tenantRef, { lastDraftNumber: nextNumber });
+      return { draftNumber, projectNumber: p.projectNumber, projectName: p.name };
+    });
+
+    // إشعار المشاريع: مسودة جاهزة للموافقة النهائية
+    await createNotification({
+      tenantId: callerTenantId, targetModule: MODULES.PROJECTS, type: "draft_submitted",
+      title: "مسودة إسناد جاهزة للموافقة",
+      message: `مسودة العمليات (${result.draftNumber}) للمشروع #${result.projectNumber} (${result.projectName}) جاهزة لمراجعتك.`,
+      relatedType: "project", relatedId: projectId, createdBy: request.auth.uid,
+    });
+
+    return { id: projectId, draftNumber: result.draftNumber };
+  } catch (err) {
+    if (err instanceof HttpsError) throw err;
+    console.error("submitOperationsDraft failed:", err);
+    throw new HttpsError("internal", "تعذّر إرسال المسودة.");
+  }
+});
+
+// ═══════════════════════════════════════════════════════
+// ===== المرحلة ٥: الموافقة النهائية (المشاريع → المالية → العقود) =====
+// ═══════════════════════════════════════════════════════
+
+// المشاريع بانتظار الموافقة النهائية (حسب دور المستخدم)
+// stage: "projects_review" (للمشاريع) | "finance_review" (للمالية)
+exports.getFinalApprovalProjects = onCall(async (request) => {
+  try {
+    const auth = request.auth;
+    if (!auth) throw new HttpsError("unauthenticated", "يجب تسجيل الدخول أولاً.");
+    const callerTenantId = auth.token.tenantId;
+    if (!callerTenantId) throw new HttpsError("failed-precondition", "حسابك غير مرتبط بشركة.");
+    const data = request.data || {};
+    const stage = data.stage === "finance_review" ? "finance_review" : "projects_review";
+    const needed = stage === "finance_review" ? MODULES.FINANCE : MODULES.PROJECTS;
+    await requireModule(auth, needed);
+
+    const snap = await db.collection(COLLECTIONS.PROJECTS)
+      .where("tenantId", "==", callerTenantId)
+      .where("finalApprovalStage", "==", stage)
+      .get();
+    const projects = snap.docs.map((d) => ({ id: d.id, ...d.data() }));
+    projects.sort((a, b) => (b.projectNumber || 0) - (a.projectNumber || 0));
+    return { projects };
+  } catch (err) {
+    if (err instanceof HttpsError) throw err;
+    console.error("getFinalApprovalProjects failed:", err);
+    throw new HttpsError("internal", "تعذّر تحميل المشاريع.");
+  }
+});
+
+// المشاريع توافق على المسودة → ترسلها للمالية
+exports.projectsApproveDraft = onCall(async (request) => {
+  try {
+    const callerTenantId = await requireModule(request.auth, MODULES.PROJECTS);
+    const data = request.data || {};
+    const projectId = typeof data.projectId === "string" ? data.projectId.trim() : "";
+    if (!projectId) throw new HttpsError("invalid-argument", "يجب تحديد المشروع.");
+    const ref = db.collection(COLLECTIONS.PROJECTS).doc(projectId);
+    const snap = await ref.get();
+    if (!snap.exists || snap.data().tenantId !== callerTenantId) throw new HttpsError("invalid-argument", "المشروع غير موجود.");
+    if (snap.data().finalApprovalStage !== "projects_review") throw new HttpsError("failed-precondition", "المشروع ليس بانتظار موافقة المشاريع.");
+    await ref.update({ finalApprovalStage: "finance_review", updatedAt: FieldValue.serverTimestamp() });
+    await createNotification({
+      tenantId: callerTenantId, targetModule: MODULES.FINANCE, type: "final_finance_review",
+      title: "مشروع بانتظار الموافقة النهائية",
+      message: `المشروع #${snap.data().projectNumber} (${snap.data().name}) وافقت عليه المشاريع، بانتظار موافقتك النهائية.`,
+      relatedType: "project", relatedId: projectId, createdBy: request.auth.uid,
+    });
+    return { id: projectId, finalApprovalStage: "finance_review" };
+  } catch (err) {
+    if (err instanceof HttpsError) throw err;
+    console.error("projectsApproveDraft failed:", err);
+    throw new HttpsError("internal", "تعذّر اعتماد المسودة.");
+  }
+});
+
+// المشاريع ترفض المسودة → ترجع للعمليات
+exports.projectsRejectDraft = onCall(async (request) => {
+  try {
+    const callerTenantId = await requireModule(request.auth, MODULES.PROJECTS);
+    const data = request.data || {};
+    const projectId = typeof data.projectId === "string" ? data.projectId.trim() : "";
+    const reason = typeof data.reason === "string" ? data.reason.trim() : "";
+    if (!projectId) throw new HttpsError("invalid-argument", "يجب تحديد المشروع.");
+    const ref = db.collection(COLLECTIONS.PROJECTS).doc(projectId);
+    const snap = await ref.get();
+    if (!snap.exists || snap.data().tenantId !== callerTenantId) throw new HttpsError("invalid-argument", "المشروع غير موجود.");
+    if (snap.data().finalApprovalStage !== "projects_review") throw new HttpsError("failed-precondition", "المشروع ليس بانتظار موافقة المشاريع.");
+    await ref.update({
+      finalApprovalStage: "rejected_ops",
+      operationsDraftStatus: null,
+      finalRejectionReason: reason || null,
+      updatedAt: FieldValue.serverTimestamp(),
+    });
+    await createNotification({
+      tenantId: callerTenantId, targetModule: MODULES.OPERATIONS, type: "draft_rejected",
+      title: "رُفضت مسودة الإسناد",
+      message: `المشروع #${snap.data().projectNumber}: رفضت المشاريع المسودة. ${reason ? "السبب: " + reason : ""} يمكن تعديل الإسناد وإعادة الإرسال.`,
+      relatedType: "project", relatedId: projectId, createdBy: request.auth.uid,
+    });
+    return { id: projectId, finalApprovalStage: "rejected_ops" };
+  } catch (err) {
+    if (err instanceof HttpsError) throw err;
+    console.error("projectsRejectDraft failed:", err);
+    throw new HttpsError("internal", "تعذّر رفض المسودة.");
+  }
+});
+
+// المالية توافق نهائيًا → رقم موافقة + إشعار العقود
+exports.financeApproveProject = onCall(async (request) => {
+  try {
+    const callerTenantId = await requireModule(request.auth, MODULES.FINANCE);
+    const data = request.data || {};
+    const projectId = typeof data.projectId === "string" ? data.projectId.trim() : "";
+    if (!projectId) throw new HttpsError("invalid-argument", "يجب تحديد المشروع.");
+    const ref = db.collection(COLLECTIONS.PROJECTS).doc(projectId);
+    const tenantRef = db.collection(COLLECTIONS.TENANTS).doc(callerTenantId);
+
+    const result = await db.runTransaction(async (tx) => {
+      const snap = await tx.get(ref);
+      if (!snap.exists || snap.data().tenantId !== callerTenantId) throw new HttpsError("invalid-argument", "المشروع غير موجود.");
+      if (snap.data().finalApprovalStage !== "finance_review") throw new HttpsError("failed-precondition", "المشروع ليس بانتظار موافقة المالية.");
+      const tenantSnap = await tx.get(tenantRef);
+      const nextNum = ((tenantSnap.data() || {}).lastFinalApprovalNumber || 0) + 1;
+      const approvalNumber = `APR-${String(nextNum).padStart(4, "0")}`;
+      tx.update(ref, {
+        finalApprovalStage: "finance_approved",
+        finalApprovalNumber: approvalNumber,
+        updatedAt: FieldValue.serverTimestamp(),
+      });
+      tx.update(tenantRef, { lastFinalApprovalNumber: nextNum });
+      return { approvalNumber, projectNumber: snap.data().projectNumber, name: snap.data().name };
+    });
+
+    await createNotification({
+      tenantId: callerTenantId, targetModule: MODULES.LEGAL, type: "ready_for_contract",
+      title: "مشروع معتمد — جاهز لإصدار العقد",
+      message: `المشروع #${result.projectNumber} (${result.name}) اعتمدته المالية نهائيًا (${result.approvalNumber}). جاهز لإصدار العقد.`,
+      relatedType: "project", relatedId: projectId, createdBy: request.auth.uid,
+    });
+    return { id: projectId, finalApprovalStage: "finance_approved", approvalNumber: result.approvalNumber };
+  } catch (err) {
+    if (err instanceof HttpsError) throw err;
+    console.error("financeApproveProject failed:", err);
+    throw new HttpsError("internal", "تعذّر اعتماد المشروع.");
+  }
+});
+
+// المالية ترفض → ترجع للعمليات
+exports.financeRejectProject = onCall(async (request) => {
+  try {
+    const callerTenantId = await requireModule(request.auth, MODULES.FINANCE);
+    const data = request.data || {};
+    const projectId = typeof data.projectId === "string" ? data.projectId.trim() : "";
+    const reason = typeof data.reason === "string" ? data.reason.trim() : "";
+    if (!projectId) throw new HttpsError("invalid-argument", "يجب تحديد المشروع.");
+    const ref = db.collection(COLLECTIONS.PROJECTS).doc(projectId);
+    const snap = await ref.get();
+    if (!snap.exists || snap.data().tenantId !== callerTenantId) throw new HttpsError("invalid-argument", "المشروع غير موجود.");
+    if (snap.data().finalApprovalStage !== "finance_review") throw new HttpsError("failed-precondition", "المشروع ليس بانتظار موافقة المالية.");
+    await ref.update({
+      finalApprovalStage: "rejected_ops",
+      operationsDraftStatus: null,
+      finalRejectionReason: reason || null,
+      updatedAt: FieldValue.serverTimestamp(),
+    });
+    await createNotification({
+      tenantId: callerTenantId, targetModule: MODULES.OPERATIONS, type: "draft_rejected",
+      title: "رفضت المالية المسودة",
+      message: `المشروع #${snap.data().projectNumber}: رفضت المالية المسودة. ${reason ? "السبب: " + reason : ""} يمكن تعديل الإسناد وإعادة الإرسال.`,
+      relatedType: "project", relatedId: projectId, createdBy: request.auth.uid,
+    });
+    return { id: projectId, finalApprovalStage: "rejected_ops" };
+  } catch (err) {
+    if (err instanceof HttpsError) throw err;
+    console.error("financeRejectProject failed:", err);
+    throw new HttpsError("internal", "تعذّر رفض المشروع.");
+  }
+});
+
+// ═══════════════════════════════════════════════════════
+// ===== المرحلة ٦: العقد (إصدار من المشروع المعتمد + محتوى تلقائي) =====
+// ═══════════════════════════════════════════════════════
+
+// المشاريع المعتمدة نهائيًا الجاهزة لإصدار عقد (بدون عقد بعد)
+exports.getProjectsForContract = onCall(async (request) => {
+  try {
+    const callerTenantId = await requireModule(request.auth, MODULES.LEGAL);
+    const snap = await db.collection(COLLECTIONS.PROJECTS)
+      .where("tenantId", "==", callerTenantId)
+      .where("finalApprovalStage", "==", "finance_approved")
+      .get();
+    const projects = snap.docs.map((d) => ({ id: d.id, ...d.data() })).filter((p) => !p.contractId);
+    projects.sort((a, b) => (b.projectNumber || 0) - (a.projectNumber || 0));
+    return { projects };
+  } catch (err) {
+    if (err instanceof HttpsError) throw err;
+    console.error("getProjectsForContract failed:", err);
+    throw new HttpsError("internal", "تعذّر تحميل المشاريع.");
+  }
+});
+
+// إنشاء عقد من مشروع معتمد → رقم فريد + محتوى تلقائي (شركة + عميل + عرض + عمالة)
+// data: { projectId, name?, startDate?, endDate? }
+exports.createContractFromProject = onCall(async (request) => {
+  try {
+    const callerTenantId = await requireModule(request.auth, MODULES.LEGAL);
+    const data = request.data || {};
+    const projectId = typeof data.projectId === "string" ? data.projectId.trim() : "";
+    const nameIn = typeof data.name === "string" ? data.name.trim() : "";
+    const startIn = typeof data.startDate === "string" ? data.startDate.trim() : "";
+    const endIn = typeof data.endDate === "string" ? data.endDate.trim() : "";
+    if (!projectId) throw new HttpsError("invalid-argument", "يجب تحديد المشروع.");
+
+    const projRef = db.collection(COLLECTIONS.PROJECTS).doc(projectId);
+    const projSnap = await projRef.get();
+    if (!projSnap.exists || projSnap.data().tenantId !== callerTenantId) {
+      throw new HttpsError("invalid-argument", "المشروع غير موجود.");
+    }
+    const project = projSnap.data();
+    if (project.finalApprovalStage !== "finance_approved") {
+      throw new HttpsError("failed-precondition", "يجب اعتماد المشروع نهائيًا من المالية أولاً.");
+    }
+    if (project.contractId) {
+      throw new HttpsError("failed-precondition", "سبق إصدار عقد لهذا المشروع.");
+    }
+
+    // بيانات الشركة (من tenant)
+    const tenantRef = db.collection(COLLECTIONS.TENANTS).doc(callerTenantId);
+    const tenantSnap = await tenantRef.get();
+    const t = tenantSnap.data() || {};
+    const companySnapshot = {
+      name: t.name || null, taxNumber: t.taxNumber || null, crNumber: t.crNumber || null,
+      address: t.address || null, phone: t.phone || null, email: t.email || null,
+    };
+
+    // بيانات العميل (من customers)
+    let clientSnapshot = null;
+    if (project.customerId) {
+      const cSnap = await db.collection(COLLECTIONS.CUSTOMERS).doc(project.customerId).get();
+      if (cSnap.exists) {
+        const c = cSnap.data();
+        clientSnapshot = {
+          name: c.name || null, taxNumber: c.taxNumber || null, crNumber: c.crNumber || null,
+          contactPerson: c.contactPerson || null, phone: c.phone || null, email: c.email || null,
+          address: c.address || null, city: c.city || null,
+        };
+      }
+    }
+
+    // ملخّص العمالة + القيمة (من العرض المصدر)
+    let laborSummary = [];
+    let contractValue = 0;
+    if (project.sourceQuoteId) {
+      const qSnap = await db.collection(COLLECTIONS.PRICE_QUOTES).doc(project.sourceQuoteId).get();
+      if (qSnap.exists) {
+        const q = qSnap.data();
+        contractValue = q.total || 0;
+        laborSummary = (q.laborItems || []).map((it) => ({
+          gender: it.gender || null,
+          nationality: it.nationality || null,
+          jobTitle: it.jobTitleName || it.jobTitle || null,
+          count: it.count || 0,
+          unitPrice: it.unitPrice || 0,
+        }));
+      }
+    }
+
+    // التمهيد النصّي
+    const today = new Date().toISOString().slice(0, 10);
+    const preamble =
+      `أُبرم هذا العقد بتاريخ ${today} بناءً على عرض السعر رقم ${project.sourceQuoteNumber || "—"}` +
+      (project.poNumber ? ` وأمر الشراء رقم ${project.poNumber}` : "") +
+      `، بين ${companySnapshot.name || "الشركة"} (الطرف الأول) و${(clientSnapshot && clientSnapshot.name) || project.customerName || "العميل"} (الطرف الثاني)، ` +
+      `لتوريد العمالة المبيّنة في هذا العقد وفق الشروط المتفق عليها.`;
+
+    const contractName = nameIn || `عقد توريد عمالة — ${project.name}`;
+    const contractRef = db.collection(COLLECTIONS.CONTRACTS).doc();
+
+    const result = await db.runTransaction(async (tx) => {
+      const tSnap = await tx.get(tenantRef);
+      const nextNumber = ((tSnap.data() || {}).lastContractNumber || 0) + 1;
+
+      const contractDoc = buildContractDoc({
+        tenantId: callerTenantId,
+        contractNumber: nextNumber,
+        name: contractName,
+        party: (clientSnapshot && clientSnapshot.name) || project.customerName || null,
+        type: CONTRACT_TYPE.OTHER,
+        value: contractValue,
+        startDate: startIn || project.startDate || null,
+        endDate: endIn || project.endDate || null,
+        status: CONTRACT_STATUS.DRAFT,
+        projectId, projectNumber: project.projectNumber,
+        sourceQuoteId: project.sourceQuoteId || null,
+        sourceQuoteNumber: project.sourceQuoteNumber || null,
+        customerId: project.customerId || null,
+        poNumber: project.poNumber || null,
+        laborSummary, companySnapshot, clientSnapshot, preamble,
+        createdBy: request.auth.uid,
+        createdAt: FieldValue.serverTimestamp(),
+      });
+
+      tx.set(contractRef, contractDoc);
+      tx.update(tenantRef, { lastContractNumber: nextNumber });
+      tx.update(projRef, {
+        contractId: contractRef.id,
+        contractNumber: nextNumber,
+        finalApprovalStage: "contracted",
+        updatedAt: FieldValue.serverTimestamp(),
+      });
+      return { contractNumber: nextNumber };
+    });
+
+    return { id: contractRef.id, contractNumber: result.contractNumber };
+  } catch (err) {
+    if (err instanceof HttpsError) throw err;
+    console.error("createContractFromProject failed:", err);
+    throw new HttpsError("internal", "تعذّر إصدار العقد.");
+  }
+});
+
+// جلب عقد واحد بتفاصيله الكاملة (للعرض/الطباعة)
+exports.getContractDetail = onCall(async (request) => {
+  try {
+    const callerTenantId = await requireModule(request.auth, MODULES.LEGAL);
+    const data = request.data || {};
+    const contractId = typeof data.contractId === "string" ? data.contractId.trim() : "";
+    if (!contractId) throw new HttpsError("invalid-argument", "يجب تحديد العقد.");
+    const snap = await db.collection(COLLECTIONS.CONTRACTS).doc(contractId).get();
+    if (!snap.exists || snap.data().tenantId !== callerTenantId) {
+      throw new HttpsError("invalid-argument", "العقد غير موجود.");
+    }
+    return { contract: { id: snap.id, ...snap.data() } };
+  } catch (err) {
+    if (err instanceof HttpsError) throw err;
+    console.error("getContractDetail failed:", err);
+    throw new HttpsError("internal", "تعذّر تحميل العقد.");
   }
 });

@@ -1560,7 +1560,9 @@ function buildProjectTypeDoc({ tenantId, name, code, description, isSystem, crea
 function buildProjectDoc({
   tenantId, projectNumber, name, customerId, customerName,
   typeIds, typeNames, contractNumber, city, location,
-  startDate, endDate, status, description, createdBy, createdAt,
+  startDate, endDate, status, description,
+  sourceQuoteId, sourceQuoteNumber, poNumber, supplyPeriod,
+  createdBy, createdAt,
 }) {
   return {
     tenantId,
@@ -1577,6 +1579,16 @@ function buildProjectDoc({
     endDate: endDate || null,
     status: status || PROJECT_STATUS.PLANNED,
     description: description || null,
+    sourceQuoteId: sourceQuoteId || null,       // العرض المصدر (المرحلة ٣)
+    sourceQuoteNumber: sourceQuoteNumber || null,
+    poNumber: poNumber || null,                 // أمر الشراء
+    supplyPeriod: supplyPeriod || null,         // فترة التوريد
+    operationsDraftStatus: null,                // مسودة العمليات (المرحلة ٤): null/submitted
+    operationsDraftNumber: null,
+    operationsDraftSubmittedAt: null,
+    finalApprovalStage: null,          // الموافقة النهائية (م٥): projects_review/finance_review/finance_approved/rejected_ops
+    finalApprovalNumber: null,         // رقم الموافقة النهائية من المالية
+    finalRejectionReason: null,
     createdBy: createdBy || null,
     createdAt,
     updatedAt: createdAt,
@@ -2164,7 +2176,10 @@ const ALL_CONTRACT_STATUS = Object.values(CONTRACT_STATUS);
 // بناء وثيقة عقد
 function buildContractDoc({
   tenantId, contractNumber, name, party, type, value,
-  startDate, endDate, status, autoRenew, notes, createdBy, createdAt,
+  startDate, endDate, status, autoRenew, notes,
+  projectId, projectNumber, sourceQuoteId, sourceQuoteNumber,
+  customerId, poNumber, laborSummary, companySnapshot, clientSnapshot, preamble,
+  createdBy, createdAt,
 }) {
   return {
     tenantId: tenantId,
@@ -2178,6 +2193,17 @@ function buildContractDoc({
     status: ALL_CONTRACT_STATUS.includes(status) ? status : CONTRACT_STATUS.DRAFT,
     autoRenew: !!autoRenew,
     notes: notes || null,
+    // محتوى العقد التلقائي (المرحلة ٦) — من المشروع والعرض
+    projectId: projectId || null,
+    projectNumber: projectNumber || null,
+    sourceQuoteId: sourceQuoteId || null,
+    sourceQuoteNumber: sourceQuoteNumber || null,
+    customerId: customerId || null,
+    poNumber: poNumber || null,
+    laborSummary: Array.isArray(laborSummary) ? laborSummary : [],
+    companySnapshot: companySnapshot || null,   // بيانات الشركة وقت الإصدار
+    clientSnapshot: clientSnapshot || null,     // بيانات العميل وقت الإصدار
+    preamble: preamble || null,                 // التمهيد النصّي
     createdBy: createdBy || null,
     createdAt: createdAt,
   };
