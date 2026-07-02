@@ -1,4 +1,4 @@
-import { useState, useEffect } from "react";
+import { useState, useEffect, useMemo } from "react";
 import { httpsCallable } from "firebase/functions";
 import { functions } from "../firebase";
 
@@ -14,6 +14,7 @@ const genderLabel = (g) => (g === "male" ? "ذكر" : g === "female" ? "أنثى
 export default function ProjectContractsView() {
   const [projects, setProjects] = useState([]);
   const [contracts, setContracts] = useState([]);
+  const [contractSearch, setContractSearch] = useState("");
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState("");
   const [msg, setMsg] = useState("");
@@ -116,8 +117,13 @@ export default function ProjectContractsView() {
       {contracts.length > 0 ? (
         <>
           <div style={{ ...styles.sectionTitle, marginTop: 28 }}>📁 عقود صادرة</div>
+          <input style={styles.contractSearchInput} value={contractSearch} onChange={(e) => setContractSearch(e.target.value)} placeholder="🔍 بحث برقم العقد أو اسمه أو الطرف الثاني..." />
           <div style={styles.list}>
-            {contracts.map((c) => (
+            {contracts.filter((c) => {
+              if (!contractSearch.trim()) return true;
+              const s = contractSearch.trim().toLowerCase();
+              return String(c.contractNumber || "").includes(s) || (c.name || "").toLowerCase().includes(s) || (c.party || "").toLowerCase().includes(s);
+            }).map((c) => (
               <div key={c.id} style={styles.card}>
                 <div style={styles.cardMain}>
                   <div style={styles.cardHead}>
@@ -310,6 +316,7 @@ const styles = {
   emptyBox: { padding: "30px 20px", textAlign: "center", background: "#fff", border: "1px solid #e2e8f0", borderRadius: 12, color: "#94a3b8", fontSize: 15 },
 
   sectionTitle: { fontSize: 15, fontWeight: 800, color: "#334155", marginBottom: 12 },
+  contractSearchInput: { width: "100%", padding: "10px 14px", fontSize: 14, border: "1px solid #cbd5e1", borderRadius: 8, fontFamily: "inherit", boxSizing: "border-box", marginBottom: 12 },
   list: { display: "flex", flexDirection: "column", gap: 12 },
   card: { display: "flex", justifyContent: "space-between", alignItems: "center", background: "#fff", border: "1px solid #e2e8f0", borderRadius: 12, padding: "16px 20px", gap: 16, flexWrap: "wrap" },
   cardMain: { flex: 1, minWidth: 220 },

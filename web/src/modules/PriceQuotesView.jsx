@@ -3,6 +3,7 @@ import { collection, query, where, getDocs, doc, getDoc } from "firebase/firesto
 import { httpsCallable } from "firebase/functions";
 import { db, auth, functions } from "../firebase";
 import { printQuote } from "../quotePrint";
+import { useIsMobile } from "../useIsMobile";
 
 /* ============================================================
    عرض السعر المفصّل — قسم المبيعات (المرحلة ١ من دورة العقود)
@@ -33,6 +34,7 @@ function fmtDateTime(millis) {
 }
 
 export default function PriceQuotesView() {
+  const isMobile = useIsMobile();
   const [tenantId, setTenantId] = useState("");
   const [quotes, setQuotes] = useState([]);
   const [customers, setCustomers] = useState([]);
@@ -43,6 +45,8 @@ export default function PriceQuotesView() {
   const [error, setError] = useState("");
   const [showForm, setShowForm] = useState(false);
   const [editingQuote, setEditingQuote] = useState(null);
+  const [search, setSearch] = useState("");
+  const [statusFilter, setStatusFilter] = useState("");
   const [activeQuote, setActiveQuote] = useState(null);
 
   useEffect(() => {
@@ -82,8 +86,22 @@ export default function PriceQuotesView() {
     } finally { setLoading(false); }
   }
 
+  const filteredQuotes = useMemo(() => {
+    return quotes.filter((q) => {
+      if (statusFilter && q.status !== statusFilter) return false;
+      if (search.trim()) {
+        const s = search.trim().toLowerCase();
+        const num = String(q.quoteNumber || "");
+        const cust = (q.customerName || "").toLowerCase();
+        const ref = (q.financeRefNumber || "").toLowerCase();
+        if (!num.includes(s) && !cust.includes(s) && !ref.includes(s)) return false;
+      }
+      return true;
+    });
+  }, [quotes, search, statusFilter]);
+
   return (
-    <div style={styles.page}>
+    <div style={{ ...styles.page, ...(isMobile ? { padding: "16px 14px 30px" } : {}) }}>
       <div style={styles.topRow}>
         <div>
           <h1 style={styles.pageTitle}>عروض الأسعار</h1>
@@ -99,28 +117,65 @@ export default function PriceQuotesView() {
           {quotes.length === 0 ? (
             <div style={styles.emptyBox}>لا توجد عروض أسعار. أنشئ عرضًا جديدًا.</div>
           ) : (
-            <div style={styles.tableCard}>
-              <div style={styles.tableHead}>
-                <span>الرقم</span>
-                <span>العميل</span>
-                <span style={styles.thNum}>الإجمالي</span>
-                <span style={styles.thCenter}>الحالة</span>
-                <span style={styles.thCenter}>التاريخ</span>
+            <>
+              {/* شريط البحث والفلترة */}
+              <div style={styles.toolbar}>
+                <input style={styles.searchInput} value={search} onChange={(e) => setSearch(e.target.value)} placeholder="🔍 بحث برقم العرض أو اسم العميل أو المرجع..." />
+                <select style={styles.filterSelect} value={statusFilter} onChange={(e) => setStatusFilter(e.target.value)}>
+                  <option value="">كل الحالات</option>
+                  {Object.keys(STATUS_INFO).map((k) => <option key={k} value={k}>{STATUS_INFO[k].label}</option>)}
+                </select>
+                <span style={styles.resultCount}>{filteredQuotes.length} من {quotes.length}</span>
               </div>
-              {quotes.map((q) => {
-                const st = STATUS_INFO[q.status] || STATUS_INFO.draft;
-                const createdMs = q.createdAt && q.createdAt._seconds ? q.createdAt._seconds * 1000 : null;
-                return (
-                  <div key={q.id} style={{ ...styles.tableRow, cursor: "pointer" }} onClick={() => setActiveQuote(q)}>
-                    <span style={styles.tdNum}>#{q.quoteNumber}</span>
-                    <span style={styles.tdName}>{q.customerName || "—"}</span>
-                    <span style={styles.tdMoney} dir="ltr">{fmt(q.total)} ر.س</span>
-                    <span style={styles.thCenter}><span style={{ ...styles.badge, color: st.color, background: st.bg }}>{st.label}</span></span>
-                    <span style={styles.tdDate}>{fmtDateTime(createdMs)}</span>
+
+              {filteredQuotes.length === 0 ? (
+                <div style={styles.emptyBox}>لا توجد نتائج مطابقة.</div>
+              ) : isMobile ? (
+                /* عرض بطاقات على الجوال */
+                <div style={styles.mobileList}>
+                  {filteredQuotes.map((q) => {
+                    const st = STATUS_INFO[q.status] || STATUS_INFO.draft;
+                    const createdMs = q.createdAt && q.createdAt._seconds ? q.createdAt._seconds * 1000 : null;
+                    return (
+                      <div key={q.id} style={styles.mobileCard} onClick={() => setActiveQuote(q)}>
+                        <div style={styles.mobileCardTop}>
+                          <span style={styles.tdNum}>#{q.quoteNumber}</span>
+                          <span style={{ ...styles.badge, color: st.color, background: st.bg }}>{st.label}</span>
+                        </div>
+                        <div style={styles.mobileCardName}>{q.customerName || "—"}</div>
+                        <div style={styles.mobileCardBot}>
+                          <span dir="ltr" style={styles.mobileCardMoney}>{fmt(q.total)} ر.س</span>
+                          <span style={styles.tdDate}>{fmtDateTime(createdMs)}</span>
+                        </div>
+                      </div>
+                    );
+                  })}
+                </div>
+              ) : (
+                <div style={styles.tableCard}>
+                  <div style={styles.tableHead}>
+                    <span>الرقم</span>
+                    <span>العميل</span>
+                    <span style={styles.thNum}>الإجمالي</span>
+                    <span style={styles.thCenter}>الحالة</span>
+                    <span style={styles.thCenter}>التاريخ</span>
                   </div>
-                );
-              })}
-            </div>
+                  {filteredQuotes.map((q) => {
+                    const st = STATUS_INFO[q.status] || STATUS_INFO.draft;
+                    const createdMs = q.createdAt && q.createdAt._seconds ? q.createdAt._seconds * 1000 : null;
+                    return (
+                      <div key={q.id} style={{ ...styles.tableRow, cursor: "pointer" }} onClick={() => setActiveQuote(q)}>
+                        <span style={styles.tdNum}>#{q.quoteNumber}</span>
+                        <span style={styles.tdName}>{q.customerName || "—"}</span>
+                        <span style={styles.tdMoney} dir="ltr">{fmt(q.total)} ر.س</span>
+                        <span style={styles.thCenter}><span style={{ ...styles.badge, color: st.color, background: st.bg }}>{st.label}</span></span>
+                        <span style={styles.tdDate}>{fmtDateTime(createdMs)}</span>
+                      </div>
+                    );
+                  })}
+                </div>
+              )}
+            </>
           )}
         </>
       )}
@@ -711,6 +766,16 @@ const styles = {
   emptyBox: { padding: "40px 20px", textAlign: "center", background: "#fff", border: "1px solid #e2e8f0", borderRadius: 12, color: "#94a3b8", fontSize: 15 },
 
   tableCard: { background: "#fff", border: "1px solid #e2e8f0", borderRadius: 12, overflow: "hidden" },
+  toolbar: { display: "flex", gap: 12, marginBottom: 14, flexWrap: "wrap", alignItems: "center" },
+  searchInput: { flex: 1, minWidth: 220, padding: "10px 14px", fontSize: 14, border: "1px solid #cbd5e1", borderRadius: 8, fontFamily: "inherit", boxSizing: "border-box" },
+  filterSelect: { padding: "10px 14px", fontSize: 14, border: "1px solid #cbd5e1", borderRadius: 8, fontFamily: "inherit", background: "#fff", cursor: "pointer" },
+  resultCount: { fontSize: 13, color: "#94a3b8", fontWeight: 600 },
+  mobileList: { display: "flex", flexDirection: "column", gap: 10 },
+  mobileCard: { background: "#fff", border: "1px solid #e2e8f0", borderRadius: 12, padding: "14px 16px", cursor: "pointer" },
+  mobileCardTop: { display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 8 },
+  mobileCardName: { fontSize: 15, fontWeight: 700, color: "#0f172a", marginBottom: 10 },
+  mobileCardBot: { display: "flex", justifyContent: "space-between", alignItems: "center" },
+  mobileCardMoney: { fontSize: 15, fontWeight: 700, color: "#4f46e5", fontFamily: "monospace" },
   tableHead: { display: "grid", gridTemplateColumns: "0.8fr 1.6fr 1.2fr 1.2fr 1.3fr", gap: 8, padding: "13px 20px", borderBottom: "2px solid #f1f5f9", fontSize: 12, color: "#64748b", fontWeight: 700 },
   thNum: { textAlign: "left" },
   thCenter: { textAlign: "center" },

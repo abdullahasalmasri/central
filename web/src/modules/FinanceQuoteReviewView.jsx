@@ -3,6 +3,7 @@ import { doc, getDoc } from "firebase/firestore";
 import { httpsCallable } from "firebase/functions";
 import { db, auth, functions } from "../firebase";
 import { printQuote } from "../quotePrint";
+import { useIsMobile } from "../useIsMobile";
 
 /* ============================================================
    مراجعة المالية لعروض الأسعار (المرحلة ١ من الدورة)
@@ -14,6 +15,7 @@ const fmt = (n) => (Math.round((Number(n) || 0) * 100) / 100).toLocaleString("en
 const genderLabel = (g) => (g === "male" ? "ذكر" : g === "female" ? "أنثى" : "—");
 
 export default function FinanceQuoteReviewView() {
+  const isMobile = useIsMobile();
   const [tab, setTab] = useState("pending"); // pending | reviewed
   const [quotes, setQuotes] = useState([]);
   const [reviewed, setReviewed] = useState([]);
@@ -53,7 +55,7 @@ export default function FinanceQuoteReviewView() {
   }
 
   return (
-    <div style={styles.page}>
+    <div style={{ ...styles.page, ...(isMobile ? { padding: "16px 14px 30px" } : {}) }}>
       <div style={styles.topRow}>
         <div>
           <h1 style={styles.pageTitle}>مراجعة عروض الأسعار</h1>
