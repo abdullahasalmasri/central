@@ -84,6 +84,7 @@ const NAV = [
     { id: "leg_con", name: "العقود",             file: "ContractsView.jsx" },
     { id: "leg_pcon", name: "عقود المشاريع", file: "ProjectContractsView.jsx" },
     { id: "leg_sign", name: "توقيعات العقود", file: "ContractSignaturesView.jsx" },
+    { id: "leg_tpl", name: "قوالب العقود", file: "ContractTemplatesView.jsx" },
     { id: "leg_com", name: "الامتثال والتراخيص", file: "ComplianceView.jsx" },
     { id: "leg_dis", name: "المنازعات",          file: "DisputesView.jsx" },
   ]},

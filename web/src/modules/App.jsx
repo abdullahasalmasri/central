@@ -52,6 +52,7 @@ import FinalApprovalView        from "./FinalApprovalView";
 import ProjectContractsView     from "./ProjectContractsView";
 import AssetBeneficiariesView   from "./AssetBeneficiariesView";
 import ContractSignaturesView   from "./ContractSignaturesView";
+import ContractTemplatesView    from "./ContractTemplatesView";
 import MarketingView            from "./MarketingView";
 import CustomerServiceView      from "./CustomerServiceView";
 import ContractsView            from "./ContractsView";
@@ -125,6 +126,7 @@ const views = {
   leg_con:       ContractsView,
   leg_pcon:      ProjectContractsView,
   leg_sign:      ContractSignaturesView,
+  leg_tpl:       ContractTemplatesView,
   leg_com:       ComplianceView,
   leg_dis:       DisputesView,
 

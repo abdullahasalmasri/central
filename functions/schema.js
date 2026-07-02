@@ -52,6 +52,7 @@ const COLLECTIONS = {
   TICKETS: "tickets",
   INTERACTIONS: "interactions",
   CONTRACTS: "contracts",
+  CONTRACT_TEMPLATES: "contractTemplates",
   LICENSES: "licenses",
   DISPUTES: "disputes",
   AUDITS: "audits",
@@ -2179,7 +2180,7 @@ function buildContractDoc({
   startDate, endDate, status, autoRenew, notes,
   projectId, projectNumber, sourceQuoteId, sourceQuoteNumber,
   customerId, poNumber, laborSummary, companySnapshot, clientSnapshot, preamble,
-  signatureStage,
+  templateId, bodyText, signatureStage,
   createdBy, createdAt,
 }) {
   return {
@@ -2205,6 +2206,8 @@ function buildContractDoc({
     companySnapshot: companySnapshot || null,   // بيانات الشركة وقت الإصدار
     clientSnapshot: clientSnapshot || null,     // بيانات العميل وقت الإصدار
     preamble: preamble || null,                 // التمهيد النصّي
+    templateId: templateId || null,             // القالب المستخدم (١)
+    bodyText: bodyText || null,                 // نص البنود المعبّأ من القالب
     // سلسلة توقيعات العقد (٢)
     signatureStage: signatureStage || "issued", // issued/pending_client/pending_contracts/pending_finance/pending_projects/active
     sentToClientAt: null,
@@ -2214,6 +2217,19 @@ function buildContractDoc({
     projectsSignedAt: null, projectsSignedBy: null,
     createdBy: createdBy || null,
     createdAt: createdAt,
+  };
+}
+
+// قالب عقد قابل لإعادة الاستخدام (١) — نص ببنود ومتغيّرات
+function buildContractTemplateDoc({ tenantId, name, body, status, createdBy, createdAt }) {
+  return {
+    tenantId: tenantId,
+    name: (name || "").trim(),
+    body: body || "",                 // النص مع متغيّرات مثل {company_name}
+    status: status === "inactive" ? "inactive" : "active",
+    createdBy: createdBy || null,
+    createdAt: createdAt,
+    updatedAt: createdAt,
   };
 }
 

@@ -13027,6 +13027,24 @@ exports.createContractFromProject = onCall(async (request) => {
       `لتوريد العمالة المبيّنة في هذا العقد وفق الشروط المتفق عليها.`;
 
     const contractName = nameIn || `عقد توريد عمالة — ${project.name}`;
+
+    // تعبئة القالب (إن اختير)
+    const templateId = typeof data.templateId === "string" ? data.templateId.trim() : "";
+    let bodyText = null;
+    if (templateId) {
+      const tplSnap = await db.collection(COLLECTIONS.CONTRACT_TEMPLATES).doc(templateId).get();
+      if (tplSnap.exists && tplSnap.data().tenantId === callerTenantId) {
+        const today2 = new Date().toISOString().slice(0, 10);
+        bodyText = fillContractTemplate(tplSnap.data().body, {
+          company_name: companySnapshot.name, company_tax: companySnapshot.taxNumber, company_cr: companySnapshot.crNumber,
+          client_name: (clientSnapshot && clientSnapshot.name) || project.customerName,
+          client_tax: clientSnapshot && clientSnapshot.taxNumber, client_cr: clientSnapshot && clientSnapshot.crNumber,
+          quote_number: project.sourceQuoteNumber, po_number: project.poNumber,
+          start_date: startIn || project.startDate, end_date: endIn || project.endDate,
+          total_value: contractValue, project_name: project.name, today: today2,
+        });
+      }
+    }
     const contractRef = db.collection(COLLECTIONS.CONTRACTS).doc();
 
     const result = await db.runTransaction(async (tx) => {
@@ -13049,6 +13067,7 @@ exports.createContractFromProject = onCall(async (request) => {
         customerId: project.customerId || null,
         poNumber: project.poNumber || null,
         laborSummary, companySnapshot, clientSnapshot, preamble,
+        templateId: templateId || null, bodyText,
         createdBy: request.auth.uid,
         createdAt: FieldValue.serverTimestamp(),
       });
@@ -13224,5 +13243,96 @@ exports.getContractsForSignature = onCall(async (request) => {
     if (err instanceof HttpsError) throw err;
     console.error("getContractsForSignature failed:", err);
     throw new HttpsError("internal", "تعذّر تحميل العقود.");
+  }
+});
+
+// ═══════════════════════════════════════════════════════
+// ===== قوالب العقود القابلة لإعادة الاستخدام (١) =====
+// ═══════════════════════════════════════════════════════
+
+// تعبئة قالب: استبدال {key} بالقيم الفعلية
+function fillContractTemplate(body, vars) {
+  if (!body) return "";
+  let out = body;
+  for (const key of Object.keys(vars)) {
+    const val = vars[key];
+    out = out.split("{" + key + "}").join(val != null && val !== "" ? String(val) : "—");
+  }
+  return out;
+}
+
+exports.createContractTemplate = onCall(async (request) => {
+  try {
+    const callerTenantId = await requireModule(request.auth, MODULES.LEGAL);
+    const data = request.data || {};
+    const name = typeof data.name === "string" ? data.name.trim() : "";
+    const body = typeof data.body === "string" ? data.body : "";
+    if (!name) throw new HttpsError("invalid-argument", "يجب إدخال اسم القالب.");
+    if (!body.trim()) throw new HttpsError("invalid-argument", "يجب إدخال نص القالب.");
+    const ref = db.collection(COLLECTIONS.CONTRACT_TEMPLATES).doc();
+    await ref.set(buildContractTemplateDoc({
+      tenantId: callerTenantId, name, body, status: "active",
+      createdBy: request.auth.uid, createdAt: FieldValue.serverTimestamp(),
+    }));
+    return { id: ref.id };
+  } catch (err) {
+    if (err instanceof HttpsError) throw err;
+    console.error("createContractTemplate failed:", err);
+    throw new HttpsError("internal", "تعذّر إنشاء القالب.");
+  }
+});
+
+exports.getContractTemplates = onCall(async (request) => {
+  try {
+    const callerTenantId = await requireModule(request.auth, MODULES.LEGAL);
+    const snap = await db.collection(COLLECTIONS.CONTRACT_TEMPLATES)
+      .where("tenantId", "==", callerTenantId).get();
+    const templates = snap.docs.map((d) => ({ id: d.id, ...d.data() }))
+      .filter((t) => t.status !== "inactive");
+    templates.sort((a, b) => (a.name || "").localeCompare(b.name || "", "ar"));
+    return { templates };
+  } catch (err) {
+    if (err instanceof HttpsError) throw err;
+    console.error("getContractTemplates failed:", err);
+    throw new HttpsError("internal", "تعذّر تحميل القوالب.");
+  }
+});
+
+exports.updateContractTemplate = onCall(async (request) => {
+  try {
+    const callerTenantId = await requireModule(request.auth, MODULES.LEGAL);
+    const data = request.data || {};
+    const templateId = typeof data.templateId === "string" ? data.templateId.trim() : "";
+    if (!templateId) throw new HttpsError("invalid-argument", "يجب تحديد القالب.");
+    const ref = db.collection(COLLECTIONS.CONTRACT_TEMPLATES).doc(templateId);
+    const snap = await ref.get();
+    if (!snap.exists || snap.data().tenantId !== callerTenantId) throw new HttpsError("invalid-argument", "القالب غير موجود.");
+    const updates = { updatedAt: FieldValue.serverTimestamp() };
+    if (typeof data.name === "string" && data.name.trim()) updates.name = data.name.trim();
+    if (typeof data.body === "string") updates.body = data.body;
+    await ref.update(updates);
+    return { id: templateId };
+  } catch (err) {
+    if (err instanceof HttpsError) throw err;
+    console.error("updateContractTemplate failed:", err);
+    throw new HttpsError("internal", "تعذّر تحديث القالب.");
+  }
+});
+
+exports.deleteContractTemplate = onCall(async (request) => {
+  try {
+    const callerTenantId = await requireModule(request.auth, MODULES.LEGAL);
+    const data = request.data || {};
+    const templateId = typeof data.templateId === "string" ? data.templateId.trim() : "";
+    if (!templateId) throw new HttpsError("invalid-argument", "يجب تحديد القالب.");
+    const ref = db.collection(COLLECTIONS.CONTRACT_TEMPLATES).doc(templateId);
+    const snap = await ref.get();
+    if (!snap.exists || snap.data().tenantId !== callerTenantId) throw new HttpsError("invalid-argument", "القالب غير موجود.");
+    await ref.update({ status: "inactive", updatedAt: FieldValue.serverTimestamp() }); // حذف ناعم
+    return { id: templateId, deleted: true };
+  } catch (err) {
+    if (err instanceof HttpsError) throw err;
+    console.error("deleteContractTemplate failed:", err);
+    throw new HttpsError("internal", "تعذّر حذف القالب.");
   }
 });

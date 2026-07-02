@@ -90,6 +90,7 @@ const T = {
   leg_pcon: { ar: "عقود المشاريع", en: "Project Contracts", ur: "پروجیکٹ معاہدے", tl: "Mga Kontrata ng Proyekto" },
   as_ben: { ar: "ربط السكن والمواصلات", en: "Housing & Transport Links", ur: "رہائش اور ٹرانسپورٹ لنکس", tl: "Mga Link sa Tirahan at Transportasyon" },
   leg_sign: { ar: "توقيعات العقود", en: "Contract Signatures", ur: "معاہدے کے دستخط", tl: "Mga Lagda ng Kontrata" },
+  leg_tpl: { ar: "قوالب العقود", en: "Contract Templates", ur: "معاہدے کے ٹیمپلیٹس", tl: "Mga Template ng Kontrata" },
 
   // ===== أقسام الموارد البشرية =====
   hr_emp: { ar: "شؤون الموظفين", en: "Employees", ur: "ملازمین", tl: "Mga Empleyado" },

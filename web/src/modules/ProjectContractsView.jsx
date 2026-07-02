@@ -23,6 +23,8 @@ export default function ProjectContractsView() {
   const [cStart, setCStart] = useState("");
   const [cEnd, setCEnd] = useState("");
   const [viewContract, setViewContract] = useState(null); // عقد معروض
+  const [templates, setTemplates] = useState([]);
+  const [cTemplate, setCTemplate] = useState("");
 
   useEffect(() => { load(); }, []);
 
@@ -36,6 +38,11 @@ export default function ProjectContractsView() {
       setProjects((pr.data && pr.data.projects) || []);
       const all = (cr.data && cr.data.contracts) || [];
       setContracts(all.filter((c) => c.projectId)); // عقود المشاريع فقط
+      // القوالب (اختياري — قد لا تكون للمستخدم صلاحية)
+      try {
+        const tr = await httpsCallable(functions, "getContractTemplates")({});
+        setTemplates((tr.data && tr.data.templates) || []);
+      } catch (_) { setTemplates([]); }
     } catch (e) {
       setError(e.message || "تعذّر التحميل.");
     } finally { setLoading(false); }
@@ -47,6 +54,7 @@ export default function ProjectContractsView() {
     try {
       const res = await httpsCallable(functions, "createContractFromProject")({
         projectId: issueFor.id, name: cName.trim(), startDate: cStart, endDate: cEnd,
+        templateId: cTemplate || undefined,
       });
       setMsg(`صدر العقد رقم ${res.data.contractNumber}.`);
       setIssueFor(null); setCName(""); setCStart(""); setCEnd("");
@@ -96,7 +104,7 @@ export default function ProjectContractsView() {
                 </div>
                 <div style={styles.cardMeta}>العميل: {p.customerName || "—"}{p.poNumber ? ` · أمر شراء: ${p.poNumber}` : ""}</div>
               </div>
-              <button style={styles.issueBtn} onClick={() => { setIssueFor(p); setCName(`عقد توريد عمالة — ${p.name}`); setCStart(p.startDate || ""); setCEnd(p.endDate || ""); }} disabled={busy === p.id}>
+              <button style={styles.issueBtn} onClick={() => { setIssueFor(p); setCName(`عقد توريد عمالة — ${p.name}`); setCStart(p.startDate || ""); setCEnd(p.endDate || ""); setCTemplate(""); }} disabled={busy === p.id}>
                 📄 إصدار عقد
               </button>
             </div>
@@ -147,6 +155,11 @@ export default function ProjectContractsView() {
                 </div>
               </div>
               <p style={styles.autoNote}>سيُعبّأ العقد تلقائيًا ببيانات الشركة والعميل وجدول العمالة من العرض.</p>
+              <label style={styles.fieldLabel}>قالب البنود (اختياري)</label>
+              <select style={styles.input} value={cTemplate} onChange={(e) => setCTemplate(e.target.value)} disabled={busy}>
+                <option value="">بدون قالب</option>
+                {templates.map((t) => <option key={t.id} value={t.id}>{t.name}</option>)}
+              </select>
             </div>
             <div style={styles.modalFoot}>
               <button style={styles.cancelBtn} onClick={() => setIssueFor(null)} disabled={busy}>إلغاء</button>
@@ -189,6 +202,7 @@ function ContractView({ contract, onClose }) {
           <span class="pv">الرقم الضريبي: ${client.taxNumber || "—"} | السجل: ${client.crNumber || "—"}</span></div>
       </div>
       <h2>التمهيد</h2><p>${c.preamble || "—"}</p>
+      ${c.bodyText ? `<h2>بنود العقد</h2><p style="white-space:pre-wrap">${c.bodyText}</p>` : ""}
       <h2>العمالة المتعاقد عليها</h2>
       <table><thead><tr><th>الجنس</th><th>الجنسية</th><th>المهنة</th><th>العدد</th><th>سعر الوحدة (ر.س)</th></tr></thead><tbody>${rows}</tbody></table>
       <h2>القيمة والمدة</h2>
@@ -228,6 +242,13 @@ function ContractView({ contract, onClose }) {
 
           <h3 style={styles.contractH}>التمهيد</h3>
           <p style={styles.preambleText}>{c.preamble || "—"}</p>
+
+          {c.bodyText ? (
+            <>
+              <h3 style={styles.contractH}>بنود العقد</h3>
+              <p style={styles.preambleText}>{c.bodyText}</p>
+            </>
+          ) : null}
 
           <h3 style={styles.contractH}>العمالة المتعاقد عليها</h3>
           <div style={styles.tableWrap}>
