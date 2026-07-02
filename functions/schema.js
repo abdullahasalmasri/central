@@ -2179,6 +2179,7 @@ function buildContractDoc({
   startDate, endDate, status, autoRenew, notes,
   projectId, projectNumber, sourceQuoteId, sourceQuoteNumber,
   customerId, poNumber, laborSummary, companySnapshot, clientSnapshot, preamble,
+  signatureStage,
   createdBy, createdAt,
 }) {
   return {
@@ -2204,6 +2205,13 @@ function buildContractDoc({
     companySnapshot: companySnapshot || null,   // بيانات الشركة وقت الإصدار
     clientSnapshot: clientSnapshot || null,     // بيانات العميل وقت الإصدار
     preamble: preamble || null,                 // التمهيد النصّي
+    // سلسلة توقيعات العقد (٢)
+    signatureStage: signatureStage || "issued", // issued/pending_client/pending_contracts/pending_finance/pending_projects/active
+    sentToClientAt: null,
+    clientSignedAt: null, clientSignedBy: null,
+    contractsSignedAt: null, contractsSignedBy: null,
+    financeSignedAt: null, financeSignedBy: null,
+    projectsSignedAt: null, projectsSignedBy: null,
     createdBy: createdBy || null,
     createdAt: createdAt,
   };

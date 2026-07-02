@@ -13090,3 +13090,139 @@ exports.getContractDetail = onCall(async (request) => {
     throw new HttpsError("internal", "تعذّر تحميل العقد.");
   }
 });
+
+// ═══════════════════════════════════════════════════════
+// ===== سلسلة توقيعات العقد =====
+// العقود → المبيعات → العميل → العقود → المالية → المشاريع
+// المراحل: issued → pending_client → pending_contracts → pending_finance → pending_projects → active
+// ═══════════════════════════════════════════════════════
+
+// خريطة المرحلة: من يوقّع + المرحلة التالية + قسم الإشعار
+const SIG_FLOW = {
+  pending_contracts: { module: "legal", field: "contractsSigned", next: "pending_finance", notifyModule: "finance", label: "توقيع إدارة العقود" },
+  pending_finance: { module: "finance", field: "financeSigned", next: "pending_projects", notifyModule: "projects", label: "توقيع المالية" },
+  pending_projects: { module: "projects", field: "projectsSigned", next: "active", notifyModule: "legal", label: "توقيع المشاريع" },
+};
+
+// إرسال العقد للعميل للتوقيع (المبيعات) — issued → pending_client
+exports.sendContractToClient = onCall(async (request) => {
+  try {
+    const callerTenantId = await requireModule(request.auth, MODULES.SALES);
+    const data = request.data || {};
+    const contractId = typeof data.contractId === "string" ? data.contractId.trim() : "";
+    if (!contractId) throw new HttpsError("invalid-argument", "يجب تحديد العقد.");
+    const ref = db.collection(COLLECTIONS.CONTRACTS).doc(contractId);
+    const snap = await ref.get();
+    if (!snap.exists || snap.data().tenantId !== callerTenantId) throw new HttpsError("invalid-argument", "العقد غير موجود.");
+    const stage = snap.data().signatureStage || "issued";
+    if (stage !== "issued") throw new HttpsError("failed-precondition", "لا يمكن إرسال هذا العقد للتوقيع في مرحلته الحالية.");
+    await ref.update({ signatureStage: "pending_client", sentToClientAt: FieldValue.serverTimestamp(), updatedAt: FieldValue.serverTimestamp() });
+    return { id: contractId, signatureStage: "pending_client" };
+  } catch (err) {
+    if (err instanceof HttpsError) throw err;
+    console.error("sendContractToClient failed:", err);
+    throw new HttpsError("internal", "تعذّر إرسال العقد للعميل.");
+  }
+});
+
+// تسجيل توقيع العميل (المبيعات) — pending_client → pending_contracts + إشعار العقود
+exports.recordClientSignature = onCall(async (request) => {
+  try {
+    const callerTenantId = await requireModule(request.auth, MODULES.SALES);
+    const data = request.data || {};
+    const contractId = typeof data.contractId === "string" ? data.contractId.trim() : "";
+    if (!contractId) throw new HttpsError("invalid-argument", "يجب تحديد العقد.");
+    const ref = db.collection(COLLECTIONS.CONTRACTS).doc(contractId);
+    const snap = await ref.get();
+    if (!snap.exists || snap.data().tenantId !== callerTenantId) throw new HttpsError("invalid-argument", "العقد غير موجود.");
+    if ((snap.data().signatureStage || "") !== "pending_client") throw new HttpsError("failed-precondition", "العقد ليس بانتظار توقيع العميل.");
+    await ref.update({
+      signatureStage: "pending_contracts",
+      clientSignedAt: FieldValue.serverTimestamp(),
+      clientSignedBy: request.auth.uid,
+      updatedAt: FieldValue.serverTimestamp(),
+    });
+    await createNotification({
+      tenantId: callerTenantId, targetModule: MODULES.LEGAL, type: "contract_signature",
+      title: "عقد بانتظار توقيع إدارة العقود",
+      message: `العقد #${snap.data().contractNumber} وقّعه العميل. بانتظار توقيع إدارة العقود.`,
+      relatedType: "contract", relatedId: contractId, createdBy: request.auth.uid,
+    });
+    return { id: contractId, signatureStage: "pending_contracts" };
+  } catch (err) {
+    if (err instanceof HttpsError) throw err;
+    console.error("recordClientSignature failed:", err);
+    throw new HttpsError("internal", "تعذّر تسجيل توقيع العميل.");
+  }
+});
+
+// توقيع داخلي (العقود/المالية/المشاريع حسب المرحلة) → المرحلة التالية + إشعار
+exports.signContractInternal = onCall(async (request) => {
+  try {
+    const auth = request.auth;
+    if (!auth) throw new HttpsError("unauthenticated", "يجب تسجيل الدخول.");
+    const callerTenantId = auth.token.tenantId;
+    if (!callerTenantId) throw new HttpsError("failed-precondition", "حسابك غير مرتبط بشركة.");
+    const data = request.data || {};
+    const contractId = typeof data.contractId === "string" ? data.contractId.trim() : "";
+    if (!contractId) throw new HttpsError("invalid-argument", "يجب تحديد العقد.");
+
+    const ref = db.collection(COLLECTIONS.CONTRACTS).doc(contractId);
+    const snap = await ref.get();
+    if (!snap.exists || snap.data().tenantId !== callerTenantId) throw new HttpsError("invalid-argument", "العقد غير موجود.");
+    const stage = snap.data().signatureStage || "";
+    const flow = SIG_FLOW[stage];
+    if (!flow) throw new HttpsError("failed-precondition", "العقد ليس في مرحلة توقيع داخلي.");
+
+    // تحقّق أن المستخدم يملك صلاحية القسم المطلوب
+    await requireModule(auth, flow.module);
+
+    const updates = {
+      signatureStage: flow.next,
+      [`${flow.field}At`]: FieldValue.serverTimestamp(),
+      [`${flow.field}By`]: auth.uid,
+      updatedAt: FieldValue.serverTimestamp(),
+    };
+    if (flow.next === "active") updates.status = CONTRACT_STATUS.ACTIVE;
+    await ref.update(updates);
+
+    // إشعار القسم التالي (أو تأكيد اكتمال للعقود)
+    const done = flow.next === "active";
+    await createNotification({
+      tenantId: callerTenantId, targetModule: flow.notifyModule,
+      type: done ? "contract_active" : "contract_signature",
+      title: done ? "اكتمل توقيع العقد — أصبح نافذًا" : "عقد بانتظار توقيعك",
+      message: done
+        ? `العقد #${snap.data().contractNumber} اكتملت جميع توقيعاته وأصبح نافذًا.`
+        : `العقد #${snap.data().contractNumber}: تم ${flow.label}. بانتظار التوقيع التالي.`,
+      relatedType: "contract", relatedId: contractId, createdBy: auth.uid,
+    });
+    return { id: contractId, signatureStage: flow.next };
+  } catch (err) {
+    if (err instanceof HttpsError) throw err;
+    console.error("signContractInternal failed:", err);
+    throw new HttpsError("internal", "تعذّر تسجيل التوقيع.");
+  }
+});
+
+// العقود بانتظار توقيع المستخدم الحالي (حسب دوره) + عقود قيد السلسلة للمتابعة
+exports.getContractsForSignature = onCall(async (request) => {
+  try {
+    const auth = request.auth;
+    if (!auth) throw new HttpsError("unauthenticated", "يجب تسجيل الدخول.");
+    const callerTenantId = auth.token.tenantId;
+    if (!callerTenantId) throw new HttpsError("failed-precondition", "حسابك غير مرتبط بشركة.");
+
+    const snap = await db.collection(COLLECTIONS.CONTRACTS)
+      .where("tenantId", "==", callerTenantId)
+      .get();
+    const all = snap.docs.map((d) => ({ id: d.id, ...d.data() }))
+      .filter((c) => c.signatureStage && c.signatureStage !== "active");
+    all.sort((a, b) => (b.contractNumber || 0) - (a.contractNumber || 0));
+    return { contracts: all };
+  } catch (err) {
+    if (err instanceof HttpsError) throw err;
+    console.error("getContractsForSignature failed:", err);
+    throw new HttpsError("internal", "تعذّر تحميل العقود.");
+  }
+});

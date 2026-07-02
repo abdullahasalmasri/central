@@ -83,6 +83,7 @@ const NAV = [
   { type: "section", id: "legal", name: "القانونية والامتثال", icon: Scale, color: "#78716c", children: [
     { id: "leg_con", name: "العقود",             file: "ContractsView.jsx" },
     { id: "leg_pcon", name: "عقود المشاريع", file: "ProjectContractsView.jsx" },
+    { id: "leg_sign", name: "توقيعات العقود", file: "ContractSignaturesView.jsx" },
     { id: "leg_com", name: "الامتثال والتراخيص", file: "ComplianceView.jsx" },
     { id: "leg_dis", name: "المنازعات",          file: "DisputesView.jsx" },
   ]},
