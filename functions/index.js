@@ -13364,3 +13364,116 @@ exports.getReviewedQuotes = onCall(async (request) => {
     throw new HttpsError("internal", "تعذّر تحميل العروض المعتمدة.");
   }
 });
+
+// ═══════════════════════════════════════════════════════
+// ===== تعديل العرض (مسودة) + نسخة جديدة (٥) =====
+// ═══════════════════════════════════════════════════════
+
+// تعديل عرض سعر — مسودة فقط (قبل الإرسال للمالية)
+exports.updatePriceQuote = onCall(async (request) => {
+  try {
+    const callerTenantId = await requireModule(request.auth, MODULES.SALES);
+    const data = request.data || {};
+    const quoteId = typeof data.quoteId === "string" ? data.quoteId.trim() : "";
+    if (!quoteId) throw new HttpsError("invalid-argument", "يجب تحديد العرض.");
+
+    const ref = db.collection(COLLECTIONS.PRICE_QUOTES).doc(quoteId);
+    const snap = await ref.get();
+    if (!snap.exists || snap.data().tenantId !== callerTenantId) throw new HttpsError("invalid-argument", "العرض غير موجود.");
+    if (snap.data().status !== PQS.DRAFT) {
+      throw new HttpsError("failed-precondition", "لا يمكن تعديل العرض بعد إرساله. أنشئ نسخة جديدة بدلاً من ذلك.");
+    }
+
+    // العميل
+    const customerId = typeof data.customerId === "string" ? data.customerId.trim() : "";
+    let customerName = null;
+    if (customerId) {
+      const custDoc = await db.collection(COLLECTIONS.CUSTOMERS).doc(customerId).get();
+      if (!custDoc.exists || custDoc.data().tenantId !== callerTenantId) throw new HttpsError("invalid-argument", "العميل غير موجود.");
+      customerName = custDoc.data().name || null;
+    }
+
+    const laborItems = Array.isArray(data.laborItems) ? data.laborItems : [];
+    const equipmentItems = Array.isArray(data.equipmentItems) ? data.equipmentItems : [];
+    if (laborItems.length === 0 && equipmentItems.length === 0) throw new HttpsError("invalid-argument", "أضف بندًا واحدًا على الأقل.");
+
+    const vatRate = data.vatRate !== undefined ? Number(data.vatRate) : QUOTE_VAT_RATE;
+    const totals = computePQTotals(laborItems, equipmentItems, vatRate);
+    const willSubmit = data.submit === true;
+
+    const updates = {
+      customerId: customerId || null,
+      customerName,
+      laborItems: totals.laborItems,
+      equipmentItems: totals.equipmentItems,
+      subtotal: totals.subtotal,
+      vatRate: totals.vatRate,
+      taxAmount: totals.taxAmount,
+      total: totals.total,
+      validityDays: data.validityDays !== undefined ? Number(data.validityDays) : (snap.data().validityDays || 14),
+      status: willSubmit ? PQS.PENDING_FINANCE : PQS.DRAFT,
+      updatedAt: FieldValue.serverTimestamp(),
+    };
+    await ref.update(updates);
+
+    if (willSubmit) {
+      await createNotification({
+        tenantId: callerTenantId, targetModule: MODULES.FINANCE, type: "quote_pending",
+        title: "عرض سعر بانتظار المراجعة",
+        message: `عرض السعر #${snap.data().quoteNumber} بانتظار مراجعتك واعتماده.`,
+        relatedType: "price_quote", relatedId: quoteId, createdBy: request.auth.uid,
+      });
+    }
+    return { id: quoteId, status: updates.status, ...totals };
+  } catch (err) {
+    if (err instanceof HttpsError) throw err;
+    console.error("updatePriceQuote failed:", err);
+    throw new HttpsError("internal", "تعذّر تحديث العرض.");
+  }
+});
+
+// نسخة جديدة من عرض (من أي حالة) → مسودة جديدة برقم جديد
+exports.duplicatePriceQuote = onCall(async (request) => {
+  try {
+    const callerTenantId = await requireModule(request.auth, MODULES.SALES);
+    const data = request.data || {};
+    const quoteId = typeof data.quoteId === "string" ? data.quoteId.trim() : "";
+    if (!quoteId) throw new HttpsError("invalid-argument", "يجب تحديد العرض.");
+
+    const srcRef = db.collection(COLLECTIONS.PRICE_QUOTES).doc(quoteId);
+    const srcSnap = await srcRef.get();
+    if (!srcSnap.exists || srcSnap.data().tenantId !== callerTenantId) throw new HttpsError("invalid-argument", "العرض غير موجود.");
+    const src = srcSnap.data();
+
+    const tenantRef = db.collection(COLLECTIONS.TENANTS).doc(callerTenantId);
+    const newRef = db.collection(COLLECTIONS.PRICE_QUOTES).doc();
+    const result = await db.runTransaction(async (tx) => {
+      const tSnap = await tx.get(tenantRef);
+      const nextNum = ((tSnap.data() || {}).lastPriceQuoteNumber || 0) + 1;
+      const doc = buildPQDoc({
+        tenantId: callerTenantId,
+        quoteNumber: nextNum,
+        customerId: src.customerId || null,
+        customerName: src.customerName || null,
+        laborItems: src.laborItems || [],
+        equipmentItems: src.equipmentItems || [],
+        subtotal: src.subtotal || 0,
+        vatRate: src.vatRate || QUOTE_VAT_RATE,
+        taxAmount: src.taxAmount || 0,
+        total: src.total || 0,
+        status: PQS.DRAFT,
+        validityDays: src.validityDays || 14,
+        createdBy: request.auth.uid,
+        createdAt: FieldValue.serverTimestamp(),
+      });
+      tx.set(newRef, doc);
+      tx.update(tenantRef, { lastPriceQuoteNumber: nextNum });
+      return { quoteNumber: nextNum };
+    });
+    return { id: newRef.id, quoteNumber: result.quoteNumber };
+  } catch (err) {
+    if (err instanceof HttpsError) throw err;
+    console.error("duplicatePriceQuote failed:", err);
+    throw new HttpsError("internal", "تعذّر إنشاء نسخة جديدة.");
+  }
+});

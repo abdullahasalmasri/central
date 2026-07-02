@@ -42,6 +42,7 @@ export default function PriceQuotesView() {
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState("");
   const [showForm, setShowForm] = useState(false);
+  const [editingQuote, setEditingQuote] = useState(null);
   const [activeQuote, setActiveQuote] = useState(null);
 
   useEffect(() => {
@@ -124,13 +125,14 @@ export default function PriceQuotesView() {
         </>
       )}
 
-      {showForm ? (
+      {showForm || editingQuote ? (
         <QuoteForm
           customers={customers}
           jobTitles={jobTitles}
           nationalities={nationalities}
-          onClose={() => setShowForm(false)}
-          onSaved={() => { setShowForm(false); loadData(); }}
+          initialQuote={editingQuote}
+          onClose={() => { setShowForm(false); setEditingQuote(null); }}
+          onSaved={() => { setShowForm(false); setEditingQuote(null); loadData(); }}
         />
       ) : null}
 
@@ -139,6 +141,7 @@ export default function PriceQuotesView() {
           quote={activeQuote}
           company={company}
           onClose={() => setActiveQuote(null)}
+          onEdit={(q) => { setActiveQuote(null); setEditingQuote(q); }}
           onChanged={() => { setActiveQuote(null); loadData(); }}
         />
       ) : null}
@@ -155,17 +158,45 @@ function emptyLaborItem() {
   };
 }
 
+// تحويل بند عمالة محفوظ إلى بند نموذج (للتعديل/النسخ)
+function mapToFormItem(it) {
+  return {
+    gender: it.gender || "", nationality: it.nationality || "", jobTitle: it.jobTitle || "",
+    refCost: it.refCost != null ? it.refCost : null,
+    refHousing: it.refHousing != null ? it.refHousing : null,
+    refTransport: it.refTransport != null ? it.refTransport : null,
+    refCount: null, refLoading: false,
+    offeredCost: it.offeredCost != null ? it.offeredCost : "",
+    offeredHousing: it.offeredHousing != null ? it.offeredHousing : "",
+    offeredTransport: it.offeredTransport != null ? it.offeredTransport : "",
+    profit: it.profit != null ? it.profit : "",
+    count: it.count != null ? it.count : "",
+  };
+}
+
 function emptyEquipmentItem() {
   return { type: "", model: "", manufacturer: "", size: "", count: "", offeredPrice: "", profit: "" };
 }
 
 function genderLabel(g) { return g === "male" ? "ذكر" : g === "female" ? "أنثى" : "—"; }
 
-function QuoteForm({ customers, jobTitles, nationalities, onClose, onSaved }) {
-  const [customerId, setCustomerId] = useState("");
-  const [validityDays, setValidityDays] = useState(14);
-  const [laborItems, setLaborItems] = useState([emptyLaborItem()]);
-  const [equipmentItems, setEquipmentItems] = useState([]);
+function QuoteForm({ customers, jobTitles, nationalities, initialQuote, onClose, onSaved }) {
+  const isEdit = !!initialQuote;
+  const [customerId, setCustomerId] = useState(initialQuote ? (initialQuote.customerId || "") : "");
+  const [validityDays, setValidityDays] = useState(initialQuote ? (initialQuote.validityDays || 14) : 14);
+  const [laborItems, setLaborItems] = useState(
+    initialQuote && Array.isArray(initialQuote.laborItems) && initialQuote.laborItems.length
+      ? initialQuote.laborItems.map(mapToFormItem) : [emptyLaborItem()]
+  );
+  const [equipmentItems, setEquipmentItems] = useState(
+    initialQuote && Array.isArray(initialQuote.equipmentItems)
+      ? initialQuote.equipmentItems.map((it) => ({
+          type: it.type || "", model: it.model || "", manufacturer: it.manufacturer || "",
+          size: it.size || "", count: it.count != null ? it.count : "",
+          offeredPrice: it.offeredPrice != null ? it.offeredPrice : "", profit: it.profit != null ? it.profit : "",
+        }))
+      : []
+  );
   const [showClientPreview, setShowClientPreview] = useState(false);
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState("");
@@ -253,7 +284,11 @@ function QuoteForm({ customers, jobTitles, nationalities, onClose, onSaved }) {
         submit: submit === true,
         validityDays: Number(validityDays) || 14,
       };
-      await httpsCallable(functions, "createPriceQuote")(payload);
+      if (isEdit) {
+        await httpsCallable(functions, "updatePriceQuote")({ quoteId: initialQuote.id, ...payload });
+      } else {
+        await httpsCallable(functions, "createPriceQuote")(payload);
+      }
       onSaved();
     } catch (e) {
       setError(e.message || "تعذّر حفظ عرض السعر.");
@@ -265,7 +300,7 @@ function QuoteForm({ customers, jobTitles, nationalities, onClose, onSaved }) {
     <div style={styles.overlay} onClick={onClose}>
       <div style={styles.modal} onClick={(e) => e.stopPropagation()}>
         <div style={styles.modalHead}>
-          <h2 style={styles.modalTitle}>عرض سعر جديد</h2>
+          <h2 style={styles.modalTitle}>{isEdit ? `تعديل عرض #${initialQuote.quoteNumber}` : "عرض سعر جديد"}</h2>
           <button style={styles.closeBtn} onClick={onClose}>✕</button>
         </div>
 
@@ -483,7 +518,7 @@ function QuoteForm({ customers, jobTitles, nationalities, onClose, onSaved }) {
 }
 
 /* ===== تفاصيل العرض + إجراءات المرحلة ٢ (أمر الشراء) ===== */
-function QuoteDetailModal({ quote, company, onClose, onChanged }) {
+function QuoteDetailModal({ quote, company, onClose, onEdit, onChanged }) {
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
   const [mode, setMode] = useState(""); // "" | "po" | "reject" | "project"
@@ -533,6 +568,14 @@ function QuoteDetailModal({ quote, company, onClose, onChanged }) {
             ) : (
               <span style={styles.printHint}>نسخة العميل المختومة تتاح بعد موافقة المالية</span>
             )}
+          </div>
+
+          {/* تعديل / نسخة جديدة */}
+          <div style={styles.printRow}>
+            {quote.status === "draft" ? (
+              <button style={styles.editQuoteBtn} onClick={() => onEdit(quote)} disabled={busy}>✏️ تعديل</button>
+            ) : null}
+            <button style={styles.dupQuoteBtn} onClick={() => call("duplicatePriceQuote", {}, "")} disabled={busy}>📋 نسخة جديدة</button>
           </div>
 
           <div style={styles.detailRow}>العميل: <b>{quote.customerName || "—"}</b></div>
@@ -750,6 +793,8 @@ const styles = {
   printInternalBtn: { padding: "8px 16px", fontSize: 13, fontWeight: 700, color: "#475569", background: "#f1f5f9", border: "1px solid #cbd5e1", borderRadius: 8, cursor: "pointer", fontFamily: "inherit" },
   printClientBtn: { padding: "8px 16px", fontSize: 13, fontWeight: 700, color: "#fff", background: "#4f46e5", border: "none", borderRadius: 8, cursor: "pointer", fontFamily: "inherit" },
   printHint: { fontSize: 12, color: "#94a3b8" },
+  editQuoteBtn: { padding: "8px 16px", fontSize: 13, fontWeight: 700, color: "#0d9488", background: "#f0fdfa", border: "1px solid #99f6e4", borderRadius: 8, cursor: "pointer", fontFamily: "inherit" },
+  dupQuoteBtn: { padding: "8px 16px", fontSize: 13, fontWeight: 700, color: "#7c3aed", background: "#f5f3ff", border: "1px solid #ddd6fe", borderRadius: 8, cursor: "pointer", fontFamily: "inherit" },
   finRef: { fontSize: 12, fontWeight: 700, color: "#059669", background: "#d1fae5", padding: "4px 10px", borderRadius: 6 },
   detailRow: { fontSize: 14, color: "#475569", marginBottom: 6 },
   rejReason: { fontSize: 13, color: "#b91c1c", background: "#fef2f2", padding: "8px 12px", borderRadius: 8, marginTop: 8, marginBottom: 8 },
